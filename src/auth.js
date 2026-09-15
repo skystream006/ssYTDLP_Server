@@ -7,10 +7,15 @@ import {
   verifyRegistrationResponse
 } from '@simplewebauthn/server';
 import {
+  createPrivateAccessToken,
   createSession,
+  deletePrivateAccessToken,
   deleteSession,
   findCredential,
+  getPrivateAccessTokenUser,
   getSessionUser,
+  getUser,
+  listPrivateAccessTokens,
   listUsers,
   registerUser,
   updateCredentialCounter,
@@ -93,12 +98,22 @@ function sendError(res, error) {
 }
 
 export function attachUser(req, _res, next) {
-  req.user = getSessionUser(getCookie(req, sessionCookie));
+  req.sessionUser = getSessionUser(getCookie(req, sessionCookie));
+  req.user = req.headers['x-pat'] !== undefined
+    ? getPrivateAccessTokenUser(req.headers['x-pat'])
+    : req.sessionUser;
   next();
 }
 
 export function requireAuth(req, res, next) {
-  if (!req.user) return res.status(401).json({ error: 'Passkey login required' });
+  if (!req.user) return res.status(401).json({ error: 'Passkey login or valid X-PAT required' });
+  return next();
+}
+
+function requireSession(req, res, next) {
+  res.set('Cache-Control', 'no-store');
+  if (!req.sessionUser) return res.status(401).json({ error: 'Passkey login required' });
+  req.user = req.sessionUser;
   return next();
 }
 
@@ -119,6 +134,29 @@ export function registerAuthRoutes(app, limiters = {}) {
   app.get('/api/auth/me', (req, res) => {
     if (!req.user) return res.status(401).json({ error: 'Passkey login required' });
     return res.json({ user: req.user });
+  });
+
+  app.get('/api/auth/pats', requireSession, (req, res) => {
+    return res.json({ tokens: listPrivateAccessTokens(req.user.id) });
+  });
+
+  app.post('/api/auth/pats', requireSession, async (req, res) => {
+    try {
+      return res.status(201).json(await createPrivateAccessToken(req.user.id, req.body?.name));
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
+  app.delete('/api/auth/pats/:tokenId', requireSession, async (req, res) => {
+    try {
+      if (!await deletePrivateAccessToken(req.user.id, req.params.tokenId)) {
+        return res.status(404).json({ error: 'PAT not found' });
+      }
+      return res.status(204).end();
+    } catch (error) {
+      return sendError(res, error);
+    }
   });
 
   app.post('/api/auth/register/options', registrationOptionsLimiter, async (req, res) => {
@@ -242,6 +280,23 @@ export function registerAuthRoutes(app, limiters = {}) {
 
   app.get('/api/admin/users', requireAdmin, (_req, res) => {
     res.json({ users: listUsers() });
+  });
+
+  app.get('/api/admin/users/:id', requireSession, requireAdmin, (req, res) => {
+    const user = getUser(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    return res.json({ user, tokens: listPrivateAccessTokens(user.id) });
+  });
+
+  app.delete('/api/admin/users/:id/pats/:tokenId', requireSession, requireAdmin, async (req, res) => {
+    try {
+      if (!await deletePrivateAccessToken(req.params.id, req.params.tokenId)) {
+        return res.status(404).json({ error: 'PAT not found' });
+      }
+      return res.status(204).end();
+    } catch (error) {
+      return sendError(res, error);
+    }
   });
 
   app.patch('/api/admin/users/:id', requireAdmin, async (req, res) => {

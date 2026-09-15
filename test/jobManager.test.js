@@ -1,8 +1,20 @@
-import test from 'node:test';
+import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
+
+beforeEach(async (testContext) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-job-db-'));
+  process.env.DATABASE_PATH = path.join(directory, 'test.sqlite');
+  process.env.AUTH_STORE_PATH = path.join(directory, 'auth.json');
+  process.env.JOB_STORE_PATH = path.join(directory, 'jobs.json');
+  testContext.after(() => {
+    closeDatabases();
+    return fs.rm(directory, { recursive: true, force: true });
+  });
+});
 
 async function makeFakeBin(dir, name, { delayMs = 0 } = {}) {
   const scriptPath = path.join(dir, name);
@@ -95,7 +107,7 @@ test('duplicate source URLs return the previous job without creating another rec
   }]));
   const manager = await import(`../src/jobManager.js?duplicate=${Date.now()}`);
   for (const status of ['completed', 'failed', 'partially_completed', 'queued', 'running']) {
-    manager.getJob('previous-job').status = status;
+    writeJob(openDatabase(), { ...manager.getJob('previous-job'), status });
     await assert.rejects(manager.createJob(` ${url} `, { id: 'bob-id', name: 'Bob' }), (error) => {
       assert.equal(error.statusCode, 409);
       assert.equal(error.code, 'JOB_ALREADY_EXISTS');
@@ -182,14 +194,15 @@ test('rerunning overwrites a finished job while preserving its ID', async (t) =>
   const firstOutputDir = job.outputDir;
   await fs.writeFile(path.join(firstOutputDir, 'old-output.mp3'), 'old');
   job.playlistSongCount = 99;
+  writeJob(openDatabase(), job);
 
   const rerun = await jobManager.rerunJob(job.id, { id: 'bob-id', name: 'Bob' });
 
   assert.equal(rerun.playlistSongCount, null);
   assert.deepEqual(rerun.initiatedBy, { id: 'bob-id', name: 'Bob' });
   assert.equal(rerun.id, job.id);
-  assert.equal(rerun, job);
-  assert.equal(jobManager.getJob(job.id), job);
+  assert.notEqual(rerun, job);
+  assert.equal(jobManager.getJob(job.id), rerun);
   await assert.rejects(fs.access(firstOutputDir));
   assert.equal(await jobManager.rerunJob('missing-job'), null);
 
@@ -238,11 +251,12 @@ test('job history is restored after a manager restart', async (t) => {
   await waitForJobToFinish(createdJob);
 
   while (true) {
-    const storedJobs = JSON.parse(await fs.readFile(jobStorePath, 'utf8'));
-    if (storedJobs[0]?.status === createdJob.status) break;
+    const storedJob = openDatabase().prepare('SELECT status FROM jobs WHERE id = ?').get(createdJob.id);
+    if (storedJob?.status === createdJob.status) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
+  closeDatabases();
   const secondManager = await import(`../src/jobManager.js?persist-read=${Date.now()}`);
   const restoredJob = secondManager.getJob(createdJob.id);
 

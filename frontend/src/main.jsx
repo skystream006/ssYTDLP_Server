@@ -8,11 +8,13 @@ import {
   Check,
   CircleAlert,
   Clock3,
+  Copy,
   Disc3,
   ExternalLink,
   FileAudio,
   Fingerprint,
   HardDrive,
+  KeyRound,
   ListMusic,
   LogOut,
   MemoryStick,
@@ -22,6 +24,7 @@ import {
   RefreshCw,
   RotateCcw,
   Server,
+  Settings,
   ShieldCheck,
   Trash2,
   UserCheck,
@@ -34,12 +37,12 @@ import './styles.css';
 const POLL_INTERVAL = 5000;
 const AuthContext = createContext(null);
 
-function ConfirmationDialog({ title, message, action, onAnswer }) {
+function ConfirmationDialog({ title, message, action, label, onAnswer }) {
   const dialogRef = useRef(null);
   const titleId = useId();
   const messageId = useId();
   const ActionIcon = action === 'delete' ? Trash2 : action === 'rerun' ? RotateCcw : ExternalLink;
-  const actionLabel = action === 'delete' ? 'Delete job' : action === 'rerun' ? 'Rerun job' : 'Open details';
+  const actionLabel = label || (action === 'delete' ? 'Delete job' : action === 'rerun' ? 'Rerun job' : 'Open details');
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -164,6 +167,7 @@ function AppShell({ children, section = 'jobs' }) {
         </nav>
         <div className="account-menu">
           <span><strong>{user.name}</strong><small>{user.role}</small></span>
+          <a href="/settings" className={section === 'settings' ? 'active' : ''} aria-label="User settings" title="User settings"><Settings size={17} /></a>
           <button onClick={logout} type="button" aria-label="Log out" title="Log out"><LogOut size={17} /></button>
         </div>
       </header>
@@ -605,6 +609,136 @@ function LoginPage({ onLogin }) {
   </main>;
 }
 
+function PatDialog({ pat, onClose }) {
+  const dialogRef = useRef(null);
+  const tokenRef = useRef(null);
+  const titleId = useId();
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    return () => {
+      dialog.close();
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, []);
+
+  async function copyToken() {
+    try {
+      await navigator.clipboard.writeText(pat.token);
+      setCopied(true);
+      setError('');
+    } catch {
+      tokenRef.current.focus();
+      tokenRef.current.select();
+      setError('Clipboard unavailable. Copy the selected PAT manually.');
+    }
+  }
+
+  return <dialog ref={dialogRef} className="confirmation-dialog pat-dialog" aria-labelledby={titleId}
+    onCancel={(event) => { event.preventDefault(); onClose(); }}>
+    <h2 id={titleId}>Private Access Token created</h2>
+    <p className="pat-name">{pat.name}</p>
+    <p>This secret is shown only once. Store it securely before closing.</p>
+    <label className="sr-only" htmlFor={`${titleId}-token`}>Private Access Token</label>
+    <textarea ref={tokenRef} id={`${titleId}-token`} readOnly value={pat.token} spellCheck={false} />
+    {error && <p role="alert">{error}</p>}
+    <div className="dialog-actions">
+      <button type="button" className="secondary-button" onClick={copyToken}><Copy size={17} />{copied ? 'Copied' : 'Copy PAT'}</button>
+      <button type="button" className="primary-button" onClick={onClose}><Check size={17} />Done</button>
+    </div>
+    <span className="sr-only" role="status">{copied ? 'PAT copied to clipboard' : ''}</span>
+  </dialog>;
+}
+
+function UserSettingsPage({ userId }) {
+  const { user: currentUser } = useContext(AuthContext);
+  const [details, setDetails] = useState(null);
+  const [tokens, setTokens] = useState(null);
+  const [name, setName] = useState('');
+  const [secret, setSecret] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const { confirm, dialog } = useConfirmation();
+  const endpoint = userId ? `/api/admin/users/${encodeURIComponent(userId)}` : '/api/auth/pats';
+
+  async function load() {
+    try {
+      const result = await request(endpoint);
+      setDetails(result.user || currentUser);
+      setTokens(result.tokens);
+      setError('');
+    } catch (loadError) {
+      setError(loadError.message);
+    }
+  }
+
+  useEffect(() => { load(); }, [endpoint]);
+
+  async function generate(event) {
+    event.preventDefault();
+    setBusy('generate');
+    setError('');
+    try {
+      const pat = await request('/api/auth/pats', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })
+      });
+      setSecret(pat);
+      setTokens((previous) => [{ id: pat.id, name: pat.name, createdAt: pat.createdAt }, ...previous]);
+      setName('');
+    } catch (generateError) {
+      setError(generateError.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function remove(pat) {
+    if (!await confirm({ title: 'Delete Private Access Token?', message: `Delete "${pat.name}"? Requests using this PAT will no longer be authenticated.`, action: 'delete', label: 'Delete PAT' })) return;
+    setBusy(pat.id);
+    setError('');
+    try {
+      const deleteEndpoint = userId ? `${endpoint}/pats/${pat.id}` : `${endpoint}/${pat.id}`;
+      await request(deleteEndpoint, { method: 'DELETE' });
+      setTokens((previous) => previous.filter((token) => token.id !== pat.id));
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  return <AppShell section={userId ? 'admin' : 'settings'}>
+    {userId && <a className="settings-back" href="/admin"><ArrowLeft size={16} />All users</a>}
+    <section className="page-heading settings-heading"><div><p className="eyebrow">Account</p><h1>{userId ? 'User details' : 'User settings'}</h1></div></section>
+    {error && <div className="notice error" role="alert">{error}<button type="button" className="secondary-button compact-button" onClick={load} disabled={Boolean(busy)}><RefreshCw size={16} />Retry</button></div>}
+    {!details && !error && <p role="status">Loading account...</p>}
+    {details && <>
+      <section className="settings-profile" aria-label="User details">
+        <UserIdentity user={details} />
+        <dl><div><dt>Role</dt><dd>{details.role}</dd></div><div><dt>Joined</dt><dd>{formatDate(details.createdAt)}</dd></div><div><dt>User ID</dt><dd>{details.id}</dd></div></dl>
+      </section>
+      <section className="pat-section" aria-labelledby="pat-heading">
+        <div className="section-title"><div><KeyRound size={19} /><h2 id="pat-heading">Private Access Tokens</h2></div><strong>{tokens.length}</strong></div>
+        {!userId && <form className="pat-form" onSubmit={generate}>
+          <div><label htmlFor="pat-name">PAT name</label><input id="pat-name" required maxLength={64} value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Home automation" /></div>
+          <button className="primary-button" type="submit" disabled={Boolean(busy) || !name.trim()}>{busy === 'generate' ? <RefreshCw size={17} className="spin" /> : <Plus size={17} />}Generate PAT</button>
+        </form>}
+        {tokens.length === 0 ? <div className="empty-state compact"><KeyRound size={28} /><h3>No Private Access Tokens</h3></div> : <ul className="pat-list">
+          {tokens.map((pat) => <li key={pat.id}><KeyRound size={18} /><div><strong>{pat.name}</strong><small>Created {formatDate(pat.createdAt)}</small></div>
+            <button className="danger-button pat-delete" type="button" title={`Delete ${pat.name}`} aria-label={`Delete ${pat.name}`} disabled={Boolean(busy)} onClick={() => remove(pat)}><Trash2 size={17} /></button>
+          </li>)}
+        </ul>}
+      </section>
+    </>}
+    {secret && <PatDialog pat={secret} onClose={() => setSecret(null)} />}
+    {dialog}
+  </AppShell>;
+}
+
 function AdminPage() {
   const { user: currentUser } = useContext(AuthContext);
   const [users, setUsers] = useState([]);
@@ -661,7 +795,7 @@ function AdminPage() {
     <section className="users-section">
       <div className="section-title"><div><span>02</span><h2>All users</h2></div><strong>{users.length}</strong></div>
       <div className="user-list">{users.map((user) => <article className="user-row" key={user.id}>
-        <UserIdentity user={user} />
+        <a className="user-details-link" href={`/admin/users/${encodeURIComponent(user.id)}`} aria-label={`View ${user.name} details`}><UserIdentity user={user} /><ExternalLink size={16} /></a>
         <label className="role-control"><span>Role</span><select disabled={updating === user.id || user.id === currentUser.id} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option></select></label>
         {user.status === 'approved'
           ? <button className="danger-button compact-button" disabled={updating === user.id || user.id === currentUser.id} onClick={() => changeUser(user.id, { status: 'revoked' })} type="button"><UserX size={16} />Revoke</button>
@@ -676,6 +810,9 @@ function UserIdentity({ user }) {
 }
 
 function Router({ user }) {
+  const userMatch = window.location.pathname.match(/^\/admin\/users\/([^/]+)\/?$/);
+  if (userMatch && user.role === 'admin') return <UserSettingsPage userId={decodeURIComponent(userMatch[1])} />;
+  if (window.location.pathname === '/settings') return <UserSettingsPage />;
   const jobMatch = window.location.pathname.match(/^\/job\/([^/]+)\/?$/);
   if (jobMatch) return <JobPage id={decodeURIComponent(jobMatch[1])} />;
   if (window.location.pathname === '/health') return <HealthPage />;

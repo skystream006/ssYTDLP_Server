@@ -66,7 +66,7 @@ PASSKEY_ORIGIN=https://192-168-3-175.sslip.io:4000
 ```
 
 Users, public passkey credentials, access decisions, and hashed login sessions are stored
-in `data/auth.json`. Set `AUTH_STORE_PATH` to use a different file. Private passkey keys
+in SQLite alongside job history (see **Database storage** below). Private passkey keys
 remain in the user's authenticator, such as Bitwarden, and are never sent to the server.
 
 Passkey registration and login endpoints have stricter per-client rate limits than the
@@ -99,14 +99,96 @@ FFmpeg and ffprobe are loaded from `runtime/ffmpeg/bin`; override this with
 - Open a finished job's details to view its command, rerun it under the same job ID,
   or delete the job and its downloaded files
 
-Jobs are persisted in `data/jobs.json` and restored after server restarts.
-Set `JOB_STORE_PATH` to use a different history file. Jobs show
+Jobs are persisted in SQLite and restored after server restarts. Jobs show
 queued/running/completed/partially completed/failed status; any active job interrupted by a restart
 is restored as failed so it can be rerun safely.
 Private videos skipped by yt-dlp produce a partially completed job rather than a failed job.
 Downloaded files are written under `./output/<job-folder>/` and can be downloaded from the job details page.
 Use **Download all** on a job with files to download its songs as a ZIP archive.
 Job details include the command and complete captured stdout and stderr output.
+
+## API URL submission
+
+Sign in with an approved user's passkey and open **User settings** using the gear button
+in the header. Enter a **PAT name**, then select **Generate PAT**. The dialog displays the
+Private Access Token exactly once; use **Copy PAT** and store it securely before closing.
+The server stores only its SHA-256 hash. Tokens are never recoverable from listings,
+including administrator views. Multiple named PATs can be active at the same time.
+
+Submit a YouTube Music URL using the `X-PAT` header (not `Authorization: Bearer`):
+
+```bash
+curl --request POST "https://localhost:4000/api/jobs" \
+    --header "X-PAT: ssyt_pat_REPLACE_WITH_YOUR_PAT" \
+    --header "Content-Type: application/json" \
+    --data '{"url":"https://music.youtube.com/watch?v=VIDEO_ID"}'
+```
+
+PowerShell 7 example, with the PAT already in the `SSYTDLP_PAT` environment variable:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri 'https://localhost:4000/api/jobs' `
+        -Headers @{ 'X-PAT' = $env:SSYTDLP_PAT } `
+        -ContentType 'application/json' `
+        -Body (@{ url = 'https://music.youtube.com/watch?v=VIDEO_ID' } | ConvertTo-Json)
+```
+
+Use HTTPS with a trusted certificate. For local testing with the generated self-signed
+certificate only, curl accepts `--insecure` and PowerShell 7 accepts `-SkipCertificateCheck`.
+Successful submission returns `202 Accepted` and the job, including its ID. The job is
+attributed to the PAT owner. Missing or invalid credentials return `401`, invalid URLs
+return `400`, and duplicate URLs return `409` with the existing job.
+
+PATs inherit their owner's current API permissions and do not expire automatically.
+Use the trash button in **User settings** to delete a PAT immediately. Administrators
+can open **Admin**, select a user in **All users**, and remove that user's PATs from
+**User details**. Revoking user access deletes all their PATs; reapproval does not restore them.
+
+PAT management requires a logged-in passkey session, not a PAT:
+
+- `GET /api/auth/pats`: list your PAT IDs, names and creation dates.
+- `POST /api/auth/pats` with `{ "name": "Home automation" }`: create a PAT; the response
+    includes `id`, `name`, `createdAt`, and the one-time `token` value.
+- `DELETE /api/auth/pats/:tokenId`: delete your PAT.
+- `GET /api/admin/users/:id`: administrator-only user details and secret-free PAT list.
+- `DELETE /api/admin/users/:id/pats/:tokenId`: administrator-only PAT deletion.
+
+The old `/api/auth/api-token` endpoint and bearer authentication have been removed.
+Existing old tokens are discarded on upgrade; generate new PATs from User settings.
+
+## Database storage
+
+The app uses SQLite at `data/ssytdlp.sqlite`. Set `DATABASE_PATH` to choose another
+location on a local disk. No separate database service is required. Users, credentials,
+and sessions have separate tables; jobs are stored as individual records with indexed
+URLs, statuses, and creation dates. Flexible job metadata is encoded as JSON within
+each row, rather than rewriting a single JSON file containing the entire history.
+Only active jobs are retained in memory. Writes are transactional, with WAL journaling
+and a five-second busy timeout.
+
+On the first start with a new database, existing `data/auth.json` and `data/jobs.json`
+are imported automatically in one transaction. `AUTH_STORE_PATH` and `JOB_STORE_PATH`
+now specify only the legacy JSON import locations. IDs, public credentials, session
+hashes, job metadata, file paths, and existing duplicate jobs are preserved. Interrupted
+jobs are marked failed as before. An invalid import stops startup and rolls back the
+transaction; fix the source data and restart to retry.
+
+Stop the old server before the first database-backed start. Back up both JSON files
+first, then run `npm start`. The original JSON files are left untouched, are no longer
+updated, and are not re-imported on subsequent starts. Editing them will no longer
+change application state. Verify the migrated data before archiving those backups.
+Private passkey keys remain in the authenticator; existing sessions continue to work.
+
+For a database backup, stop the app cleanly and copy the database together with any
+adjacent `-wal` and `-shm` files. Do not copy only the main database while the app is
+running. Protect the database and backups with the same filesystem permissions as
+the old authentication store, and keep them outside the public directory.
+
+This supports a growing history on a single app server. Dashboard responses still
+list all jobs; very large dashboards may eventually need pagination. SQLite does not
+make the download scheduler, WebAuthn challenges, or rate limits multi-instance safe.
+Do not share this database over a network filesystem or run multiple app servers
+against it; horizontal scaling requires a shared database and worker coordination.
 
 ## Scheduled maintenance
 

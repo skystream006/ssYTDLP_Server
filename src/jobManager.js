@@ -3,11 +3,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { isPlaylistUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
+import { openDatabase, writeJob } from './database.js';
 
 const jobs = new Map();
+const database = openDatabase();
 const outputRoot = process.env.YTDLP_OUTPUT_ROOT || path.resolve(process.cwd(), 'output');
-const jobStorePath = process.env.JOB_STORE_PATH || path.resolve(process.cwd(), 'data', 'jobs.json');
-let persistenceQueue = Promise.resolve();
 
 const jobEvents = new EventEmitter();
 jobEvents.setMaxListeners(0);
@@ -19,21 +19,10 @@ const privateVideoPattern = /\b(?:private video|video is private)\b/i;
 let updateGate = null;
 
 async function loadJobs() {
-  let storedJobs;
-  try {
-    storedJobs = JSON.parse(await fs.readFile(jobStorePath, 'utf8'));
-  } catch (error) {
-    if (error.code === 'ENOENT') return;
-    throw new Error(`Unable to load job history from ${jobStorePath}: ${error.message}`);
-  }
-
-  if (!Array.isArray(storedJobs)) {
-    throw new Error(`Invalid job history in ${jobStorePath}`);
-  }
-
-  let updatedStoredJob = false;
-  for (const job of storedJobs) {
-    if (!job?.id || !job.url) continue;
+  const storedJobs = database.prepare("SELECT data FROM jobs WHERE status IN ('queued', 'running', 'failed', 'warning')").all();
+  for (const { data } of storedJobs) {
+    const job = JSON.parse(data);
+    let updatedStoredJob = false;
     if (job.status === 'queued' || job.status === 'running') {
       job.status = 'failed';
       job.error = 'Job was interrupted by a server restart';
@@ -48,22 +37,14 @@ async function loadJobs() {
       job.warning = 'One or more private videos were skipped.';
       updatedStoredJob = true;
     }
-    jobs.set(job.id, job);
-  }
-
-  if (updatedStoredJob) {
-    await persistJobs();
+    if (updatedStoredJob) writeJob(database, job);
   }
 }
 
-function persistJobs() {
-  persistenceQueue = persistenceQueue.catch(() => {}).then(async () => {
-    await fs.mkdir(path.dirname(jobStorePath), { recursive: true });
-    const temporaryPath = `${jobStorePath}.${process.pid}.tmp`;
-    await fs.writeFile(temporaryPath, `${JSON.stringify([...jobs.values()], null, 2)}\n`);
-    await fs.rename(temporaryPath, jobStorePath);
-  });
-  return persistenceQueue;
+async function persistJob(job) {
+  writeJob(database, job);
+  if (job.status === 'queued' || job.status === 'running') jobs.set(job.id, job);
+  else jobs.delete(job.id);
 }
 
 await loadJobs();
@@ -248,7 +229,6 @@ function newJob(url, initiatedBy) {
     output: null
   };
 
-  jobs.set(id, job);
   return job;
 }
 
@@ -257,7 +237,7 @@ function startJob(job) {
     job.status = 'failed';
     job.error = error.message;
     job.updatedAt = new Date().toISOString();
-    persistJobs().catch((persistError) => console.error('Unable to persist job:', persistError.message));
+    persistJob(job).catch((persistError) => console.error('Unable to persist job:', persistError.message));
   });
 }
 
@@ -291,7 +271,7 @@ async function executeJob(job) {
   runningJobsCount += 1;
   job.status = 'running';
   job.updatedAt = new Date().toISOString();
-  await persistJobs();
+  await persistJob(job);
 
   const playlistMetadata = job.isPlaylist
     ? await getPlaylistMetadata(job.url, denoPath).catch(() => null)
@@ -328,7 +308,7 @@ async function executeJob(job) {
     .map((value) => (value.includes(' ') ? `"${value}"` : value))
     .join(' ');
 
-  await persistJobs();
+  await persistJob(job);
 
   try {
     const result = await runCommand(ytDlpPath, args);
@@ -353,7 +333,7 @@ async function executeJob(job) {
   }
 
   job.updatedAt = new Date().toISOString();
-  await persistJobs();
+  await persistJob(job);
 }
 
 /**
@@ -399,7 +379,14 @@ export function isUpdateInProgress() {
 export async function createJob(url, user = null) {
   await ensureOutputRoot();
   const sourceUrl = url.trim();
-  const existingJob = getJobs().find((job) => job.url.trim() === sourceUrl);
+  const job = database.transaction(() => createJobRecord(sourceUrl, user)).immediate();
+  jobs.set(job.id, job);
+  startJob(job);
+  return job;
+}
+
+function createJobRecord(sourceUrl, user) {
+  const existingJob = database.prepare('SELECT id, status, data FROM jobs WHERE url = ? ORDER BY created_at DESC LIMIT 1').get(sourceUrl);
   if (existingJob) {
     const error = new Error('This source URL already has a job');
     error.statusCode = 409;
@@ -407,13 +394,12 @@ export async function createJob(url, user = null) {
     error.existingJob = {
       id: existingJob.id,
       status: existingJob.status,
-      folderName: existingJob.folderName
+      folderName: JSON.parse(existingJob.data).folderName
     };
     throw error;
   }
   const job = newJob(sourceUrl, user ? { id: user.id, name: user.name } : null);
-  await persistJobs();
-  startJob(job);
+  writeJob(database, job);
   return job;
 }
 
@@ -438,7 +424,7 @@ export async function rerunJob(id, user = null) {
   job.output = null;
   job.updatedAt = new Date().toISOString();
 
-  await persistJobs();
+  await persistJob(job);
   startJob(job);
   return job;
 }
@@ -451,17 +437,20 @@ export async function deleteJob(id) {
 
   assertJobIsIdle(job, 'delete');
   await removeJobOutput(job);
+  database.prepare('DELETE FROM jobs WHERE id = ?').run(id);
   jobs.delete(id);
-  await persistJobs();
   return true;
 }
 
 export function getJobs() {
-  return [...jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return database.prepare('SELECT id, data FROM jobs ORDER BY created_at DESC').all()
+    .map((row) => jobs.get(row.id) || JSON.parse(row.data));
 }
 
 export function getJob(id) {
-  return jobs.get(id);
+  if (jobs.has(id)) return jobs.get(id);
+  const row = database.prepare('SELECT data FROM jobs WHERE id = ?').get(id);
+  return row ? JSON.parse(row.data) : undefined;
 }
 
 export function getFilePath(job, fileName) {

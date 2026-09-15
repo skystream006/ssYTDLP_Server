@@ -6,6 +6,7 @@ import { isPlaylistUrl, sanitizeFolderName, randomSongFolderName } from './utils
 import { openDatabase, writeJob } from './database.js';
 
 const jobs = new Map();
+const jobMutations = new Set();
 const database = openDatabase();
 const outputRoot = process.env.YTDLP_OUTPUT_ROOT || path.resolve(process.cwd(), 'output');
 
@@ -172,11 +173,13 @@ function formatCommandOutput(result) {
   return sections.join('\n\n');
 }
 
+const downloadArchiveName = '.download-archive.txt';
+
 async function listDownloadedFiles(folderPath) {
   try {
     const entries = await fs.readdir(folderPath, { withFileTypes: true });
     return entries
-      .filter((entry) => entry.isFile())
+      .filter((entry) => entry.isFile() && entry.name !== downloadArchiveName)
       .map((entry) => entry.name)
       .sort((a, b) => a.localeCompare(b));
   } catch {
@@ -215,6 +218,7 @@ function newJob(url, initiatedBy) {
     id,
     url,
     initiatedBy,
+    contributors: [],
     isPlaylist: isPlaylistUrl(url),
     playlistSongCount: null,
     status: 'queued',
@@ -241,7 +245,39 @@ function startJob(job) {
   });
 }
 
+function hasJobAccess(job, user, allowContributors = false) {
+  return Boolean(user && (user.role === 'admin' || (user.id && (
+    user.id === job.initiatedBy?.id
+    || (allowContributors && job.contributors?.some((contributor) => contributor.id === user.id))
+  ))));
+}
+
+function assertJobAccess(job, user, allowContributors = false) {
+  if (!hasJobAccess(job, user, allowContributors)) {
+    const error = new Error('You do not have permission to perform this action on this job');
+    error.statusCode = 403;
+    throw error;
+  }
+}
+
+function assertCanModifyJob(job, user, allowContributors = false) {
+  assertJobAccess(job, user, allowContributors);
+  if (user.role !== 'admin' && job.outputDir && getJobs().some((other) => (
+    other.id !== job.id && other.outputDir && !hasJobAccess(other, user, allowContributors)
+    && path.relative(job.outputDir, other.outputDir) === ''
+  ))) {
+    const error = new Error('This output folder is shared with another owner; an administrator must modify it');
+    error.statusCode = 403;
+    throw error;
+  }
+}
+
 function assertJobIsIdle(job, action) {
+  if (jobMutations.has(job.id)) {
+    const error = new Error('Another change to this job is in progress');
+    error.statusCode = 409;
+    throw error;
+  }
   if (job.status === 'queued' || job.status === 'running') {
     const error = new Error(`Cannot ${action} a job while it is ${job.status}`);
     error.statusCode = 409;
@@ -276,16 +312,19 @@ async function executeJob(job) {
   const playlistMetadata = job.isPlaylist
     ? await getPlaylistMetadata(job.url, denoPath).catch(() => null)
     : null;
-  const folderName = playlistMetadata?.folderName || randomSongFolderName();
+  const folderName = job.folderName || (playlistMetadata ? `${playlistMetadata.folderName}_${job.id}` : randomSongFolderName());
 
   job.playlistSongCount = playlistMetadata?.playlistSongCount ?? null;
   job.folderName = folderName;
-  job.outputDir = path.join(outputRoot, folderName);
+  job.outputDir = job.outputDir || path.join(outputRoot, folderName);
 
   await fs.mkdir(job.outputDir, { recursive: true });
 
   const args = [
     '--ignore-errors',
+    '--no-overwrites',
+    '--download-archive',
+    path.join(job.outputDir, downloadArchiveName),
     '--format',
     'bestaudio',
     '--extract-audio',
@@ -394,7 +433,9 @@ function createJobRecord(sourceUrl, user) {
     error.existingJob = {
       id: existingJob.id,
       status: existingJob.status,
-      folderName: JSON.parse(existingJob.data).folderName
+      folderName: JSON.parse(existingJob.data).folderName,
+      initiatedBy: JSON.parse(existingJob.data).initiatedBy,
+      contributors: JSON.parse(existingJob.data).contributors || []
     };
     throw error;
   }
@@ -409,17 +450,13 @@ export async function rerunJob(id, user = null) {
     return null;
   }
 
+  assertCanModifyJob(job, user, true);
   assertJobIsIdle(job, 'rerun');
-  await removeJobOutput(job);
 
-  job.initiatedBy = user ? { id: user.id, name: user.name } : null;
   job.playlistSongCount = null;
   job.status = 'queued';
   job.error = null;
   job.warning = null;
-  job.folderName = null;
-  job.outputDir = null;
-  job.files = [];
   job.command = null;
   job.output = null;
   job.updatedAt = new Date().toISOString();
@@ -429,17 +466,91 @@ export async function rerunJob(id, user = null) {
   return job;
 }
 
-export async function deleteJob(id) {
+export async function deleteJob(id, user = null) {
   const job = getJob(id);
   if (!job) {
     return false;
   }
 
+  assertCanModifyJob(job, user);
   assertJobIsIdle(job, 'delete');
-  await removeJobOutput(job);
-  database.prepare('DELETE FROM jobs WHERE id = ?').run(id);
-  jobs.delete(id);
-  return true;
+  jobMutations.add(id);
+  try {
+    await removeJobOutput(job);
+    database.prepare('DELETE FROM jobs WHERE id = ?').run(id);
+    jobs.delete(id);
+    return true;
+  } finally {
+    jobMutations.delete(id);
+  }
+}
+
+export async function deleteJobFile(id, fileName, user = null) {
+  const job = getJob(id);
+  if (!job) return null;
+
+  assertCanModifyJob(job, user, true);
+  assertJobIsIdle(job, 'remove files from');
+  if (typeof fileName !== 'string' || !fileName || /[\\/:\0]/.test(fileName)
+    || fileName !== path.basename(fileName) || fileName === downloadArchiveName) {
+    const error = new Error('Invalid file path');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!job.outputDir || !job.files.includes(fileName)) {
+    const error = new Error('Song not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  const filePath = getFilePath(job, fileName);
+  if (!isFileInsideJobFolder(job, filePath)) {
+    const error = new Error('Invalid file path');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  jobMutations.add(id);
+  try {
+    await fs.unlink(filePath).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    job.files = job.files.filter((name) => name !== fileName);
+    job.updatedAt = new Date().toISOString();
+    await persistJob(job);
+    return job;
+  } finally {
+    jobMutations.delete(id);
+  }
+}
+
+export function getAvailableContributors(id, user = null) {
+  const job = getJob(id);
+  if (!job) return null;
+  assertJobAccess(job, user);
+  return database.prepare("SELECT id, name FROM users WHERE status = 'approved' AND id IS NOT ? ORDER BY name COLLATE NOCASE")
+    .all(job.initiatedBy?.id || null);
+}
+
+export async function setJobContributors(id, userIds, user = null) {
+  const job = getJob(id);
+  if (!job) return null;
+  assertJobAccess(job, user);
+  assertJobIsIdle(job, 'change contributors for');
+  if (!Array.isArray(userIds) || userIds.some((userId) => typeof userId !== 'string' || !userId)) {
+    const error = new Error('userIds must be an array of user IDs');
+    error.statusCode = 400;
+    throw error;
+  }
+  const available = new Map(getAvailableContributors(id, user).map((candidate) => [candidate.id, candidate]));
+  if (userIds.some((userId) => !available.has(userId))) {
+    const error = new Error('Contributors must be approved users other than the job owner');
+    error.statusCode = 400;
+    throw error;
+  }
+  job.contributors = [...new Set(userIds)].map((userId) => available.get(userId));
+  job.updatedAt = new Date().toISOString();
+  await persistJob(job);
+  return job;
 }
 
 export function getJobs() {

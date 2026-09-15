@@ -91,13 +91,36 @@ FFmpeg and ffprobe are loaded from `runtime/ffmpeg/bin`; override this with
 - Open the HTTPS URL configured by `PASSKEY_ORIGIN`
 - Paste a `https://music.youtube.com/...` URL
 - Submitting the same source URL (ignoring surrounding whitespace) prompts to rerun
-    the most recent matching job. Confirming replaces its downloaded files and opens its
+    the most recent matching job. Confirming keeps its downloaded files and opens its
     details under the same job ID; cancelling leaves it unchanged. Active matches can
     be opened but cannot be rerun until they finish.
 - Playlist URL (`/playlist?list=...`) runs with `--yes-playlist`
 - Any other music URL runs with `--no-playlist`
 - Open a finished job's details to view its command, rerun it under the same job ID,
   or delete the job and its downloaded files
+- Use the trash button beside a song in job details to delete that individual file.
+    Confirming updates the file list and ZIP contents; other songs are kept.
+
+Approved users can view and download all jobs. Job owners can rerun their jobs,
+delete songs, delete the job, and manage its contributors. In job details, use
+**Manage contributors** beside **Contributors**, select approved users, and save.
+Uncheck a user and save to remove their contributor access. Contributors can rerun
+that job and delete individual songs, but cannot delete the job or manage contributors.
+Contributor access is per job, not an account role.
+
+Administrators retain full control over every job, including contributor management
+and older jobs without a recorded owner. The original initiating user remains the
+owner after any rerun. Permissions also apply to PAT requests. Queued/running jobs
+cannot be modified, including their contributors, even by administrators.
+
+The dashboard defaults to **My jobs (owned and contributing)** for every user,
+including administrators. **All users** and individual initiator filters remain
+available. Existing jobs start with no contributors; assignments are persisted in SQLite.
+
+New playlist jobs use a title-and-job-ID folder name to avoid sharing files between
+jobs with the same playlist title. Existing folders are preserved. If an older folder
+is shared by multiple jobs, non-admin users need permission for the requested action
+on every job sharing the folder.
 
 Jobs are persisted in SQLite and restored after server restarts. Jobs show
 queued/running/completed/partially completed/failed status; any active job interrupted by a restart
@@ -106,6 +129,31 @@ Private videos skipped by yt-dlp produce a partially completed job rather than a
 Downloaded files are written under `./output/<job-folder>/` and can be downloaded from the job details page.
 Use **Download all** on a job with files to download its songs as a ZIP archive.
 Job details include the command and complete captured stdout and stderr output.
+
+Reruns reuse the original output folder and pass `--no-overwrites` and
+`--download-archive` to yt-dlp. Successfully downloaded video IDs are recorded in
+`.download-archive.txt` inside that folder and skipped on subsequent runs; failed
+downloads can be retried. The archive is excluded from the song list and ZIP downloads.
+Songs removed from a playlist remain on disk. Downloads made before archive tracking
+rely on existing filenames for protection until recorded in the archive. Keep the
+archive with its songs: manually deleting a song does not remove its archive entry,
+so yt-dlp will still skip it. Deleting a job still removes its folder and archive.
+Deleting an individual song through the app also retains its archive entry, so tracked
+songs stay skipped on reruns. Older songs not yet tracked may download again.
+
+To remove an individual file via the API, send
+`DELETE /api/jobs/:id/files/:name` with the URL-encoded filename. This returns the
+updated job, or `403` for insufficient permissions, `404` for an unknown job or song,
+and `409` when the job is active or another modification is in progress.
+
+Owners and administrators can manage contributors with:
+
+- `GET /api/jobs/:id/contributors/users`: available approved users, with IDs and names only.
+- `PUT /api/jobs/:id/contributors` with `{ "userIds": ["USER_ID"] }`: replace the
+    contributor list and return the updated job. Send an empty array to remove all
+    contributors. Unknown, pending, revoked, and owner IDs are rejected with `400`;
+    insufficient permissions return `403`, missing jobs return `404`, and active or
+    busy jobs return `409`.
 
 ## API URL submission
 

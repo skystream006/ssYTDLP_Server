@@ -7,7 +7,7 @@ import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { createJob, deleteJob, getFilePath, getJob, getJobs, isFileInsideJobFolder, rerunJob } from './jobManager.js';
+import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, rerunJob, setJobContributors } from './jobManager.js';
 import { getSystemHealth } from './health.js';
 import { isYouTubeMusicUrl } from './utils.js';
 import { scheduleDailyMaintenance } from './scheduler.js';
@@ -206,6 +206,26 @@ app.post('/api/jobs', async (req, res) => {
   }
 });
 
+app.get('/api/jobs/:id/contributors/users', (req, res) => {
+  try {
+    const users = getAvailableContributors(req.params.id, req.user);
+    if (!users) return res.status(404).json({ error: 'Job not found' });
+    return res.json({ users });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.put('/api/jobs/:id/contributors', async (req, res) => {
+  try {
+    const job = await setJobContributors(req.params.id, req.body?.userIds, req.user);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    return res.json(job);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
 app.post('/api/jobs/:id/rerun', async (req, res) => {
   try {
     const job = await rerunJob(req.params.id, req.user);
@@ -218,9 +238,21 @@ app.post('/api/jobs/:id/rerun', async (req, res) => {
   }
 });
 
+app.delete('/api/jobs/:id/files/:name', async (req, res) => {
+  try {
+    const job = await deleteJobFile(req.params.id, req.params.name, req.user);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    return res.json(job);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
 app.delete('/api/jobs/:id', async (req, res) => {
   try {
-    const deleted = await deleteJob(req.params.id);
+    const deleted = await deleteJob(req.params.id, req.user);
     if (!deleted) {
       return res.status(404).json({ error: 'Job not found' });
     }

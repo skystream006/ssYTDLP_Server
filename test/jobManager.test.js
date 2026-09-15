@@ -179,34 +179,47 @@ test('jobManager queues jobs around a maintenance update', {
   });
 });
 
-test('rerunning overwrites a finished job while preserving its ID', async (t) => {
+async function assertRerunPreservesOutput(t, isPlaylist) {
   const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-rerun-'));
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
   process.env.YTDLP_PATH = process.execPath;
   process.env.JOB_STORE_PATH = path.join(outputRoot, 'jobs.json');
 
   const jobManager = await import(`../src/jobManager.js?rerun=${Date.now()}`);
-  const job = await jobManager.createJob('https://music.youtube.com/watch?v=abc', {
+  const url = isPlaylist ? 'https://music.youtube.com/playlist?list=abc' : 'https://music.youtube.com/watch?v=abc';
+  const job = await jobManager.createJob(url, {
     id: 'alice-id', name: 'Alice', role: 'admin'
   });
   assert.deepEqual(job.initiatedBy, { id: 'alice-id', name: 'Alice' });
   await waitForJobToFinish(job);
   const firstOutputDir = job.outputDir;
+  const firstFolderName = job.folderName;
   await fs.writeFile(path.join(firstOutputDir, 'old-output.mp3'), 'old');
+  const archivePath = path.join(firstOutputDir, '.download-archive.txt');
+  await fs.writeFile(archivePath, 'youtube abc\n');
+  job.files = ['old-output.mp3'];
   job.playlistSongCount = 99;
   writeJob(openDatabase(), job);
 
-  const rerun = await jobManager.rerunJob(job.id, { id: 'bob-id', name: 'Bob' });
+  await assert.rejects(jobManager.rerunJob(job.id, { id: 'bob-id', role: 'user' }), { statusCode: 403 });
+  const rerun = await jobManager.rerunJob(job.id, { id: 'bob-id', name: 'Bob', role: 'admin' });
 
   assert.equal(rerun.playlistSongCount, null);
-  assert.deepEqual(rerun.initiatedBy, { id: 'bob-id', name: 'Bob' });
+  assert.deepEqual(rerun.initiatedBy, { id: 'alice-id', name: 'Alice' });
   assert.equal(rerun.id, job.id);
   assert.notEqual(rerun, job);
   assert.equal(jobManager.getJob(job.id), rerun);
-  await assert.rejects(fs.access(firstOutputDir));
+  assert.equal(rerun.outputDir, firstOutputDir);
+  assert.equal(rerun.folderName, firstFolderName);
+  assert.deepEqual(rerun.files, ['old-output.mp3']);
   assert.equal(await jobManager.rerunJob('missing-job'), null);
 
   await waitForJobToFinish(rerun);
+  assert.equal(await fs.readFile(path.join(firstOutputDir, 'old-output.mp3'), 'utf8'), 'old');
+  assert.equal(await fs.readFile(archivePath, 'utf8'), 'youtube abc\n');
+  assert.deepEqual(rerun.files, ['old-output.mp3']);
+  assert.match(rerun.command, /--no-overwrites/);
+  assert.ok(rerun.command.includes(`--download-archive ${archivePath.includes(' ') ? `"${archivePath}"` : archivePath}`));
   assert.match(rerun.command, /--ffmpeg-location/);
   assert.match(rerun.output, /^\[stderr\]/);
   assert.match(rerun.output, /bad option/);
@@ -214,7 +227,13 @@ test('rerunning overwrites a finished job while preserving its ID', async (t) =>
   t.after(async () => {
     await fs.rm(outputRoot, { recursive: true, force: true });
   });
-});
+}
+
+test('song reruns preserve the job folder, songs and download archive', (testContext) =>
+  assertRerunPreservesOutput(testContext, false));
+
+test('playlist reruns preserve the job folder, songs and download archive', (testContext) =>
+  assertRerunPreservesOutput(testContext, true));
 
 test('deleting a finished job removes its record and output', async (t) => {
   const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-delete-'));
@@ -227,7 +246,9 @@ test('deleting a finished job removes its record and output', async (t) => {
   await waitForJobToFinish(job);
   const jobOutputDir = job.outputDir;
 
-  assert.equal(await jobManager.deleteJob(job.id), true);
+  await assert.rejects(jobManager.deleteJob(job.id), { statusCode: 403 });
+  await assert.rejects(jobManager.deleteJob(job.id, { id: 'other', role: 'user' }), { statusCode: 403 });
+  assert.equal(await jobManager.deleteJob(job.id, { id: 'admin', role: 'admin' }), true);
   assert.equal(jobManager.getJob(job.id), undefined);
   await assert.rejects(fs.access(jobOutputDir));
   assert.equal(await jobManager.deleteJob('missing-job'), false);
@@ -235,6 +256,88 @@ test('deleting a finished job removes its record and output', async (t) => {
   t.after(async () => {
     await fs.rm(outputRoot, { recursive: true, force: true });
   });
+});
+
+test('individual song removal enforces ownership, validates paths and preserves the archive', async (testContext) => {
+  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-song-delete-'));
+  testContext.after(() => fs.rm(outputRoot, { recursive: true, force: true }));
+  process.env.YTDLP_OUTPUT_ROOT = outputRoot;
+  process.env.YTDLP_PATH = process.execPath;
+  const manager = await import(`../src/jobManager.js?song-delete=${Date.now()}`);
+  const owner = { id: 'owner', name: 'Owner', role: 'user' };
+  const admin = { id: 'admin', role: 'admin' };
+  const job = await manager.createJob('https://music.youtube.com/watch?v=songs', owner);
+  await waitForJobToFinish(job);
+  const songName = 'Song 100% #1.mp3';
+  const archivePath = path.join(job.outputDir, '.download-archive.txt');
+  await fs.writeFile(archivePath, 'youtube first\nyoutube second\n');
+  await fs.writeFile(path.join(job.outputDir, songName), 'first');
+  await fs.writeFile(path.join(job.outputDir, 'second.mp3'), 'second');
+  job.files = [songName, 'second.mp3', 'missing.mp3'];
+  writeJob(openDatabase(), job);
+
+  for (const user of [null, { id: 'stranger', role: 'user' }]) {
+    await assert.rejects(manager.deleteJobFile(job.id, songName, user), { statusCode: 403 });
+    await assert.rejects(manager.deleteJob(job.id, user), { statusCode: 403 });
+    await assert.rejects(manager.rerunJob(job.id, user), { statusCode: 403 });
+  }
+  assert.equal(await fs.readFile(path.join(job.outputDir, songName), 'utf8'), 'first');
+  for (const status of ['queued', 'running']) {
+    writeJob(openDatabase(), { ...job, status });
+    for (const user of [owner, admin]) {
+      await assert.rejects(manager.deleteJobFile(job.id, songName, user), { statusCode: 409 });
+      await assert.rejects(manager.deleteJob(job.id, user), { statusCode: 409 });
+      await assert.rejects(manager.rerunJob(job.id, user), { statusCode: 409 });
+      await assert.rejects(manager.setJobContributors(job.id, [], user), { statusCode: 409 });
+    }
+  }
+  writeJob(openDatabase(), job);
+  for (const name of ['../outside.mp3', '..\\outside.mp3', '/outside.mp3', 'song.mp3:stream', '.download-archive.txt', '', '\0']) {
+    await assert.rejects(manager.deleteJobFile(job.id, name, owner), { statusCode: 400 });
+  }
+  await assert.rejects(manager.deleteJobFile(job.id, 'unknown.mp3', owner), { statusCode: 404 });
+  assert.equal(await manager.deleteJobFile('unknown', songName, owner), null);
+
+  const removal = manager.deleteJobFile(job.id, songName, owner);
+  await assert.rejects(manager.setJobContributors(job.id, [], owner), { statusCode: 409 });
+  await assert.rejects(manager.rerunJob(job.id, owner), { statusCode: 409 });
+  await assert.rejects(manager.deleteJob(job.id, admin), { statusCode: 409 });
+  const updated = await removal;
+  assert.deepEqual(updated.files, ['second.mp3', 'missing.mp3']);
+  assert.deepEqual(updated.initiatedBy, { id: owner.id, name: owner.name });
+  await assert.rejects(fs.access(path.join(job.outputDir, songName)));
+  assert.equal(await fs.readFile(path.join(job.outputDir, 'second.mp3'), 'utf8'), 'second');
+  await manager.deleteJobFile(job.id, 'second.mp3', admin);
+  await manager.deleteJobFile(job.id, 'missing.mp3', owner);
+  assert.deepEqual(manager.getJob(job.id).files, []);
+  assert.equal(await fs.readFile(archivePath, 'utf8'), 'youtube first\nyoutube second\n');
+
+  const rerun = await manager.rerunJob(job.id, owner);
+  await waitForJobToFinish(rerun);
+  assert.deepEqual(manager.getJob(job.id).files, []);
+  assert.equal(await manager.deleteJob(job.id, owner), true);
+});
+
+test('legacy folders shared with another owner require an administrator to modify', async (testContext) => {
+  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-shared-'));
+  testContext.after(() => fs.rm(outputRoot, { recursive: true, force: true }));
+  process.env.YTDLP_OUTPUT_ROOT = outputRoot;
+  const manager = await import(`../src/jobManager.js?shared=${Date.now()}`);
+  const folder = path.join(outputRoot, 'shared');
+  await fs.mkdir(folder);
+  await fs.writeFile(path.join(folder, 'song.mp3'), 'song');
+  const job = {
+    id: 'shared-one', url: 'https://music.youtube.com/watch?v=one', status: 'completed',
+    outputDir: folder, files: ['song.mp3'], initiatedBy: { id: 'owner' }, createdAt: new Date().toISOString()
+  };
+  writeJob(openDatabase(), job);
+  writeJob(openDatabase(), { ...job, id: 'shared-two', url: 'https://music.youtube.com/watch?v=two', initiatedBy: { id: 'other' } });
+  const owner = { id: 'owner', role: 'user' };
+  await assert.rejects(manager.rerunJob(job.id, owner), { statusCode: 403 });
+  await assert.rejects(manager.deleteJob(job.id, owner), { statusCode: 403 });
+  await assert.rejects(manager.deleteJobFile(job.id, 'song.mp3', owner), { statusCode: 403 });
+  await manager.deleteJobFile(job.id, 'song.mp3', { id: 'admin', role: 'admin' });
+  await assert.rejects(fs.access(path.join(folder, 'song.mp3')));
 });
 
 test('job history is restored after a manager restart', async (t) => {

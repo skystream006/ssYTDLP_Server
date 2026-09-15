@@ -191,6 +191,18 @@ function formatDate(value) {
   }).format(new Date(value));
 }
 
+function canManageJob(user, job) {
+  return Boolean(user && job && (user.role === 'admin' || user.id === job.initiatedBy?.id));
+}
+
+function isContributor(user, job) {
+  return Boolean(user?.id && job?.contributors?.some((contributor) => contributor.id === user.id));
+}
+
+function canModifyJob(user, job) {
+  return canManageJob(user, job) || isContributor(user, job);
+}
+
 function JobsPage() {
   const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
@@ -200,12 +212,13 @@ function JobsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [jobAction, setJobAction] = useState(null);
   const [actionError, setActionError] = useState('');
-  const [userFilter, setUserFilter] = useState(user.id);
+  const [userFilter, setUserFilter] = useState('mine');
 
   async function runJobAction(job, action) {
-    if (jobAction || job.status === 'queued' || job.status === 'running') return;
+    if (!canModifyJob(user, job) || jobAction || job.status === 'queued' || job.status === 'running') return;
+    if (action === 'delete' && !canManageJob(user, job)) return;
     const message = action === 'rerun'
-      ? `Rerun ${job.folderName || job.id}? Its existing downloaded files will be replaced.`
+      ? `Rerun ${job.folderName || job.id}? Keep existing songs and download missing ones?`
       : `Delete ${job.folderName || job.id} and all of its downloaded files?`;
     if (!await confirm({ title: action === 'rerun' ? 'Rerun job?' : 'Delete job?', message, action })) return;
 
@@ -242,13 +255,19 @@ function JobsPage() {
         if (error.code !== 'JOB_ALREADY_EXISTS' || !error.existingJob) throw error;
         const previous = error.existingJob;
         const detailsUrl = `/job/${encodeURIComponent(previous.id)}`;
+        if (!canModifyJob(user, previous)) {
+          if (await confirm({ title: 'Job already exists', message: 'This URL already has a job owned by another user. Open its details?', action: 'open' })) {
+            window.location.assign(detailsUrl);
+          }
+          return;
+        }
         if (previous.status === 'queued' || previous.status === 'running') {
           if (await confirm({ title: 'Job already active', message: 'This URL already has an active job. Open its details?', action: 'open' })) {
             window.location.assign(detailsUrl);
           }
           return;
         }
-        if (!await confirm({ title: 'Job already exists', message: `This URL was used in job ${previous.folderName || previous.id}. Rerun it? Its existing downloaded files will be replaced.`, action: 'rerun' })) {
+        if (!await confirm({ title: 'Job already exists', message: `This URL was used in job ${previous.folderName || previous.id}. Rerun it, keeping existing songs and downloading missing ones?`, action: 'rerun' })) {
           return;
         }
         const reranJob = await request(`/api/jobs/${encodeURIComponent(previous.id)}/rerun`, { method: 'POST' });
@@ -271,7 +290,9 @@ function JobsPage() {
   }
   const userOptions = [...initiators].sort((left, right) => left[1].localeCompare(right[1]));
   const filteredJobs = (jobs || []).filter((job) => (
-    userFilter === 'all' || (job.initiatedBy?.id || 'unknown') === userFilter
+    userFilter === 'all' || (userFilter === 'mine'
+      ? job.initiatedBy?.id === user.id || isContributor(user, job)
+      : (job.initiatedBy?.id || 'unknown') === userFilter)
   ));
   const counts = filteredJobs.reduce((result, job) => {
     result[job.status] = (result[job.status] || 0) + 1;
@@ -326,11 +347,12 @@ function JobsPage() {
           <span className="refresh-note"><RefreshCw size={13} /> Refreshes every 5 seconds</span>
         </div>
         <div className="jobs-filters">
-          <label htmlFor="job-user-filter"><Users size={16} />Initiated by</label>
+          <label htmlFor="job-user-filter"><Users size={16} />Jobs</label>
           <select id="job-user-filter" value={userFilter} onChange={(event) => setUserFilter(event.target.value)}>
+            <option value="mine">My jobs (owned and contributing)</option>
             <option value="all">All users</option>
-            {userOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-            {userFilter !== 'all' && !initiators.has(userFilter) && <option value={userFilter}>Selected user (no jobs)</option>}
+            {userOptions.map(([id, name]) => <option key={id} value={id}>Initiated by {name}</option>)}
+            {!['all', 'mine'].includes(userFilter) && !initiators.has(userFilter) && <option value={userFilter}>Selected user (no jobs)</option>}
           </select>
         </div>
         {loadError && <div className="notice error"><CircleAlert size={16} />{loadError}</div>}
@@ -339,7 +361,7 @@ function JobsPage() {
           <div className="empty-state"><Disc3 size={34} /><h3>No downloads yet</h3><p>Your first job will appear here.</p></div>
         )}
         {jobs?.length > 0 && filteredJobs.length === 0 && (
-          <div className="empty-state"><Users size={34} /><h3>No jobs for this user</h3></div>
+          <div className="empty-state"><Users size={34} /><h3>No matching jobs</h3></div>
         )}
         {filteredJobs.length > 0 && (
           <div className="table-wrap">
@@ -356,12 +378,14 @@ function JobsPage() {
                   <td><span className="job-initiator">{job.initiatedBy?.name || 'Unknown'}</span></td>
                   <td><div className="job-row-actions">
                     <a className="icon-link" href={`/job/${job.id}`} aria-label={`Open job ${job.id}`} title="Open job"><ExternalLink size={17} /></a>
+                    {canModifyJob(user, job) && <>
                     <button className="icon-link" type="button" title="Rerun job" aria-label={`Rerun job ${job.id}`} disabled={Boolean(jobAction) || job.status === 'queued' || job.status === 'running'} onClick={() => runJobAction(job, 'rerun')}>
                       {jobAction?.id === job.id && jobAction.action === 'rerun' ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
                     </button>
-                    <button className="icon-link row-delete" type="button" title="Delete job" aria-label={`Delete job ${job.id}`} disabled={Boolean(jobAction) || job.status === 'queued' || job.status === 'running'} onClick={() => runJobAction(job, 'delete')}>
+                    {canManageJob(user, job) && <button className="icon-link row-delete" type="button" title="Delete job" aria-label={`Delete job ${job.id}`} disabled={Boolean(jobAction) || job.status === 'queued' || job.status === 'running'} onClick={() => runJobAction(job, 'delete')}>
                       {jobAction?.id === job.id && jobAction.action === 'delete' ? <RefreshCw className="spin" size={17} /> : <Trash2 size={17} />}
-                    </button>
+                    </button>}
+                    </>}
                   </div></td>
                 </tr>
               ))}</tbody>
@@ -373,22 +397,98 @@ function JobsPage() {
   );
 }
 
+function ContributorDialog({ job, onClose, onSaved }) {
+  const dialogRef = useRef(null);
+  const titleId = useId();
+  const [users, setUsers] = useState(null);
+  const [selected, setSelected] = useState((job.contributors || []).map((contributor) => contributor.id));
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    request(`/api/jobs/${encodeURIComponent(job.id)}/contributors/users`).then((result) => {
+      if (!active) return;
+      setUsers(result.users);
+      setSelected((current) => current.filter((id) => result.users.some((candidate) => candidate.id === id)));
+    }).catch((requestError) => { if (active) setError(requestError.message); });
+    return () => {
+      active = false;
+      dialog.close();
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [job.id]);
+
+  async function save(event) {
+    event.preventDefault();
+    if (saving || !users) return;
+    setSaving(true);
+    setError('');
+    try {
+      await request(`/api/jobs/${encodeURIComponent(job.id)}/contributors`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userIds: selected })
+      });
+      onSaved();
+    } catch (requestError) {
+      setError(requestError.message);
+      setSaving(false);
+    }
+  }
+
+  return <dialog ref={dialogRef} className="confirmation-dialog contributor-dialog" aria-labelledby={titleId}
+    onCancel={(event) => { event.preventDefault(); if (!saving) onClose(); }}>
+    <form onSubmit={save}>
+      <h2 id={titleId}>Contributors</h2>
+      {error && <div className="notice error" role="alert">{error}</div>}
+      {!users && !error && <p role="status">Loading users...</p>}
+      {users?.length === 0 && <p>No available users.</p>}
+      {users && <fieldset className="contributor-options" disabled={saving}>
+        <legend>Available users</legend>
+        {users.map((candidate) => <label key={candidate.id}>
+          <input type="checkbox" checked={selected.includes(candidate.id)} onChange={(event) => {
+            setSelected((current) => event.target.checked ? [...current, candidate.id] : current.filter((id) => id !== candidate.id));
+          }} />
+          <span>{candidate.name}</span>
+        </label>)}
+      </fieldset>}
+      <div className="dialog-actions">
+        <button className="secondary-button" type="button" disabled={saving} onClick={onClose}>Cancel</button>
+        <button className="primary-button" type="submit" disabled={saving || !users}>
+          {saving ? <RefreshCw className="spin" size={17} /> : <Check size={17} />}{saving ? 'Saving' : 'Save contributors'}
+        </button>
+      </div>
+    </form>
+  </dialog>;
+}
+
 function JobPage({ id }) {
+  const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
+  const [fileRevision, setFileRevision] = useState(0);
   const loadJob = () => Promise.all([
     request(`/api/jobs/${id}`),
     request(`/api/jobs/${id}/files`).catch(() => null)
   ]);
-  const { data, error } = usePolling(loadJob, POLL_INTERVAL, id);
+  const { data, error } = usePolling(loadJob, POLL_INTERVAL, `${id}:${fileRevision}`);
   const [rerunning, setRerunning] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [deletingFile, setDeletingFile] = useState(null);
+  const [editingContributors, setEditingContributors] = useState(false);
   const [actionError, setActionError] = useState('');
   const job = data?.[0];
   const files = data?.[1]?.files || [];
   const isActive = job?.status === 'queued' || job?.status === 'running';
+  const canModify = canModifyJob(user, job);
+  const canManage = canManageJob(user, job);
+  const mutationDisabled = !canModify || isActive || rerunning || deleting || deletingFile !== null || editingContributors;
 
   async function rerun() {
-    if (!await confirm({ title: 'Rerun job?', message: `Rerun ${job.folderName || job.id}? Its existing downloaded files will be replaced.`, action: 'rerun' })) return;
+    if (mutationDisabled) return;
+    if (!await confirm({ title: 'Rerun job?', message: `Rerun ${job.folderName || job.id}? Keep existing songs and download missing ones?`, action: 'rerun' })) return;
     setRerunning(true);
     setActionError('');
     try {
@@ -401,6 +501,7 @@ function JobPage({ id }) {
   }
 
   async function remove() {
+    if (!canManage || mutationDisabled) return;
     if (!await confirm({ title: 'Delete job?', message: 'Delete this job and all of its downloaded files?', action: 'delete' })) {
       return;
     }
@@ -416,10 +517,29 @@ function JobPage({ id }) {
     }
   }
 
+  async function removeFile(file) {
+    if (mutationDisabled) return;
+    if (!await confirm({ title: 'Delete song?', message: `Delete ${file.name} from this job?`, action: 'delete', label: 'Delete song' })) return;
+    setDeletingFile(file.name);
+    setActionError('');
+    try {
+      await request(`/api/jobs/${encodeURIComponent(id)}/files/${encodeURIComponent(file.name)}`, { method: 'DELETE' });
+      setFileRevision((revision) => revision + 1);
+    } catch (requestError) {
+      setActionError(requestError.message);
+    } finally {
+      setDeletingFile(null);
+    }
+  }
+
   return (
     <AppShell>
       {dialog}
       <a className="back-link" href="/"><ArrowLeft size={17} /> Back to jobs</a>
+      {editingContributors && <ContributorDialog job={job} onClose={() => setEditingContributors(false)} onSaved={() => {
+        setEditingContributors(false);
+        setFileRevision((revision) => revision + 1);
+      }} />}
       {error && <div className="notice error page-notice"><CircleAlert size={16} />{error}</div>}
       {!job && !error && <div className="loading"><RefreshCw className="spin" /> Loading job</div>}
       {job && <>
@@ -431,14 +551,16 @@ function JobPage({ id }) {
           </div>
           <div className="detail-actions">
             <div className="record-art"><Disc3 size={70} strokeWidth={1.2} /></div>
-            <button className="primary-button job-action-button" disabled={isActive || rerunning || deleting} onClick={rerun} type="button">
+            {canModify && <>
+            <button className="primary-button job-action-button" disabled={mutationDisabled} onClick={rerun} type="button">
               {rerunning ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
               {rerunning ? 'Starting' : 'Rerun job'}
             </button>
-            <button className="danger-button job-action-button" disabled={isActive || rerunning || deleting} onClick={remove} type="button">
+            {canManage && <button className="danger-button job-action-button" disabled={mutationDisabled} onClick={remove} type="button">
               {deleting ? <RefreshCw className="spin" size={17} /> : <Trash2 size={17} />}
               {deleting ? 'Deleting' : 'Delete job'}
-            </button>
+            </button>}
+            </>}
           </div>
         </section>
         {actionError && <div className="notice error page-notice"><CircleAlert size={16} />{actionError}</div>}
@@ -449,6 +571,10 @@ function JobPage({ id }) {
               <dt>Source URL</dt><dd><a href={job.url} target="_blank" rel="noreferrer">{job.url}<ExternalLink size={14} /></a></dd>
               <dt>Job ID</dt><dd><code>{job.id}</code></dd>
               <dt>Initiated by</dt><dd>{job.initiatedBy?.name || 'Unknown'}</dd>
+              <dt>Contributors</dt><dd className="job-contributors">
+                <span>{job.contributors?.map((contributor) => contributor.name).join(', ') || 'None'}</span>
+                {canManage && <button className="icon-link" type="button" title="Manage contributors" aria-label="Manage contributors" disabled={mutationDisabled} onClick={() => setEditingContributors(true)}><Users size={17} /></button>}
+              </dd>
               <dt>Downloaded files</dt><dd>{data?.[1] ? files.length : 'Not available'}</dd>
               {job.isPlaylist && <><dt>Playlist songs</dt><dd>{job.playlistSongCount ?? 'Not available'}</dd></>}
               <dt>Output folder</dt><dd><code>{job.folderName || 'Pending'}</code></dd>
@@ -468,7 +594,16 @@ function JobPage({ id }) {
             </div>
             {files.length === 0 ? <div className="empty-files"><FileAudio size={29} /><p>No downloadable files yet.</p></div> : (
               <ul className="file-list">{files.map((file) => (
-                <li key={file.name}><span className="file-icon"><FileAudio size={19} /></span><div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div><a href={file.downloadUrl} aria-label={`Download ${file.name}`}><ArrowDownToLine size={18} /></a></li>
+                <li key={file.name}>
+                  <span className="file-icon"><FileAudio size={19} /></span>
+                  <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div>
+                  <div className="file-row-actions">
+                    <a href={file.downloadUrl} aria-label={`Download ${file.name}`} title="Download song"><ArrowDownToLine size={18} /></a>
+                    {canModify && <button className="icon-link" type="button" title="Delete song" aria-label={`Delete song ${file.name}`} disabled={mutationDisabled} onClick={() => removeFile(file)}>
+                      {deletingFile === file.name ? <RefreshCw className="spin" size={18} /> : <Trash2 size={18} />}
+                    </button>}
+                  </div>
+                </li>
               ))}</ul>
             )}
           </section>

@@ -2,13 +2,25 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { parseArgs } from 'node:util';
 import { createJob, getFilePath, getJob, getJobs, isFileInsideJobFolder } from './jobManager.js';
 import { getSystemHealth } from './health.js';
 import { isYouTubeMusicUrl } from './utils.js';
 import { scheduleDailyMaintenance } from './scheduler.js';
 
 const app = express();
-const port = Number(process.env.PORT || 3000);
+const { values: options, positionals } = parseArgs({
+  options: {
+    port: { type: 'string', short: 'p' }
+  },
+  allowPositionals: true
+});
+const port = Number(options.port || positionals[0] || process.env.PORT || 3000);
+
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  throw new Error('Port must be an integer between 1 and 65535');
+}
+
 const apiLimiter = rateLimit({
   windowMs: 60_000,
   limit: 120,
@@ -17,7 +29,7 @@ const apiLimiter = rateLimit({
 });
 
 app.use(express.json());
-app.use(apiLimiter);
+app.use('/api', apiLimiter);
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 
 app.get('/api/jobs', (_req, res) => {
@@ -105,11 +117,11 @@ app.get('/api/health', async (_req, res) => {
 });
 
 app.get('/health', (_req, res) => {
-  res.sendFile(path.resolve(process.cwd(), 'public', 'health.html'));
+  res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 
 app.get('/job/:id', (_req, res) => {
-  res.sendFile(path.resolve(process.cwd(), 'public', 'job.html'));
+  res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 
 app.listen(port, () => {

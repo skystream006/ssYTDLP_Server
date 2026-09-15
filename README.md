@@ -15,6 +15,17 @@ npm run setup:ytdlp
 npm start
 ```
 
+`npm start` builds the React frontend and starts the API at `http://localhost:3000`.
+For frontend development, run `npm run dev` while the API server is running on port 3000.
+To use another port, pass it after `--`:
+
+```bash
+npm start -- 4000
+```
+
+The `PORT` environment variable and direct `node src/server.js --port 4000` syntax
+are also supported.
+
 By default, the server expects Deno at `runtime/deno/bin/deno`.
 You can override this with `DENO_PATH=/absolute/path/to/deno`.
 It expects yt-dlp at `runtime/yt-dlp/yt-dlp.exe`; override this with

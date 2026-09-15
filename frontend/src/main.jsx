@@ -14,12 +14,14 @@ import {
   FileAudio,
   Fingerprint,
   HardDrive,
+  Info,
   KeyRound,
   ListMusic,
   LogOut,
   MemoryStick,
   Music2,
   Network,
+  Play,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -27,12 +29,15 @@ import {
   Settings,
   ShieldCheck,
   Trash2,
+  Mic,
   UserCheck,
   Users,
   UserX,
   X
 } from 'lucide-react';
 import './styles.css';
+import MusicPlayer from './MusicPlayer.jsx';
+import { transcriptionLanguages } from '../../src/transcriptionLanguages.js';
 
 const POLL_INTERVAL = 5000;
 const AuthContext = createContext(null);
@@ -465,6 +470,87 @@ function ContributorDialog({ job, onClose, onSaved }) {
   </dialog>;
 }
 
+function TranscriptionDialog({ jobId, file, onClose, onSaved }) {
+  const dialogRef = useRef(null);
+  const titleId = useId();
+  const [addLyrics, setAddLyrics] = useState(false);
+  const [language, setLanguage] = useState('');
+  const [lyrics, setLyrics] = useState('');
+  const [mode, setMode] = useState('prompt');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const modes = [
+    ['prompt', 'Prompt', 'Biases recognition toward known words.'],
+    ['align', 'Align', 'Maps authoritative lyric lines onto ASR timing.'],
+    ['correct', 'Correct', 'Replaces recognized text while preserving ASR segment timing.']
+  ];
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    return () => {
+      dialog.close();
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, []);
+
+  async function submit(event) {
+    event.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      await request(`/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(file.name)}/transcribe`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...(addLyrics ? { lyrics: lyrics.trim(), lyrics_mode: mode } : {}),
+          ...(language ? { language } : {})
+        })
+      });
+      onSaved();
+    } catch (requestError) {
+      setError(requestError.message);
+      setSubmitting(false);
+    }
+  }
+
+  return <dialog ref={dialogRef} className={`confirmation-dialog transcription-dialog${addLyrics ? ' transcription-dialog-expanded' : ''}`} aria-labelledby={titleId}
+    onCancel={(event) => { event.preventDefault(); if (!submitting) onClose(); }}>
+    <form onSubmit={submit}>
+      <h2 id={titleId}>Transcribe song</h2>
+      <p className="transcription-file"><FileAudio size={22} /><span>{file.name}<small>{formatBytes(file.sizeBytes)}</small></span></p>
+      <fieldset disabled={submitting} className="transcription-fields">
+        <label className="transcription-language" htmlFor={`${titleId}-language`}>Language (optional)
+          <select id={`${titleId}-language`} value={language} onChange={(event) => setLanguage(event.target.value)}>
+            <option value="">Auto-detect</option>
+            {transcriptionLanguages.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
+          </select>
+        </label>
+        <label className="lyrics-toggle"><input type="checkbox" checked={addLyrics} onChange={(event) => setAddLyrics(event.target.checked)} />Add lyrics</label>
+        {addLyrics && <>
+          <fieldset className="lyrics-mode-options"><legend>Lyrics mode</legend>
+            {modes.map(([value, label, description]) => <div className="lyrics-mode-option" key={value}>
+              <label><input type="radio" name="lyrics-mode" value={value} checked={mode === value} required onChange={() => setMode(value)} />{label}</label>
+              <span className="info-helper"><button type="button" aria-label={`About ${label}`} aria-describedby={`${titleId}-${value}`}><Info size={16} /></button>
+                <span role="tooltip" id={`${titleId}-${value}`}>{description}</span>
+              </span>
+            </div>)}
+          </fieldset>
+          <label className="lyrics-input-label" htmlFor={`${titleId}-lyrics`}>Lyrics</label>
+          <textarea id={`${titleId}-lyrics`} value={lyrics} onChange={(event) => setLyrics(event.target.value)} required maxLength={100000} rows={8} />
+        </>}
+      </fieldset>
+      {error && <div className="notice error" role="alert">{error}</div>}
+      {submitting && <p className="transcription-pending" role="status"><RefreshCw className="spin" size={17} />Transcribing song...</p>}
+      <div className="dialog-actions">
+        <button className="secondary-button" type="button" disabled={submitting} onClick={onClose}>Cancel</button>
+        <button className="primary-button" type="submit" disabled={submitting || (addLyrics && !lyrics.trim())}><Mic size={17} />{submitting ? 'Submitting' : 'Submit'}</button>
+      </div>
+    </form>
+  </dialog>;
+}
+
 function JobPage({ id }) {
   const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
@@ -478,13 +564,16 @@ function JobPage({ id }) {
   const [deleting, setDeleting] = useState(false);
   const [deletingFile, setDeletingFile] = useState(null);
   const [editingContributors, setEditingContributors] = useState(false);
+  const [transcribingFile, setTranscribingFile] = useState(null);
+  const [transcriptionNotice, setTranscriptionNotice] = useState('');
   const [actionError, setActionError] = useState('');
   const job = data?.[0];
   const files = data?.[1]?.files || [];
+  const firstSong = files.find((file) => file.isSong);
   const isActive = job?.status === 'queued' || job?.status === 'running';
   const canModify = canModifyJob(user, job);
   const canManage = canManageJob(user, job);
-  const mutationDisabled = !canModify || isActive || rerunning || deleting || deletingFile !== null || editingContributors;
+  const mutationDisabled = !canModify || isActive || rerunning || deleting || deletingFile !== null || editingContributors || transcribingFile !== null;
 
   async function rerun() {
     if (mutationDisabled) return;
@@ -536,6 +625,11 @@ function JobPage({ id }) {
     <AppShell>
       {dialog}
       <a className="back-link" href="/"><ArrowLeft size={17} /> Back to jobs</a>
+      {transcribingFile && <TranscriptionDialog jobId={id} file={transcribingFile} onClose={() => setTranscribingFile(null)} onSaved={() => {
+        setTranscriptionNotice(`Transcription complete: ${transcribingFile.name}`);
+        setTranscribingFile(null);
+        setFileRevision((revision) => revision + 1);
+      }} />}
       {editingContributors && <ContributorDialog job={job} onClose={() => setEditingContributors(false)} onSaved={() => {
         setEditingContributors(false);
         setFileRevision((revision) => revision + 1);
@@ -564,6 +658,7 @@ function JobPage({ id }) {
           </div>
         </section>
         {actionError && <div className="notice error page-notice"><CircleAlert size={16} />{actionError}</div>}
+        {transcriptionNotice && <div className="notice success page-notice" role="status"><Check size={16} />{transcriptionNotice}</div>}
         <div className="detail-grid">
           <section className="info-panel">
             <div className="section-title"><div><span>01</span><h2>Job details</h2></div></div>
@@ -586,7 +681,9 @@ function JobPage({ id }) {
           </section>
           <section className="files-panel">
             <div className="section-title">
-              <div><span>02</span><h2>Files</h2></div>
+              <div><span>02</span><h2>Files</h2>
+                {firstSong && <a className="icon-link files-play" href={`/job/${encodeURIComponent(id)}/player?${new URLSearchParams({ song: firstSong.name, play: '1' })}`} aria-label="Play all songs" title="Play all songs"><Play size={17} /></a>}
+              </div>
               <div className="files-actions">
                 <strong>{files.length}</strong>
                 {files.length > 0 && <a className="download-all" href={`/api/jobs/${id}/download-all`}><ArrowDownToLine size={16} />Download all</a>}
@@ -595,9 +692,15 @@ function JobPage({ id }) {
             {files.length === 0 ? <div className="empty-files"><FileAudio size={29} /><p>No downloadable files yet.</p></div> : (
               <ul className="file-list">{files.map((file) => (
                 <li key={file.name}>
-                  <span className="file-icon"><FileAudio size={19} /></span>
-                  <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div>
+                  {file.isSong ? <a className="song-file-link" href={`/job/${encodeURIComponent(id)}/player?${new URLSearchParams({ song: file.name, play: '1' })}`} aria-label={`Play ${file.name}`} title="Play song">
+                    <span className="file-icon"><FileAudio size={19} /></span>
+                    <span><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></span>
+                  </a> : <>
+                    <span className="file-icon"><FileAudio size={19} /></span>
+                    <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div>
+                  </>}
                   <div className="file-row-actions">
+                    {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" title="Transcribe song" aria-label={`Transcribe ${file.name}`} disabled={mutationDisabled} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
                     <a href={file.downloadUrl} aria-label={`Download ${file.name}`} title="Download song"><ArrowDownToLine size={18} /></a>
                     {canModify && <button className="icon-link" type="button" title="Delete song" aria-label={`Delete song ${file.name}`} disabled={mutationDisabled} onClick={() => removeFile(file)}>
                       {deletingFile === file.name ? <RefreshCw className="spin" size={18} /> : <Trash2 size={18} />}
@@ -948,6 +1051,8 @@ function Router({ user }) {
   const userMatch = window.location.pathname.match(/^\/admin\/users\/([^/]+)\/?$/);
   if (userMatch && user.role === 'admin') return <UserSettingsPage userId={decodeURIComponent(userMatch[1])} />;
   if (window.location.pathname === '/settings') return <UserSettingsPage />;
+  const playerMatch = window.location.pathname.match(/^\/job\/([^/]+)\/player\/?$/);
+  if (playerMatch) return <AppShell><MusicPlayer id={decodeURIComponent(playerMatch[1])} request={request} /></AppShell>;
   const jobMatch = window.location.pathname.match(/^\/job\/([^/]+)\/?$/);
   if (jobMatch) return <JobPage id={decodeURIComponent(jobMatch[1])} />;
   if (window.location.pathname === '/health') return <HealthPage />;

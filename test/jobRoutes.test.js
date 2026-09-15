@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import NodeID3 from 'node-id3';
 import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
 
 test('job HTTP mutations enforce owner, contributor and admin access for sessions and PATs', { timeout: 30_000 }, async (context) => {
@@ -45,7 +46,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
 
   const outputRoot = path.join(directory, 'output');
   const songName = 'Song 100% #1.mp3';
-  for (const id of ['owned', 'unowned', 'shared']) {
+  for (const id of ['owned', 'unowned', 'shared', 'music']) {
     const outputDir = path.join(outputRoot, id);
     await fs.mkdir(outputDir, { recursive: true });
     await fs.writeFile(path.join(outputDir, songName), 'song');
@@ -58,6 +59,16 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
     });
   }
+  const musicDir = path.join(outputRoot, 'music');
+  await fs.mkdir(path.join(musicDir, '[NoVocals]'));
+  const taggedAudio = NodeID3.write({ title: 'A song', artist: 'An artist',
+    unsynchronisedLyrics: { language: 'eng', text: 'First line\nSecond line' },
+    synchronisedLyrics: [{ language: 'eng', timeStampFormat: 2, contentType: 1,
+      synchronisedText: [{ text: 'First line', timeStamp: 1000 }, { text: 'Second line', timeStamp: 2500 }] }]
+  }, Buffer.from('audio fixture'));
+  await fs.writeFile(path.join(musicDir, '[NoVocals]', songName), taggedAudio);
+  const musicJob = JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get('music').data);
+  writeJob(openDatabase(), { ...musicJob, files: [...musicJob.files, `[NoVocals]/${songName}`] });
   closeDatabases();
 
   const listeners = [net.createServer(), net.createServer()];
@@ -72,7 +83,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     cwd: directory,
     env: { ...process.env, YTDLP_OUTPUT_ROOT: outputRoot, YTDLP_PATH: process.execPath,
       HTTPS_KEY_PATH: '', HTTPS_CERT_PATH: '', PASSKEY_RP_ID: 'localhost',
-      PASSKEY_ORIGIN: `https://localhost:${httpsPort}`, TRUST_PROXY: '' },
+      PASSKEY_ORIGIN: `https://localhost:${httpsPort}`, TRUST_PROXY: '', TRANSCRIPTION_ENDPOINT: '' },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   await new Promise((resolve, reject) => {
@@ -98,6 +109,26 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     request.on('error', reject);
     request.end(body === undefined ? undefined : JSON.stringify(body));
   });
+  const encodedSong = encodeURIComponent(`[NoVocals]/${songName}`);
+  const streamRoute = `/api/jobs/music/stream/${encodedSong}`;
+  const lyricsRoute = `/api/jobs/music/lyrics/${encodedSong}`;
+  assert.equal((await call(streamRoute)).status, 401);
+  assert.equal((await call(lyricsRoute)).status, 401);
+  const streamed = await call(streamRoute, 'GET', { ...credentials.Other[0], Range: 'bytes=0-2' });
+  assert.equal(streamed.status, 206);
+  assert.equal(streamed.text, 'ID3');
+  const lyrics = await call(lyricsRoute, 'GET', credentials.Other[1]);
+  assert.equal(lyrics.status, 200);
+  assert.equal(lyrics.body.title, 'A song');
+  assert.equal(lyrics.body.uslt, 'First line\nSecond line');
+  assert.deepEqual(lyrics.body.sylt, [{ time: 1, text: 'First line' }, { time: 2.5, text: 'Second line' }]);
+  assert.equal((await call('/api/jobs/music/stream/..%2Foutside.mp3', 'GET', credentials.Owner[0])).status, 400);
+  assert.equal((await call(`/api/jobs/owned/download/${encodeURIComponent(songName)}`, 'GET', credentials.Other[0])).text, 'song');
+  const transcribeRoute = `/api/jobs/music/files/${encodedSong}/transcribe`;
+  assert.equal((await call(transcribeRoute, 'POST')).status, 401);
+  assert.equal((await call(transcribeRoute, 'POST', credentials.Other[1])).status, 403);
+  assert.equal((await call(transcribeRoute, 'POST', credentials.Owner[0], { lyrics: 'words', lyrics_mode: 'bad' })).status, 400);
+  assert.equal((await call(transcribeRoute, 'POST', credentials.Owner[1], {})).status, 503);
   const contributorRoute = '/api/jobs/shared/contributors';
   assert.equal((await call(`${contributorRoute}/users`)).status, 401);
   assert.equal((await call(contributorRoute, 'PUT', {}, { userIds: [] })).status, 401);

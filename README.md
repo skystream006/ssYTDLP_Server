@@ -155,6 +155,65 @@ Owners and administrators can manage contributors with:
     insufficient permissions return `403`, missing jobs return `404`, and active or
     busy jobs return `409`.
 
+## Transcription and music player
+
+Set `TRANSCRIPTION_ENDPOINT` in `.env` to the transcription service's complete URL,
+for example `http://localhost:4317/api/transcribe`, then restart the server.
+The server sends the selected audio from disk; the browser never uploads another copy
+or contacts the transcription service directly.
+
+In job details, select the microphone icon beside a song to open **Transcribe song**.
+Optionally choose a **Language** from the dropdown. **Auto-detect** leaves the
+language unspecified. A selection sends its short code as `language`, for example
+`"language": "vi"` for Vietnamese. Language selection works with or without lyrics;
+actual language support depends on the transcription service's selected backend.
+Optionally enable **Add lyrics**, enter the lyrics, and select exactly one mode:
+
+- **Prompt**: biases recognition toward known words.
+- **Align**: maps authoritative lyric lines onto ASR timing.
+- **Correct**: replaces recognized text while preserving ASR segment timing.
+
+The info icons show these descriptions on hover or keyboard focus. **Cancel** closes
+the dialog without sending anything. **Submit** waits for the result and refreshes
+the files. Owners, contributors, and administrators can transcribe idle jobs.
+Other modifications to that job are blocked while transcription is in progress.
+Once submitted, transcription cannot be cancelled from the dialog.
+
+`POST /api/jobs/:id/files/:name/transcribe` accepts JSON `{}` without lyrics or
+`{ "lyrics": "Known lyric lines", "lyrics_mode": "align" }` with lyrics. URL-encode
+the complete filename, including `[NoVocals]/` for accompaniment tracks. The server
+forwards a multipart POST containing `file`, plus `lyrics`, `lyrics_mode`, and
+`language` only when provided. Language codes must match an option in the dropdown.
+Lyrics must be nonempty and at most 100,000 characters; the existing
+128 KB JSON request limit also applies.
+
+The service must return audio in the original format, or a ZIP containing the exact
+original filename plus any accompaniment audio. The original song is replaced;
+other audio files are placed in the job's `[NoVocals]` folder and persisted in its
+file list. Non-audio ZIP entries are ignored. Invalid audio, unsafe or duplicate ZIP
+names, and archives missing the original song are rejected before replacement.
+Responses and expanded archives are limited to 512 MB, with at most 100 ZIP files.
+Transcription requests have a one-hour timeout, including the response download.
+Existing files are staged and restored if replacement or job persistence fails.
+Failed upstream requests leave the original files unchanged. There is no automatic
+retry, since a disconnected upstream service may still be processing the request.
+Reverse proxies must permit long-running requests for this route.
+
+Select a song's name or file icon to open `/job/:id/player` with that song selected.
+The queue includes original and `[NoVocals]` tracks, with search, previous/next,
+shuffle, repeat, and automatic next-track playback. Native audio controls provide
+play/pause, seeking, and volume. Some browsers require pressing play after navigation.
+Playback format support depends on the browser.
+
+The **SYLT** selector shows embedded synchronized MP3 lyrics with millisecond
+timestamps, highlights the current line, and allows seeking by selecting a line.
+**USLT** displays the embedded plain-text lyrics. Untagged songs remain playable.
+Title, artist, album and supported embedded cover artwork are read from MP3 tags.
+Streaming uses authenticated, byte-range-enabled `/api/jobs/:id/stream/:name`;
+metadata is available at `/api/jobs/:id/lyrics/:name`. All approved users can listen.
+Accompaniment files also support individual downloads, deletion, ZIP downloads,
+and are preserved across reruns.
+
 ## API URL submission
 
 Sign in with an approved user's passkey and open **User settings** using the gear button

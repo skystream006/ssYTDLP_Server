@@ -4,6 +4,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { isPlaylistUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
 import { openDatabase, writeJob } from './database.js';
+import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
 
 const jobs = new Map();
 const jobMutations = new Set();
@@ -178,10 +179,15 @@ const downloadArchiveName = '.download-archive.txt';
 async function listDownloadedFiles(folderPath) {
   try {
     const entries = await fs.readdir(folderPath, { withFileTypes: true });
-    return entries
+    const files = entries
       .filter((entry) => entry.isFile() && entry.name !== downloadArchiveName)
-      .map((entry) => entry.name)
-      .sort((a, b) => a.localeCompare(b));
+      .map((entry) => entry.name);
+    if (entries.some((entry) => entry.name === '[NoVocals]' && entry.isDirectory())) {
+      const accompaniment = await fs.readdir(path.join(folderPath, '[NoVocals]'), { withFileTypes: true });
+      files.push(...accompaniment.filter((entry) => entry.isFile() && isSongFile(entry.name))
+        .map((entry) => `[NoVocals]/${entry.name}`));
+    }
+    return files.sort((a, b) => a.localeCompare(b));
   } catch {
     return [];
   }
@@ -485,14 +491,52 @@ export async function deleteJob(id, user = null) {
   }
 }
 
+export function isValidJobFileName(fileName) {
+  if (typeof fileName !== 'string') return false;
+  const parts = fileName.split('/');
+  return (parts.length === 1 || (parts.length === 2 && parts[0] === '[NoVocals]'))
+    && parts.every((part) => part && part !== '.' && part !== '..' && !/[\\:\0]/.test(part))
+    && parts.at(-1) !== downloadArchiveName;
+}
+
+export async function transcribeJobFile(id, fileName, options, user = null) {
+  const job = getJob(id);
+  if (!job) return null;
+  assertCanModifyJob(job, user, true);
+  assertJobIsIdle(job, 'transcribe');
+  if (!isValidJobFileName(fileName) || !isSongFile(fileName)) {
+    throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
+  }
+  if (!job.outputDir || !job.files.includes(fileName)) {
+    throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+  }
+  validateTranscriptionOptions(options);
+  jobMutations.add(id);
+  try {
+    const filePath = getFilePath(job, fileName);
+    const realPath = await fs.realpath(filePath).catch(() => null);
+    const realFolder = await fs.realpath(job.outputDir);
+    if (!realPath || !(await fs.stat(realPath)).isFile()) {
+      throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+    }
+    if (!isFileInsideJobFolder({ outputDir: realFolder }, realPath)) {
+      throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
+    }
+    const results = await requestTranscription(filePath, options);
+    await replaceTranscribedFiles(job, fileName, results, persistJob);
+    return job;
+  } finally {
+    jobMutations.delete(id);
+  }
+}
+
 export async function deleteJobFile(id, fileName, user = null) {
   const job = getJob(id);
   if (!job) return null;
 
   assertCanModifyJob(job, user, true);
   assertJobIsIdle(job, 'remove files from');
-  if (typeof fileName !== 'string' || !fileName || /[\\/:\0]/.test(fileName)
-    || fileName !== path.basename(fileName) || fileName === downloadArchiveName) {
+  if (!isValidJobFileName(fileName)) {
     const error = new Error('Invalid file path');
     error.statusCode = 400;
     throw error;

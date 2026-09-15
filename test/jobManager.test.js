@@ -4,6 +4,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
+import http from 'node:http';
+import AdmZip from 'adm-zip';
+import { replaceTranscribedFiles } from '../src/transcription.js';
 
 beforeEach(async (testContext) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-job-db-'));
@@ -338,6 +341,131 @@ test('legacy folders shared with another owner require an administrator to modif
   await assert.rejects(manager.deleteJobFile(job.id, 'song.mp3', owner), { statusCode: 403 });
   await manager.deleteJobFile(job.id, 'song.mp3', { id: 'admin', role: 'admin' });
   await assert.rejects(fs.access(path.join(folder, 'song.mp3')));
+});
+
+test('transcription sends multipart lyrics, replaces audio and persists NoVocals safely', async (testContext) => {
+  const directory = path.dirname(process.env.DATABASE_PATH);
+  const outputDir = path.join(directory, 'songs');
+  await fs.mkdir(outputDir);
+  const songName = 'Song 100% #1.wav';
+  const audio = Buffer.alloc(48);
+  audio.write('RIFF');
+  audio.writeUInt32LE(40, 4);
+  audio.write('WAVEfmt ', 8);
+  audio.writeUInt32LE(16, 16);
+  audio.writeUInt16LE(1, 20);
+  audio.writeUInt16LE(1, 22);
+  audio.writeUInt32LE(8000, 24);
+  audio.writeUInt32LE(16000, 28);
+  audio.writeUInt16LE(2, 32);
+  audio.writeUInt16LE(16, 34);
+  audio.write('data', 36);
+  audio.writeUInt32LE(4, 40);
+  await fs.writeFile(path.join(outputDir, songName), audio);
+  const manager = await import(`../src/jobManager.js?transcribe=${Date.now()}`);
+  const owner = { id: 'owner', role: 'user' };
+  const job = { id: 'transcribe', url: 'https://music.youtube.com/watch?v=transcribe', status: 'completed',
+    outputDir, files: [songName], initiatedBy: owner, contributors: [{ id: 'contributor' }], createdAt: new Date().toISOString() };
+  writeJob(openDatabase(), job);
+  let payload;
+  let responseData = audio;
+  let responseStatus = 200;
+  let releaseRequest;
+  let receivedRequest;
+  const received = new Promise((resolve) => { receivedRequest = resolve; });
+  let gate = new Promise((resolve) => { releaseRequest = resolve; });
+  const server = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    payload = await new Response(Buffer.concat(chunks), { headers: { 'content-type': req.headers['content-type'] } }).formData();
+    receivedRequest();
+    await gate;
+    res.writeHead(responseStatus);
+    res.end(responseData);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const previousEndpoint = process.env.TRANSCRIPTION_ENDPOINT;
+  process.env.TRANSCRIPTION_ENDPOINT = `http://127.0.0.1:${server.address().port}`;
+  testContext.after(() => {
+    if (previousEndpoint === undefined) delete process.env.TRANSCRIPTION_ENDPOINT;
+    else process.env.TRANSCRIPTION_ENDPOINT = previousEndpoint;
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  await assert.rejects(manager.transcribeJobFile(job.id, songName, {}, { id: 'stranger' }), { statusCode: 403 });
+  await assert.rejects(manager.transcribeJobFile(job.id, '../song.wav', {}, owner), { statusCode: 400 });
+  await assert.rejects(manager.transcribeJobFile(job.id, songName, { lyrics: 'words' }, owner), { statusCode: 400 });
+  for (const language of ['', 'Vietnamese', 'zz', null, 42]) {
+    await assert.rejects(manager.transcribeJobFile(job.id, songName, { language }, owner), { statusCode: 400 });
+  }
+  const pending = manager.transcribeJobFile(job.id, songName, { lyrics: ' Known words ', lyrics_mode: 'align', language: 'vi' }, owner);
+  await received;
+  await assert.rejects(manager.deleteJob(job.id, owner), { statusCode: 409 });
+  await assert.rejects(manager.rerunJob(job.id, owner), { statusCode: 409 });
+  await assert.rejects(manager.deleteJobFile(job.id, songName, owner), { statusCode: 409 });
+  await assert.rejects(manager.transcribeJobFile(job.id, songName, {}, owner), { statusCode: 409 });
+  releaseRequest();
+  await pending;
+  gate = Promise.resolve();
+  assert.equal(payload.get('file').name, songName);
+  assert.deepEqual(Buffer.from(await payload.get('file').arrayBuffer()), audio);
+  assert.equal(payload.get('lyrics'), 'Known words');
+  assert.equal(payload.get('lyrics_mode'), 'align');
+  assert.equal(payload.get('language'), 'vi');
+  const zip = new AdmZip();
+  const updated = Buffer.from(audio);
+  updated[44] = 1;
+  zip.addFile(`songs/${songName}`, updated);
+  zip.addFile('songs/instrumental.wav', audio);
+  responseData = zip.toBuffer();
+  await manager.transcribeJobFile(job.id, songName, {}, { id: 'contributor' });
+  assert.equal(payload.has('lyrics'), false);
+  assert.equal(payload.has('lyrics_mode'), false);
+  assert.equal(payload.has('language'), false);
+  assert.deepEqual(await fs.readFile(path.join(outputDir, songName)), updated);
+  assert.deepEqual(await fs.readFile(path.join(outputDir, '[NoVocals]', 'instrumental.wav')), audio);
+  assert.deepEqual(manager.getJob(job.id).files, [songName, '[NoVocals]/instrumental.wav']);
+  const missingSong = new AdmZip();
+  missingSong.addFile('other.wav', audio);
+  const duplicateSong = new AdmZip();
+  duplicateSong.addFile(`first/${songName}`, audio);
+  duplicateSong.addFile(`second/${songName}`, audio);
+  const unsafeSong = new AdmZip();
+  unsafeSong.addFile(songName, audio);
+  unsafeSong.addFile('unsafe:stream.wav', audio);
+  for (const invalid of [Buffer.from('{"error":"not audio"}'), missingSong.toBuffer(), duplicateSong.toBuffer(), unsafeSong.toBuffer()]) {
+    responseData = invalid;
+    await assert.rejects(manager.transcribeJobFile(job.id, songName, {}, owner), { statusCode: 502 });
+    assert.deepEqual(await fs.readFile(path.join(outputDir, songName)), updated);
+  }
+  responseStatus = 500;
+  await assert.rejects(manager.transcribeJobFile(job.id, songName, {}, owner), { statusCode: 502 });
+  responseStatus = 200;
+  responseData = audio;
+  await manager.transcribeJobFile(job.id, songName, { language: 'ja' }, owner);
+  assert.equal(payload.get('language'), 'ja');
+  assert.equal(payload.has('lyrics'), false);
+  assert.equal(payload.has('lyrics_mode'), false);
+  for (const lyrics_mode of ['prompt', 'correct']) {
+    await manager.transcribeJobFile(job.id, songName, { lyrics: 'Words', lyrics_mode }, owner);
+    assert.equal(payload.get('lyrics_mode'), lyrics_mode);
+  }
+  const rollbackJob = manager.getJob(job.id);
+  await assert.rejects(replaceTranscribedFiles(rollbackJob, songName, [
+    { name: songName, data: updated, original: true },
+    { name: 'new-accompaniment.wav', data: updated, original: false }
+  ], async () => { throw new Error('Persistence failed'); }), /Persistence failed/);
+  assert.deepEqual(await fs.readFile(path.join(outputDir, songName)), audio);
+  await assert.rejects(fs.access(path.join(outputDir, '[NoVocals]', 'new-accompaniment.wav')));
+  assert.deepEqual(rollbackJob.files, [songName, '[NoVocals]/instrumental.wav']);
+  assert.equal((await fs.readdir(outputDir)).some((name) => name.startsWith('.transcription-')), false);
+  process.env.YTDLP_PATH = process.execPath;
+  const rerun = await manager.rerunJob(job.id, owner);
+  await waitForJobToFinish(rerun);
+  assert.deepEqual(new Set(manager.getJob(job.id).files), new Set([songName, '[NoVocals]/instrumental.wav']));
+  await manager.transcribeJobFile(job.id, '[NoVocals]/instrumental.wav', {}, owner);
+  await manager.deleteJobFile(job.id, '[NoVocals]/instrumental.wav', owner);
+  assert.deepEqual(manager.getJob(job.id).files, [songName]);
 });
 
 test('job history is restored after a manager restart', async (t) => {

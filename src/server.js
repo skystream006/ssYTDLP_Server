@@ -7,7 +7,9 @@ import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, rerunJob, setJobContributors } from './jobManager.js';
+import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, transcribeJobFile } from './jobManager.js';
+import { isSongFile } from './transcription.js';
+import { readSongMetadata } from './music.js';
 import { getSystemHealth } from './health.js';
 import { isYouTubeMusicUrl } from './utils.js';
 import { scheduleDailyMaintenance } from './scheduler.js';
@@ -108,13 +110,16 @@ app.get('/api/jobs/:id/files', async (req, res) => {
 
   const files = [];
   for (const fileName of job.files) {
+    if (!isValidJobFileName(fileName)) continue;
     const absoluteFilePath = getFilePath(job, fileName);
     const stat = await fs.stat(absoluteFilePath).catch(() => null);
     if (stat?.isFile()) {
       files.push({
         name: fileName,
         sizeBytes: stat.size,
-        downloadUrl: `/api/jobs/${job.id}/download/${encodeURIComponent(fileName)}`
+        downloadUrl: `/api/jobs/${job.id}/download/${encodeURIComponent(fileName)}`,
+        isSong: isSongFile(fileName),
+        streamUrl: isSongFile(fileName) ? `/api/jobs/${job.id}/stream/${encodeURIComponent(fileName)}?v=${stat.mtimeMs}` : null
       });
     }
   }
@@ -122,29 +127,64 @@ app.get('/api/jobs/:id/files', async (req, res) => {
   return res.json({ jobId: job.id, files });
 });
 
-app.get('/api/jobs/:id/download/:name', (req, res) => {
+async function resolveRequestedFile(req, songOnly = false) {
   const job = getJob(req.params.id);
-  if (!job) {
-    return res.status(404).json({ error: 'Job not found' });
+  if (!job) throw Object.assign(new Error('Job not found'), { statusCode: 404 });
+  const name = req.params.name;
+  if (!isValidJobFileName(name) || (songOnly && !isSongFile(name))) {
+    throw Object.assign(new Error('Invalid file path'), { statusCode: 400 });
   }
-
-  const decodedFileName = decodeURIComponent(req.params.name);
-  if (
-    !decodedFileName ||
-    decodedFileName !== path.basename(decodedFileName) ||
-    decodedFileName.includes(path.sep) ||
-    !job.files.includes(decodedFileName)
-  ) {
-    return res.status(400).json({ error: 'Invalid file path' });
+  if (!job.outputDir || !job.files.includes(name)) {
+    throw Object.assign(new Error('Song not found'), { statusCode: 404 });
   }
-
-  const filePath = getFilePath(job, decodedFileName);
-
-  if (!isFileInsideJobFolder(job, filePath)) {
-    return res.status(400).json({ error: 'Invalid file path' });
+  const filePath = getFilePath(job, name);
+  const realPath = await fs.realpath(filePath).catch(() => null);
+  if (!realPath || !(await fs.stat(realPath)).isFile()) {
+    throw Object.assign(new Error('Song not found'), { statusCode: 404 });
   }
+  if (!isFileInsideJobFolder({ outputDir: await fs.realpath(job.outputDir) }, realPath)) {
+    throw Object.assign(new Error('Invalid file path'), { statusCode: 400 });
+  }
+  return filePath;
+}
 
-  return res.download(filePath, decodedFileName);
+app.get('/api/jobs/:id/download/:name', async (req, res) => {
+  try {
+    const filePath = await resolveRequestedFile(req);
+    return res.download(filePath, path.basename(req.params.name));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.get('/api/jobs/:id/stream/:name', async (req, res) => {
+  try {
+    const filePath = await resolveRequestedFile(req, true);
+    res.set('Cache-Control', 'private, no-cache');
+    return res.sendFile(filePath);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.get('/api/jobs/:id/lyrics/:name', async (req, res) => {
+  try {
+    const filePath = await resolveRequestedFile(req, true);
+    res.set('Cache-Control', 'no-store');
+    return res.json(await readSongMetadata(filePath));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.post('/api/jobs/:id/files/:name/transcribe', async (req, res) => {
+  try {
+    const job = await transcribeJobFile(req.params.id, req.params.name, req.body || {}, req.user);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    return res.json(job);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
 });
 
 app.get('/api/jobs/:id/download-all', async (req, res) => {
@@ -279,7 +319,7 @@ app.get(['/admin', '/admin/users/:id', '/settings'], (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 
-app.get('/job/:id', (_req, res) => {
+app.get(['/job/:id', '/job/:id/player'], (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 

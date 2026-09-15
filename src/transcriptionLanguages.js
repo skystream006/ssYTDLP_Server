@@ -1,0 +1,22 @@
+export const transcriptionLanguages = [
+  ['af', 'Afrikaans'], ['sq', 'Albanian'], ['am', 'Amharic'], ['ar', 'Arabic'],
+  ['hy', 'Armenian'], ['az', 'Azerbaijani'], ['eu', 'Basque'], ['be', 'Belarusian'],
+  ['bn', 'Bengali'], ['bs', 'Bosnian'], ['bg', 'Bulgarian'], ['my', 'Burmese'],
+  ['ca', 'Catalan'], ['zh', 'Chinese'], ['hr', 'Croatian'], ['cs', 'Czech'],
+  ['da', 'Danish'], ['nl', 'Dutch'], ['en', 'English'], ['et', 'Estonian'],
+  ['fi', 'Finnish'], ['fr', 'French'], ['gl', 'Galician'], ['ka', 'Georgian'],
+  ['de', 'German'], ['el', 'Greek'], ['gu', 'Gujarati'], ['ht', 'Haitian Creole'],
+  ['he', 'Hebrew'], ['hi', 'Hindi'], ['hu', 'Hungarian'], ['is', 'Icelandic'],
+  ['id', 'Indonesian'], ['it', 'Italian'], ['ja', 'Japanese'], ['kn', 'Kannada'],
+  ['kk', 'Kazakh'], ['km', 'Khmer'], ['ko', 'Korean'], ['lo', 'Lao'],
+  ['la', 'Latin'], ['lv', 'Latvian'], ['lt', 'Lithuanian'], ['mk', 'Macedonian'],
+  ['ms', 'Malay'], ['ml', 'Malayalam'], ['mt', 'Maltese'], ['mr', 'Marathi'],
+  ['mn', 'Mongolian'], ['ne', 'Nepali'], ['no', 'Norwegian'], ['ps', 'Pashto'],
+  ['fa', 'Persian'], ['pl', 'Polish'], ['pt', 'Portuguese'], ['pa', 'Punjabi'],
+  ['ro', 'Romanian'], ['ru', 'Russian'], ['sr', 'Serbian'], ['si', 'Sinhala'],
+  ['sk', 'Slovak'], ['sl', 'Slovenian'], ['so', 'Somali'], ['es', 'Spanish'],
+  ['sw', 'Swahili'], ['sv', 'Swedish'], ['tl', 'Tagalog'], ['ta', 'Tamil'],
+  ['te', 'Telugu'], ['th', 'Thai'], ['bo', 'Tibetan'], ['tr', 'Turkish'],
+  ['uk', 'Ukrainian'], ['ur', 'Urdu'], ['uz', 'Uzbek'], ['vi', 'Vietnamese'],
+  ['cy', 'Welsh'], ['yi', 'Yiddish']
+];

@@ -90,6 +90,10 @@ FFmpeg and ffprobe are loaded from `runtime/ffmpeg/bin`; override this with
 
 - Open the HTTPS URL configured by `PASSKEY_ORIGIN`
 - Paste a `https://music.youtube.com/...` URL
+- Submitting the same source URL (ignoring surrounding whitespace) prompts to rerun
+    the most recent matching job. Confirming replaces its downloaded files and opens its
+    details under the same job ID; cancelling leaves it unchanged. Active matches can
+    be opened but cannot be rerun until they finish.
 - Playlist URL (`/playlist?list=...`) runs with `--yes-playlist`
 - Any other music URL runs with `--no-playlist`
 - Open a finished job's details to view its command, rerun it under the same job ID,

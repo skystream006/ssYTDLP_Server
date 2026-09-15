@@ -385,7 +385,20 @@ export function isUpdateInProgress() {
 
 export async function createJob(url) {
   await ensureOutputRoot();
-  const job = newJob(url);
+  const sourceUrl = url.trim();
+  const existingJob = getJobs().find((job) => job.url.trim() === sourceUrl);
+  if (existingJob) {
+    const error = new Error('This source URL already has a job');
+    error.statusCode = 409;
+    error.code = 'JOB_ALREADY_EXISTS';
+    error.existingJob = {
+      id: existingJob.id,
+      status: existingJob.status,
+      folderName: existingJob.folderName
+    };
+    throw error;
+  }
+  const job = newJob(sourceUrl);
   await persistJobs();
   startJob(job);
   return job;

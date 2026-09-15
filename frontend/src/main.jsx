@@ -47,6 +47,7 @@ async function request(url, options) {
     const error = new Error(body.error || 'Request failed');
     error.status = response.status;
     error.code = body.code;
+    error.existingJob = body.existingJob;
     throw error;
   }
   return body;
@@ -140,11 +141,30 @@ function JobsPage() {
     setSubmitting(true);
     setMessage(null);
     try {
-      const job = await request('/api/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
-      });
+      let job;
+      try {
+        job = await request('/api/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+      } catch (error) {
+        if (error.code !== 'JOB_ALREADY_EXISTS' || !error.existingJob) throw error;
+        const previous = error.existingJob;
+        const detailsUrl = `/job/${encodeURIComponent(previous.id)}`;
+        if (previous.status === 'queued' || previous.status === 'running') {
+          if (window.confirm('This URL already has an active job. Open its details?')) {
+            window.location.assign(detailsUrl);
+          }
+          return;
+        }
+        if (!window.confirm(`This URL was used in job ${previous.folderName || previous.id}. Rerun it? Its existing downloaded files will be replaced.`)) {
+          return;
+        }
+        const reranJob = await request(`/api/jobs/${encodeURIComponent(previous.id)}/rerun`, { method: 'POST' });
+        window.location.assign(`/job/${encodeURIComponent(reranJob.id)}`);
+        return;
+      }
       setUrl('');
       setMessage({ type: 'success', text: `Job ${job.id} was added to the queue.` });
     } catch (error) {

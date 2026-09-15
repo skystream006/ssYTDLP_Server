@@ -198,7 +198,11 @@ app.post('/api/jobs', async (req, res) => {
     const job = await createJob(url);
     return res.status(202).json(job);
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return res.status(error.statusCode || 500).json({
+      error: error.message,
+      code: error.code,
+      existingJob: error.existingJob
+    });
   }
 });
 

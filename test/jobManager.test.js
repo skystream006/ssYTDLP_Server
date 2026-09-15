@@ -65,6 +65,30 @@ test('persisted private video failures become partially completed', async (t) =>
   });
 });
 
+test('duplicate source URLs return the previous job without creating another record', async (testContext) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-duplicate-'));
+  testContext.after(() => fs.rm(directory, { recursive: true, force: true }));
+  process.env.JOB_STORE_PATH = path.join(directory, 'jobs.json');
+  process.env.YTDLP_OUTPUT_ROOT = directory;
+  const url = 'https://music.youtube.com/watch?v=existing';
+  await fs.writeFile(process.env.JOB_STORE_PATH, JSON.stringify([{
+    id: 'previous-job', url, status: 'completed', files: [],
+    createdAt: new Date().toISOString()
+  }]));
+  const manager = await import(`../src/jobManager.js?duplicate=${Date.now()}`);
+  for (const status of ['completed', 'failed', 'partially_completed', 'queued', 'running']) {
+    manager.getJob('previous-job').status = status;
+    await assert.rejects(manager.createJob(` ${url} `), (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.equal(error.code, 'JOB_ALREADY_EXISTS');
+      assert.equal(error.existingJob.id, 'previous-job');
+      assert.equal(error.existingJob.status, status);
+      return true;
+    });
+    assert.equal(manager.getJobs().length, 1);
+  }
+});
+
 test('jobManager queues jobs around a maintenance update', {
   skip: process.platform === 'win32' && 'requires POSIX executable test fixtures'
 }, async (t) => {

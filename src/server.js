@@ -2,6 +2,8 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import { ZipArchive } from 'archiver';
 import fs from 'node:fs/promises';
+import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { createJob, deleteJob, getFilePath, getJob, getJobs, isFileInsideJobFolder, rerunJob } from './jobManager.js';
@@ -9,18 +11,25 @@ import { getSystemHealth } from './health.js';
 import { isYouTubeMusicUrl } from './utils.js';
 import { scheduleDailyMaintenance } from './scheduler.js';
 import { attachUser, registerAuthRoutes, requireAuth } from './auth.js';
+import { loadHttpsOptions } from './tls.js';
 
 const app = express();
 const { values: options, positionals } = parseArgs({
   options: {
-    port: { type: 'string', short: 'p' }
+    port: { type: 'string', short: 'p' },
+    'http-port': { type: 'string' },
+    'https-port': { type: 'string' }
   },
   allowPositionals: true
 });
-const port = Number(options.port || positionals[0] || process.env.WEB_API_PORT || process.env.PORT || 3000);
+const httpPort = Number(options['http-port'] || options.port || positionals[0] || process.env.WEB_API_PORT || process.env.PORT || 3000);
+const httpsPort = Number(options['https-port'] || process.env.HTTPS_WEB_PORT || 4000);
 
-if (!Number.isInteger(port) || port < 1 || port > 65535) {
-  throw new Error('Port must be an integer between 1 and 65535');
+if (![httpPort, httpsPort].every((port) => Number.isInteger(port) && port >= 1 && port <= 65535)) {
+  throw new Error('HTTP and HTTPS ports must be integers between 1 and 65535');
+}
+if (httpPort === httpsPort) {
+  throw new Error('WEB_API_PORT and HTTPS_WEB_PORT must use different ports');
 }
 
 const apiLimiter = rateLimit({
@@ -197,8 +206,19 @@ app.get('/job/:id', (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 
-app.listen(port, () => {
-  console.log(`ssYTDLP server listening on http://localhost:${port}`);
+const httpsOrigin = process.env.PASSKEY_ORIGIN || `https://localhost:${httpsPort}`;
+const httpsOptions = await loadHttpsOptions();
+
+http.createServer((req, res) => {
+  const location = new URL(req.url || '/', httpsOrigin);
+  res.writeHead(308, { Location: location.toString() });
+  res.end();
+}).listen(httpPort, () => {
+  console.log(`ssYTDLP HTTP redirect listening on http://localhost:${httpPort}`);
+});
+
+https.createServer(httpsOptions, app).listen(httpsPort, () => {
+  console.log(`ssYTDLP HTTPS server listening on https://localhost:${httpsPort}`);
 });
 
 scheduleDailyMaintenance(3, 0);

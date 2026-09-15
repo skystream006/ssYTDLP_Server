@@ -20,17 +20,17 @@ On Windows, `setup:deno` may print a PowerShell installation command. Run that
 command before starting the server.
 
 Copy `.env.example` to `.env`, then adjust its values for your server. `npm start`
-loads `.env`, builds the React frontend, and starts the API at `http://localhost:3000`.
-For frontend development, run `npm run dev` while the API server is running on port 3000.
-To use another port, pass it after `--`:
+loads `.env`, builds the React frontend, starts an HTTP redirect on `WEB_API_PORT`,
+and serves the app and API over TLS on `HTTPS_WEB_PORT`.
+For frontend development, run `npm run dev` while the API server is running.
+To override either listener from the command line:
 
 ```bash
-npm start -- 4000
+npm start -- --http-port 3000 --https-port 4000
 ```
 
-The `WEB_API_PORT` setting in `.env`, the standard `PORT` environment variable, and
-direct `node src/server.js --port 4000` syntax are also supported. Command-line port
-arguments take precedence over environment variables.
+The legacy `--port`, positional port, and standard `PORT` environment variable configure
+the HTTP redirect listener. Command-line arguments take precedence over environment variables.
 
 ## Passkey access
 
@@ -41,12 +41,18 @@ Administrators can approve or revoke access and assign user or admin roles.
 Complete the first registration locally before exposing a new server to other users,
 because the first verified passkey is intentionally trusted as the initial administrator.
 
-Passkeys work on `localhost` without TLS. Other hosts must be served over HTTPS. When the
-public address differs from the address seen by Express, configure both values explicitly:
+Passkeys work on `localhost` without TLS, but other hosts require HTTPS. The server creates
+`data/tls/server-key.pem` and `data/tls/server-cert.pem` when certificate paths are omitted.
+Trust the generated certificate on each client before opening the app, or configure a trusted
+certificate with `HTTPS_KEY_PATH` and `HTTPS_CERT_PATH`.
+
+The passkey origin must include `HTTPS_WEB_PORT` when it is not the default port 443:
 
 ```bash
+WEB_API_PORT=3000
+HTTPS_WEB_PORT=4000
 PASSKEY_RP_ID=music.example.com
-PASSKEY_ORIGIN=https://music.example.com
+PASSKEY_ORIGIN=https://music.example.com:4000
 npm start
 ```
 
@@ -63,7 +69,7 @@ FFmpeg and ffprobe are loaded from `runtime/ffmpeg/bin`; override this with
 
 ## Usage
 
-- Open `http://localhost:3000`
+- Open the HTTPS URL configured by `PASSKEY_ORIGIN`
 - Paste a `https://music.youtube.com/...` URL
 - Playlist URL (`/playlist?list=...`) runs with `--yes-playlist`
 - Any other music URL runs with `--no-playlist`

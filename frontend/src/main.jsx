@@ -188,6 +188,7 @@ function formatDate(value) {
 }
 
 function JobsPage() {
+  const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
   const { data: jobs, error: loadError } = usePolling(loadJobs);
   const [url, setUrl] = useState('');
@@ -195,7 +196,7 @@ function JobsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [jobAction, setJobAction] = useState(null);
   const [actionError, setActionError] = useState('');
-  const [userFilter, setUserFilter] = useState('all');
+  const [userFilter, setUserFilter] = useState(user.id);
 
   async function runJobAction(job, action) {
     if (jobAction || job.status === 'queued' || job.status === 'running') return;
@@ -259,7 +260,7 @@ function JobsPage() {
     }
   }
 
-  const initiators = new Map();
+  const initiators = new Map([[user.id, user.name]]);
   for (const job of jobs || []) {
     const id = job.initiatedBy?.id || 'unknown';
     if (!initiators.has(id)) initiators.set(id, job.initiatedBy?.name || 'Unknown');
@@ -339,13 +340,15 @@ function JobsPage() {
         {filteredJobs.length > 0 && (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Job</th><th>Format</th><th>Status</th><th>Created</th><th>Initiated by</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Job</th><th>Format</th><th>Status</th><th>Created</th><th>Songs</th><th>Files</th><th>Initiated by</th><th>Actions</th></tr></thead>
               <tbody>{filteredJobs.map((job) => (
                 <tr key={job.id}>
                   <td><a className="job-name" href={`/job/${job.id}`}><span>{job.isPlaylist ? <ListMusic size={18} /> : <Music2 size={18} />}</span><div><strong>{job.folderName || 'Preparing download'}</strong><small>{job.id}</small></div></a></td>
                   <td>{job.isPlaylist ? 'Playlist' : 'Track'}</td>
                   <td><StatusBadge status={job.status} /></td>
                   <td>{formatDate(job.createdAt)}</td>
+                  <td>{job.isPlaylist ? (job.playlistSongCount ?? '-') : 1}</td>
+                  <td>{job.files?.length ?? 0}</td>
                   <td><span className="job-initiator">{job.initiatedBy?.name || 'Unknown'}</span></td>
                   <td><div className="job-row-actions">
                     <a className="icon-link" href={`/job/${job.id}`} aria-label={`Open job ${job.id}`} title="Open job"><ExternalLink size={17} /></a>

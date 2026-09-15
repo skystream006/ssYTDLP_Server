@@ -1,10 +1,39 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { isPlaylistUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
 
 const jobs = new Map();
 const outputRoot = process.env.YTDLP_OUTPUT_ROOT || path.resolve(process.cwd(), 'output');
+
+const jobEvents = new EventEmitter();
+jobEvents.setMaxListeners(0);
+let runningJobsCount = 0;
+
+// Non-null while a maintenance update (yt-dlp -U / deno upgrade) is running.
+// Jobs about to start wait on this promise so they queue behind the update.
+let updateGate = null;
+
+function waitForUpdateGate() {
+  return updateGate || Promise.resolve();
+}
+
+function waitForNoJobsInProgress() {
+  if (runningJobsCount === 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const onIdle = () => {
+      if (runningJobsCount === 0) {
+        jobEvents.off('idle', onIdle);
+        resolve();
+      }
+    };
+    jobEvents.on('idle', onIdle);
+  });
+}
 
 function resolveDenoPath() {
   const fromEnv = process.env.DENO_PATH;
@@ -96,8 +125,12 @@ function newJob(url) {
 }
 
 async function executeJob(job) {
+  // If a maintenance update is running (or about to run), queue behind it.
+  await waitForUpdateGate();
+
   const denoPath = resolveDenoPath();
 
+  runningJobsCount += 1;
   job.status = 'running';
   job.updatedAt = new Date().toISOString();
 
@@ -138,9 +171,54 @@ async function executeJob(job) {
     job.status = 'failed';
     job.error = error.message;
     job.files = await listDownloadedFiles(job.outputDir);
+  } finally {
+    runningJobsCount = Math.max(0, runningJobsCount - 1);
+    if (runningJobsCount === 0) {
+      jobEvents.emit('idle');
+    }
   }
 
   job.updatedAt = new Date().toISOString();
+}
+
+/**
+ * Runs `yt-dlp -U` and `deno upgrade` to keep the runtimes up to date.
+ * Waits for any jobs currently in progress to finish, then blocks new jobs
+ * from starting until the update completes.
+ */
+export async function runMaintenanceUpdate() {
+  if (updateGate) {
+    return updateGate;
+  }
+
+  let releaseGate;
+  updateGate = new Promise((resolve) => {
+    releaseGate = resolve;
+  });
+
+  try {
+    await waitForNoJobsInProgress();
+
+    try {
+      await runCommand('yt-dlp', ['-U']);
+    } catch (error) {
+      console.error('yt-dlp update failed:', error.message);
+    }
+
+    try {
+      await runCommand(resolveDenoPath(), ['upgrade']);
+    } catch (error) {
+      console.error('Deno upgrade failed:', error.message);
+    }
+  } finally {
+    const release = releaseGate;
+    updateGate = null;
+    release();
+  }
+}
+
+export function isUpdateInProgress() {
+  return updateGate !== null;
 }
 
 export async function createJob(url) {

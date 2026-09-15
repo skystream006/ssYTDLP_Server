@@ -6,14 +6,67 @@ import { isPlaylistUrl, sanitizeFolderName, randomSongFolderName } from './utils
 
 const jobs = new Map();
 const outputRoot = process.env.YTDLP_OUTPUT_ROOT || path.resolve(process.cwd(), 'output');
+const jobStorePath = process.env.JOB_STORE_PATH || path.resolve(process.cwd(), 'data', 'jobs.json');
+let persistenceQueue = Promise.resolve();
 
 const jobEvents = new EventEmitter();
 jobEvents.setMaxListeners(0);
 let runningJobsCount = 0;
+const privateVideoPattern = /\b(?:private video|video is private)\b/i;
 
 // Non-null while a maintenance update (yt-dlp -U / deno upgrade) is running.
 // Jobs about to start wait on this promise so they queue behind the update.
 let updateGate = null;
+
+async function loadJobs() {
+  let storedJobs;
+  try {
+    storedJobs = JSON.parse(await fs.readFile(jobStorePath, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw new Error(`Unable to load job history from ${jobStorePath}: ${error.message}`);
+  }
+
+  if (!Array.isArray(storedJobs)) {
+    throw new Error(`Invalid job history in ${jobStorePath}`);
+  }
+
+  let updatedStoredJob = false;
+  for (const job of storedJobs) {
+    if (!job?.id || !job.url) continue;
+    if (job.status === 'queued' || job.status === 'running') {
+      job.status = 'failed';
+      job.error = 'Job was interrupted by a server restart';
+      job.updatedAt = new Date().toISOString();
+      updatedStoredJob = true;
+    } else if (
+      (job.status === 'failed' || job.status === 'warning')
+      && isPrivateVideoOnlyOutput(job.output)
+    ) {
+      job.status = 'partially_completed';
+      job.error = null;
+      job.warning = 'One or more private videos were skipped.';
+      updatedStoredJob = true;
+    }
+    jobs.set(job.id, job);
+  }
+
+  if (updatedStoredJob) {
+    await persistJobs();
+  }
+}
+
+function persistJobs() {
+  persistenceQueue = persistenceQueue.catch(() => {}).then(async () => {
+    await fs.mkdir(path.dirname(jobStorePath), { recursive: true });
+    const temporaryPath = `${jobStorePath}.${process.pid}.tmp`;
+    await fs.writeFile(temporaryPath, `${JSON.stringify([...jobs.values()], null, 2)}\n`);
+    await fs.rename(temporaryPath, jobStorePath);
+  });
+  return persistenceQueue;
+}
+
+await loadJobs();
 
 function waitForUpdateGate() {
   return updateGate || Promise.resolve();
@@ -82,15 +135,60 @@ function runCommand(command, args) {
       stderr += chunk.toString();
     });
 
-    child.on('error', reject);
+    child.on('error', (error) => {
+      error.stdout = stdout;
+      error.stderr = stderr;
+      reject(error);
+    });
     child.on('close', (code) => {
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
-        reject(new Error(`Command failed (${code}): ${stderr || stdout}`));
+        const error = new Error(`Command failed with exit code ${code}`);
+        error.exitCode = code;
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
       }
     });
   });
+}
+
+function isPrivateVideoOnlyOutput(output = '') {
+  const errorLines = output
+    .split(/\r?\n/)
+    .filter((line) => /^(?:ERROR|WARNING):/i.test(line.trim()));
+  return errorLines.some((line) => privateVideoPattern.test(line))
+    && !errorLines.some((line) => !privateVideoPattern.test(line));
+}
+
+export function classifyCommandOutput({ stdout = '', stderr = '' }) {
+  const errorLines = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .filter((line) => /^ERROR:/i.test(line.trim()));
+  const hasPrivateVideoWarning = errorLines.some((line) => privateVideoPattern.test(line));
+  const hasNonPrivateError = errorLines.some((line) => !privateVideoPattern.test(line));
+
+  const normalize = (text) => text.split(/\r?\n/).map((line) => (
+    /^ERROR:/i.test(line.trim()) && privateVideoPattern.test(line)
+      ? line.replace(/ERROR:/i, 'WARNING:')
+      : line
+  )).join('\n');
+
+  return {
+    stdout: normalize(stdout),
+    stderr: normalize(stderr),
+    hasPrivateVideoWarning,
+    hasNonPrivateError
+  };
+}
+
+function formatCommandOutput(result) {
+  const { stdout, stderr } = classifyCommandOutput(result);
+  const sections = [];
+  if (stdout.trim()) sections.push(`[stdout]\n${stdout.trimEnd()}`);
+  if (stderr.trim()) sections.push(`[stderr]\n${stderr.trimEnd()}`);
+  return sections.join('\n\n');
 }
 
 async function listDownloadedFiles(folderPath) {
@@ -131,12 +229,14 @@ function newJob(url) {
     isPlaylist: isPlaylistUrl(url),
     status: 'queued',
     error: null,
+    warning: null,
     folderName: null,
     outputDir: null,
     files: [],
     createdAt: now,
     updatedAt: now,
-    command: null
+    command: null,
+    output: null
   };
 
   jobs.set(id, job);
@@ -148,6 +248,7 @@ function startJob(job) {
     job.status = 'failed';
     job.error = error.message;
     job.updatedAt = new Date().toISOString();
+    persistJobs().catch((persistError) => console.error('Unable to persist job:', persistError.message));
   });
 }
 
@@ -181,6 +282,7 @@ async function executeJob(job) {
   runningJobsCount += 1;
   job.status = 'running';
   job.updatedAt = new Date().toISOString();
+  await persistJobs();
 
   const folderName = job.isPlaylist
     ? await getPlaylistFolderName(job.url, denoPath).catch(() => randomSongFolderName())
@@ -216,12 +318,19 @@ async function executeJob(job) {
     .join(' ');
 
   try {
-    await runCommand(ytDlpPath, args);
+    const result = await runCommand(ytDlpPath, args);
+    const classification = classifyCommandOutput(result);
+    job.output = formatCommandOutput(result) || 'Command completed without output.';
     job.files = await listDownloadedFiles(job.outputDir);
-    job.status = 'completed';
+    job.status = classification.hasPrivateVideoWarning ? 'partially_completed' : 'completed';
+    job.warning = classification.hasPrivateVideoWarning ? 'One or more private videos were skipped.' : null;
   } catch (error) {
-    job.status = 'failed';
-    job.error = error.message;
+    const classification = classifyCommandOutput(error);
+    const privateVideosOnly = classification.hasPrivateVideoWarning && !classification.hasNonPrivateError;
+    job.status = privateVideosOnly ? 'partially_completed' : 'failed';
+    job.error = privateVideosOnly ? null : error.message;
+    job.warning = privateVideosOnly ? 'One or more private videos were skipped.' : null;
+    job.output = formatCommandOutput(error) || error.message;
     job.files = await listDownloadedFiles(job.outputDir);
   } finally {
     runningJobsCount = Math.max(0, runningJobsCount - 1);
@@ -231,6 +340,7 @@ async function executeJob(job) {
   }
 
   job.updatedAt = new Date().toISOString();
+  await persistJobs();
 }
 
 /**
@@ -276,6 +386,7 @@ export function isUpdateInProgress() {
 export async function createJob(url) {
   await ensureOutputRoot();
   const job = newJob(url);
+  await persistJobs();
   startJob(job);
   return job;
 }
@@ -291,12 +402,15 @@ export async function rerunJob(id) {
 
   job.status = 'queued';
   job.error = null;
+  job.warning = null;
   job.folderName = null;
   job.outputDir = null;
   job.files = [];
   job.command = null;
+  job.output = null;
   job.updatedAt = new Date().toISOString();
 
+  await persistJobs();
   startJob(job);
   return job;
 }
@@ -310,6 +424,7 @@ export async function deleteJob(id) {
   assertJobIsIdle(job, 'delete');
   await removeJobOutput(job);
   jobs.delete(id);
+  await persistJobs();
   return true;
 }
 

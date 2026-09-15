@@ -101,8 +101,10 @@ function AppShell({ children, section = 'jobs' }) {
 function StatusBadge({ status }) {
   const icon = status === 'completed' ? <Check size={13} />
     : status === 'failed' ? <X size={13} />
+      : status === 'partially_completed' ? <CircleAlert size={13} />
       : status === 'running' ? <RefreshCw size={13} /> : <Clock3 size={13} />;
-  return <span className={`status status-${status}`}>{icon}{status}</span>;
+  const label = status === 'partially_completed' ? 'partially completed' : status;
+  return <span className={`status status-${status}`}>{icon}{label}</span>;
 }
 
 function formatDate(value) {
@@ -152,7 +154,7 @@ function JobsPage() {
         <div className="queue-summary" aria-label="Queue summary">
           <div><strong>{jobs?.length ?? '-'}</strong><span>Total</span></div>
           <div><strong>{counts.running || 0}</strong><span>Active</span></div>
-          <div><strong>{counts.completed || 0}</strong><span>Ready</span></div>
+          <div><strong>{(counts.completed || 0) + (counts.partially_completed || 0)}</strong><span>Ready</span></div>
         </div>
       </section>
 
@@ -288,10 +290,17 @@ function JobPage({ id }) {
               <dt>Last updated</dt><dd>{formatDate(job.updatedAt)}</dd>
               <dt>Command</dt><dd><code className="command-code">{job.command || 'Pending'}</code></dd>
             </dl>
+            {job.warning && <div className="notice warning"><CircleAlert size={16} />{job.warning}</div>}
             {job.error && <div className="notice error"><CircleAlert size={16} />{job.error}</div>}
           </section>
           <section className="files-panel">
-            <div className="section-title"><div><span>02</span><h2>Files</h2></div><strong>{files.length}</strong></div>
+            <div className="section-title">
+              <div><span>02</span><h2>Files</h2></div>
+              <div className="files-actions">
+                <strong>{files.length}</strong>
+                {files.length > 0 && <a className="download-all" href={`/api/jobs/${id}/download-all`}><ArrowDownToLine size={16} />Download all</a>}
+              </div>
+            </div>
             {files.length === 0 ? <div className="empty-files"><FileAudio size={29} /><p>No downloadable files yet.</p></div> : (
               <ul className="file-list">{files.map((file) => (
                 <li key={file.name}><span className="file-icon"><FileAudio size={19} /></span><div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div><a href={file.downloadUrl} aria-label={`Download ${file.name}`}><ArrowDownToLine size={18} /></a></li>
@@ -299,6 +308,10 @@ function JobPage({ id }) {
             )}
           </section>
         </div>
+        <section className="output-panel">
+          <div className="section-title"><div><span>03</span><h2>Process output</h2></div></div>
+          <pre>{job.output || (isActive ? 'Waiting for process output...' : 'No process output was captured.')}</pre>
+        </section>
       </>}
     </AppShell>
   );

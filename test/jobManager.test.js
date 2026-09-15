@@ -17,6 +17,54 @@ async function waitForJobToFinish(job) {
   }
 }
 
+test('private video errors are classified as warnings', async () => {
+  process.env.JOB_STORE_PATH = path.join(os.tmpdir(), `ssytdlp-classify-${Date.now()}.json`);
+  const { classifyCommandOutput } = await import(`../src/jobManager.js?classify=${Date.now()}`);
+  const privateOnly = classifyCommandOutput({
+    stderr: 'ERROR: [youtube] abc: Private video. Sign in if you have been granted access'
+  });
+  const mixed = classifyCommandOutput({
+    stderr: 'ERROR: [youtube] abc: Video is private\nERROR: Unable to download webpage'
+  });
+
+  assert.equal(privateOnly.hasPrivateVideoWarning, true);
+  assert.equal(privateOnly.hasNonPrivateError, false);
+  assert.match(privateOnly.stderr, /^WARNING:/);
+  assert.equal(mixed.hasPrivateVideoWarning, true);
+  assert.equal(mixed.hasNonPrivateError, true);
+  assert.match(mixed.stderr, /ERROR: Unable to download webpage/);
+
+  await fs.rm(process.env.JOB_STORE_PATH, { force: true });
+});
+
+test('persisted private video failures become partially completed', async (t) => {
+  const storeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-private-'));
+  const jobStorePath = path.join(storeRoot, 'jobs.json');
+  process.env.JOB_STORE_PATH = jobStorePath;
+  await fs.writeFile(jobStorePath, JSON.stringify([{
+    id: 'private-video-job',
+    url: 'https://music.youtube.com/watch?v=magykigZvfE',
+    status: 'failed',
+    error: 'Command failed with exit code 1',
+    warning: null,
+    output: '[stderr]\nERROR: [youtube] magykigZvfE: Private video',
+    files: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  }]));
+
+  const jobManager = await import(`../src/jobManager.js?private=${Date.now()}`);
+  const job = jobManager.getJob('private-video-job');
+
+  assert.equal(job.status, 'partially_completed');
+  assert.equal(job.error, null);
+  assert.equal(job.warning, 'One or more private videos were skipped.');
+
+  t.after(async () => {
+    await fs.rm(storeRoot, { recursive: true, force: true });
+  });
+});
+
 test('jobManager queues jobs around a maintenance update', {
   skip: process.platform === 'win32' && 'requires POSIX executable test fixtures'
 }, async (t) => {
@@ -29,6 +77,7 @@ test('jobManager queues jobs around a maintenance update', {
   process.env.YTDLP_PATH = fakeYtDlp;
   process.env.DENO_PATH = fakeDeno;
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
+  process.env.JOB_STORE_PATH = path.join(outputRoot, 'jobs.json');
 
   const jobManager = await import(`../src/jobManager.js?t=${Date.now()}`);
 
@@ -78,7 +127,8 @@ test('jobManager queues jobs around a maintenance update', {
 test('rerunning overwrites a finished job while preserving its ID', async (t) => {
   const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-rerun-'));
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
-  process.env.YTDLP_PATH = path.join(outputRoot, 'missing-yt-dlp');
+  process.env.YTDLP_PATH = process.execPath;
+  process.env.JOB_STORE_PATH = path.join(outputRoot, 'jobs.json');
 
   const jobManager = await import(`../src/jobManager.js?rerun=${Date.now()}`);
   const job = await jobManager.createJob('https://music.youtube.com/watch?v=abc');
@@ -95,8 +145,9 @@ test('rerunning overwrites a finished job while preserving its ID', async (t) =>
   assert.equal(await jobManager.rerunJob('missing-job'), null);
 
   await waitForJobToFinish(rerun);
-  assert.match(rerun.command, /yt-dlp/);
   assert.match(rerun.command, /--ffmpeg-location/);
+  assert.match(rerun.output, /^\[stderr\]/);
+  assert.match(rerun.output, /bad option/);
 
   t.after(async () => {
     await fs.rm(outputRoot, { recursive: true, force: true });
@@ -107,6 +158,7 @@ test('deleting a finished job removes its record and output', async (t) => {
   const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-delete-'));
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
   process.env.YTDLP_PATH = path.join(outputRoot, 'missing-yt-dlp');
+  process.env.JOB_STORE_PATH = path.join(outputRoot, 'jobs.json');
 
   const jobManager = await import(`../src/jobManager.js?delete=${Date.now()}`);
   const job = await jobManager.createJob('https://music.youtube.com/watch?v=abc');
@@ -117,6 +169,37 @@ test('deleting a finished job removes its record and output', async (t) => {
   assert.equal(jobManager.getJob(job.id), undefined);
   await assert.rejects(fs.access(jobOutputDir));
   assert.equal(await jobManager.deleteJob('missing-job'), false);
+
+  t.after(async () => {
+    await fs.rm(outputRoot, { recursive: true, force: true });
+  });
+});
+
+test('job history is restored after a manager restart', async (t) => {
+  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-persist-'));
+  const jobStorePath = path.join(outputRoot, 'jobs.json');
+  process.env.YTDLP_OUTPUT_ROOT = outputRoot;
+  process.env.YTDLP_PATH = process.execPath;
+  process.env.JOB_STORE_PATH = jobStorePath;
+
+  const firstManager = await import(`../src/jobManager.js?persist-write=${Date.now()}`);
+  const createdJob = await firstManager.createJob('https://music.youtube.com/watch?v=persist');
+  await waitForJobToFinish(createdJob);
+
+  while (true) {
+    const storedJobs = JSON.parse(await fs.readFile(jobStorePath, 'utf8'));
+    if (storedJobs[0]?.status === createdJob.status) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  const secondManager = await import(`../src/jobManager.js?persist-read=${Date.now()}`);
+  const restoredJob = secondManager.getJob(createdJob.id);
+
+  assert.equal(restoredJob.id, createdJob.id);
+  assert.equal(restoredJob.url, createdJob.url);
+  assert.equal(restoredJob.status, createdJob.status);
+  assert.equal(restoredJob.command, createdJob.command);
+  assert.equal(restoredJob.output, createdJob.output);
 
   t.after(async () => {
     await fs.rm(outputRoot, { recursive: true, force: true });

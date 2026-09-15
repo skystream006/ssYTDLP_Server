@@ -1,5 +1,6 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
+import { ZipArchive } from 'archiver';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -89,6 +90,45 @@ app.get('/api/jobs/:id/download/:name', (req, res) => {
   }
 
   return res.download(filePath, decodedFileName);
+});
+
+app.get('/api/jobs/:id/download-all', async (req, res) => {
+  const job = getJob(req.params.id);
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  const files = [];
+  for (const fileName of job.files) {
+    const filePath = getFilePath(job, fileName);
+    if (!isFileInsideJobFolder(job, filePath)) continue;
+    const stat = await fs.stat(filePath).catch(() => null);
+    if (stat?.isFile()) files.push({ fileName, filePath });
+  }
+
+  if (files.length === 0) {
+    return res.status(404).json({ error: 'Job has no downloadable files' });
+  }
+
+  const archiveName = `${String(job.folderName || job.id).replace(/[^a-z0-9._-]+/gi, '_')}.zip`;
+  res.attachment(archiveName);
+  res.type('application/zip');
+
+  const archive = new ZipArchive({ zlib: { level: 6 } });
+  archive.on('warning', (error) => console.warn('Archive warning:', error.message));
+  const handleArchiveError = (error) => {
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    } else if (!res.destroyed) {
+      res.destroy(error);
+    }
+  };
+  archive.on('error', handleArchiveError);
+  archive.pipe(res);
+  for (const file of files) {
+    archive.file(file.filePath, { name: file.fileName });
+  }
+  void archive.finalize().catch(handleArchiveError);
 });
 
 app.post('/api/jobs', async (req, res) => {

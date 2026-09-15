@@ -61,6 +61,7 @@ h1 { margin: 0; max-width: 780px; font: 600 clamp(42px, 6vw, 72px)/.98 'Newsread
 .create-panel > .notice { grid-column: 3; }
 .notice { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 12px; border-left: 3px solid; }
 .notice.success { color: var(--green); background: rgba(48, 128, 105, .2); }
+.notice.warning { color: #f0cc73; background: rgba(139, 105, 29, .22); }
 .notice.error { color: #ff9aab; background: rgba(145, 46, 72, .22); }
 .jobs-section { margin-top: 54px; }
 .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
@@ -80,6 +81,7 @@ tbody tr:hover { background: var(--surface); }
 .status { width: fit-content; display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; font-size: 10px; font-weight: 700; text-transform: uppercase; border: 1px solid currentColor; }
 .status-completed { color: var(--green); background: rgba(48, 128, 105, .2); }
 .status-running { color: #f0cc73; background: rgba(139, 105, 29, .22); }
+.status-partially_completed { color: #f0cc73; background: rgba(139, 105, 29, .22); }
 .status-queued { color: #b5c2e5; background: rgba(81, 104, 169, .2); }
 .status-failed { color: #ff9aab; background: rgba(145, 46, 72, .22); }
 .status-running svg, .spin { animation: spin 1.4s linear infinite; }
@@ -105,7 +107,13 @@ tbody tr:hover { background: var(--surface); }
 code { font: 400 11px 'DM Mono', monospace; }
 .command-code { display: block; width: 100%; max-width: 100%; padding: 10px 12px; overflow-x: auto; color: #cbd6ff; background: #080e21; border: 1px solid var(--line); white-space: nowrap; }
 .info-panel .notice { margin-top: 18px; }
+.output-panel { min-width: 0; margin-top: 48px; }
+.output-panel pre { max-height: 440px; margin: 0; padding: 18px; overflow: auto; color: #cbd6ff; background: #050817; border: 1px solid var(--line); font: 400 11px/1.65 'DM Mono', monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .files-panel .section-title > strong { font: 500 12px 'DM Mono', monospace; }
+.files-actions { display: flex; align-items: center; gap: 12px; }
+.files-actions > strong { font: 500 12px 'DM Mono', monospace; }
+.download-all { height: 34px; padding: 0 11px; display: inline-flex; align-items: center; gap: 6px; color: white; background: var(--royal); font-size: 10px; font-weight: 700; text-decoration: none; }
+.download-all:hover { background: #7693f5; }
 .empty-files { display: flex; align-items: center; gap: 12px; padding: 25px; color: var(--muted); border: 1px dashed #405487; }
 .empty-files p { margin: 0; font-size: 12px; }
 .file-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--ink); }

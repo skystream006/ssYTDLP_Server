@@ -1,5 +1,6 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
+import helmet from 'helmet';
 import { ZipArchive } from 'archiver';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -14,6 +15,12 @@ import { attachUser, registerAuthRoutes, requireAuth } from './auth.js';
 import { loadHttpsOptions } from './tls.js';
 
 const app = express();
+if (process.env.TRUST_PROXY) {
+  const trustProxy = /^\d+$/.test(process.env.TRUST_PROXY)
+    ? Number(process.env.TRUST_PROXY)
+    : process.env.TRUST_PROXY;
+  app.set('trust proxy', trustProxy);
+}
 const { values: options, positionals } = parseArgs({
   options: {
     port: { type: 'string', short: 'p' },
@@ -34,16 +41,50 @@ if (httpPort === httpsPort) {
 
 const apiLimiter = rateLimit({
   windowMs: 60_000,
-  limit: 120,
-  standardHeaders: true,
+  limit: 180,
+  standardHeaders: 'draft-7',
   legacyHeaders: false
 });
 
-app.use(express.json());
+function authLimiter(windowMs, limit) {
+  return rateLimit({
+    windowMs,
+    limit,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    message: { error: 'Too many passkey requests. Please wait before trying again.' }
+  });
+}
+
+const authLimiters = {
+  registrationOptions: authLimiter(60 * 60_000, 5),
+  registrationVerify: authLimiter(60 * 60_000, 10),
+  loginOptions: authLimiter(10 * 60_000, 20),
+  loginVerify: authLimiter(10 * 60_000, 20)
+};
+
 app.use('/api', apiLimiter);
+app.use(express.json({ limit: '128kb' }));
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+      imgSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      frameAncestors: ["'none'"],
+      formAction: ["'self'"]
+    }
+  },
+  crossOriginEmbedderPolicy: false
+}));
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 app.use(attachUser);
-registerAuthRoutes(app);
+registerAuthRoutes(app, authLimiters);
 app.use('/api/jobs', requireAuth);
 app.use('/api/health', requireAuth);
 
@@ -206,18 +247,38 @@ app.get('/job/:id', (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 
+app.use((error, req, res, next) => {
+  if (error.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Request body is too large' });
+  }
+  if (error instanceof SyntaxError && error.status === 400 && 'body' in error) {
+    return res.status(400).json({ error: 'Request body must contain valid JSON' });
+  }
+  return next(error);
+});
+
 const httpsOrigin = process.env.PASSKEY_ORIGIN || `https://localhost:${httpsPort}`;
 const httpsOptions = await loadHttpsOptions();
 
-http.createServer((req, res) => {
+function protectServer(server) {
+  server.requestTimeout = 15_000;
+  server.headersTimeout = 10_000;
+  server.keepAliveTimeout = 5_000;
+  server.maxHeadersCount = 100;
+  server.maxRequestsPerSocket = 100;
+  server.maxConnections = Number(process.env.MAX_CONNECTIONS || 500);
+  return server;
+}
+
+protectServer(http.createServer((req, res) => {
   const location = new URL(req.url || '/', httpsOrigin);
   res.writeHead(308, { Location: location.toString() });
   res.end();
-}).listen(httpPort, () => {
+})).listen(httpPort, () => {
   console.log(`ssYTDLP HTTP redirect listening on http://localhost:${httpPort}`);
 });
 
-https.createServer(httpsOptions, app).listen(httpsPort, () => {
+protectServer(https.createServer(httpsOptions, app)).listen(httpsPort, () => {
   console.log(`ssYTDLP HTTPS server listening on https://localhost:${httpsPort}`);
 });
 

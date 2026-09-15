@@ -69,6 +69,16 @@ Users, public passkey credentials, access decisions, and hashed login sessions a
 in `data/auth.json`. Set `AUTH_STORE_PATH` to use a different file. Private passkey keys
 remain in the user's authenticator, such as Bitwarden, and are never sent to the server.
 
+Passkey registration and login endpoints have stricter per-client rate limits than the
+authenticated API. WebAuthn challenge storage is bounded and expired challenges are removed,
+JSON request bodies are size-limited, and both listeners enforce connection and request
+timeouts. Set `MAX_CONNECTIONS` to adjust each listener's simultaneous connection ceiling.
+For an internet-facing deployment, retain these application controls behind a reverse proxy
+or managed DDoS service; one Node.js process cannot absorb a volumetric network attack alone.
+When a trusted reverse proxy is the only route to the app, set `TRUST_PROXY` to its hop count
+or subnet so per-client limits use the forwarded address. Do not enable it when clients can
+connect directly, because untrusted forwarding headers can be spoofed.
+
 By default, the server expects Deno at `runtime/deno/bin/deno`.
 You can override this with `DENO_PATH=/absolute/path/to/deno`.
 It expects yt-dlp at `runtime/yt-dlp/yt-dlp.exe`; override this with

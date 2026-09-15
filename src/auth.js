@@ -19,6 +19,8 @@ import {
 
 const challenges = new Map();
 const challengeLifetimeMs = 5 * 60 * 1000;
+const maxChallenges = 5_000;
+const maxChallengesPerClient = 10;
 const sessionCookie = 'ssytdlp_session';
 
 function getWebAuthnConfig(req) {
@@ -32,13 +34,28 @@ function getWebAuthnConfig(req) {
   return { rpID, origin };
 }
 
-function rememberChallenge(data) {
+function pruneChallenges() {
+  const now = Date.now();
+  for (const [requestId, challenge] of challenges) {
+    if (challenge.expiresAt < now) challenges.delete(requestId);
+  }
+}
+
+function rememberChallenge(data, clientId) {
+  pruneChallenges();
+  const clientChallenges = [...challenges.values()].filter((challenge) => challenge.clientId === clientId).length;
+  if (challenges.size >= maxChallenges || clientChallenges >= maxChallengesPerClient) {
+    const error = new Error('Too many passkey requests. Please wait before trying again.');
+    error.statusCode = 429;
+    throw error;
+  }
   const requestId = crypto.randomUUID();
-  challenges.set(requestId, { ...data, expiresAt: Date.now() + challengeLifetimeMs });
+  challenges.set(requestId, { ...data, clientId, expiresAt: Date.now() + challengeLifetimeMs });
   return requestId;
 }
 
 function takeChallenge(requestId, type) {
+  pruneChallenges();
   const challenge = challenges.get(requestId);
   challenges.delete(requestId);
   if (!challenge || challenge.type !== type || challenge.expiresAt < Date.now()) {
@@ -91,13 +108,20 @@ export function requireAdmin(req, res, next) {
   return next();
 }
 
-export function registerAuthRoutes(app) {
+const noLimit = (_req, _res, next) => next();
+
+export function registerAuthRoutes(app, limiters = {}) {
+  const registrationOptionsLimiter = limiters.registrationOptions || noLimit;
+  const registrationVerifyLimiter = limiters.registrationVerify || noLimit;
+  const loginOptionsLimiter = limiters.loginOptions || noLimit;
+  const loginVerifyLimiter = limiters.loginVerify || noLimit;
+
   app.get('/api/auth/me', (req, res) => {
     if (!req.user) return res.status(401).json({ error: 'Passkey login required' });
     return res.json({ user: req.user });
   });
 
-  app.post('/api/auth/register/options', async (req, res) => {
+  app.post('/api/auth/register/options', registrationOptionsLimiter, async (req, res) => {
     try {
       const name = String(req.body?.name || '').trim();
       if (name.length < 2 || name.length > 64) {
@@ -124,14 +148,14 @@ export function registerAuthRoutes(app) {
         userHandle: userHandle.toString('base64url'),
         rpID,
         origin
-      });
+      }, req.ip);
       return res.json({ requestId, options });
     } catch (error) {
       return sendError(res, error);
     }
   });
 
-  app.post('/api/auth/register/verify', async (req, res) => {
+  app.post('/api/auth/register/verify', registrationVerifyLimiter, async (req, res) => {
     try {
       const challenge = takeChallenge(req.body?.requestId, 'registration');
       const verification = await verifyRegistrationResponse({
@@ -156,7 +180,7 @@ export function registerAuthRoutes(app) {
     }
   });
 
-  app.post('/api/auth/login/options', async (req, res) => {
+  app.post('/api/auth/login/options', loginOptionsLimiter, async (req, res) => {
     try {
       const { rpID, origin } = getWebAuthnConfig(req);
       const options = await generateAuthenticationOptions({
@@ -168,14 +192,14 @@ export function registerAuthRoutes(app) {
         challenge: options.challenge,
         rpID,
         origin
-      });
+      }, req.ip);
       return res.json({ requestId, options });
     } catch (error) {
       return sendError(res, error);
     }
   });
 
-  app.post('/api/auth/login/verify', async (req, res) => {
+  app.post('/api/auth/login/verify', loginVerifyLimiter, async (req, res) => {
     try {
       const challenge = takeChallenge(req.body?.requestId, 'authentication');
       const match = findCredential(req.body?.response?.id);

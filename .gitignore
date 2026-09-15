@@ -5,3 +5,4 @@ runtime/deno/
 runtime/ffmpeg/
 runtime/yt-dlp/
 output/
+public/assets/

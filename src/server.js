@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createJob, getFilePath, getJob, getJobs, isFileInsideJobFolder } from './jobManager.js';
 import { getSystemHealth } from './health.js';
 import { isYouTubeMusicUrl } from './utils.js';
+import { scheduleDailyMaintenance } from './scheduler.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -114,3 +115,5 @@ app.get('/job/:id', (_req, res) => {
 app.listen(port, () => {
   console.log(`ssYTDLP server listening on http://localhost:${port}`);
 });
+
+scheduleDailyMaintenance(3, 0);

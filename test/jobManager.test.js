@@ -68,3 +68,27 @@ test('jobManager queues jobs around a maintenance update', {
     await fs.rm(outputRoot, { recursive: true, force: true });
   });
 });
+
+test('rerunning a job creates a distinct job with the same source', async (t) => {
+  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-rerun-'));
+  process.env.YTDLP_OUTPUT_ROOT = outputRoot;
+  process.env.YTDLP_PATH = path.join(outputRoot, 'missing-yt-dlp');
+
+  const jobManager = await import(`../src/jobManager.js?rerun=${Date.now()}`);
+  const original = await jobManager.createJob('https://music.youtube.com/watch?v=abc');
+  const rerun = await jobManager.rerunJob(original.id);
+
+  assert.notEqual(rerun.id, original.id);
+  assert.equal(rerun.url, original.url);
+  assert.equal(rerun.isPlaylist, original.isPlaylist);
+  assert.equal(jobManager.getJob(original.id), original);
+  assert.equal(await jobManager.rerunJob('missing-job'), null);
+
+  while (original.status === 'queued' || original.status === 'running' || rerun.status === 'queued' || rerun.status === 'running') {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  t.after(async () => {
+    await fs.rm(outputRoot, { recursive: true, force: true });
+  });
+});

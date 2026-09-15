@@ -17,6 +17,7 @@ import {
   Network,
   Plus,
   RefreshCw,
+  RotateCcw,
   Server,
   X
 } from 'lucide-react';
@@ -214,8 +215,22 @@ function JobPage({ id }) {
     request(`/api/jobs/${id}/files`).catch(() => ({ files: [] }))
   ]);
   const { data, error } = usePolling(loadJob, POLL_INTERVAL, id);
+  const [rerunning, setRerunning] = useState(false);
+  const [rerunError, setRerunError] = useState('');
   const job = data?.[0];
   const files = data?.[1]?.files || [];
+
+  async function rerun() {
+    setRerunning(true);
+    setRerunError('');
+    try {
+      const newJob = await request(`/api/jobs/${id}/rerun`, { method: 'POST' });
+      window.location.assign(`/job/${newJob.id}`);
+    } catch (requestError) {
+      setRerunError(requestError.message);
+      setRerunning(false);
+    }
+  }
 
   return (
     <AppShell>
@@ -229,8 +244,15 @@ function JobPage({ id }) {
             <h1>{job.folderName || 'Preparing download'}</h1>
             <div className="detail-meta"><StatusBadge status={job.status} /><span>Created {formatDate(job.createdAt)}</span></div>
           </div>
-          <div className="record-art"><Disc3 size={70} strokeWidth={1.2} /></div>
+          <div className="detail-actions">
+            <div className="record-art"><Disc3 size={70} strokeWidth={1.2} /></div>
+            <button className="primary-button rerun-button" disabled={rerunning} onClick={rerun} type="button">
+              {rerunning ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
+              {rerunning ? 'Starting' : 'Rerun job'}
+            </button>
+          </div>
         </section>
+        {rerunError && <div className="notice error page-notice"><CircleAlert size={16} />{rerunError}</div>}
         <div className="detail-grid">
           <section className="info-panel">
             <div className="section-title"><div><span>01</span><h2>Job details</h2></div></div>

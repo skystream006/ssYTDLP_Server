@@ -242,6 +242,15 @@ export async function createJob(url) {
   return job;
 }
 
+export async function rerunJob(id) {
+  const originalJob = getJob(id);
+  if (!originalJob) {
+    return null;
+  }
+
+  return createJob(originalJob.url);
+}
+
 export function getJobs() {
   return [...jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }

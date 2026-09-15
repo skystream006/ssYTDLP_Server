@@ -67,12 +67,23 @@ h1 { margin: 0; max-width: 780px; font: 600 clamp(42px, 6vw, 72px)/.98 'Newsread
 .danger-button { height: 48px; padding: 0 18px; display: inline-flex; align-items: center; gap: 7px; border: 1px solid #b94c68; color: #ffafbd; background: rgba(145, 46, 72, .18); font-size: 12px; font-weight: 700; cursor: pointer; }
 .danger-button:hover { color: white; background: #a83b58; }
 .danger-button:disabled { opacity: .45; cursor: not-allowed; }
+.confirmation-dialog { width: min(460px, calc(100% - 32px)); max-height: calc(100dvh - 32px); padding: 26px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--surface); box-shadow: 0 20px 70px var(--shadow); overflow-y: auto; }
+.confirmation-dialog::backdrop { background: rgba(2, 4, 11, .75); }
+.confirmation-dialog h2 { margin: 0; font: 600 26px 'Newsreader', serif; }
+.confirmation-dialog p { margin: 14px 0 24px; color: var(--muted); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.dialog-actions button { justify-content: center; }
+.dialog-actions button:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 .create-panel > .notice { grid-column: 3; }
 .notice { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 12px; border-left: 3px solid; }
 .notice.success { color: var(--green); background: rgba(48, 128, 105, .2); }
 .notice.warning { color: #f0cc73; background: rgba(139, 105, 29, .22); }
 .notice.error { color: #ff9aab; background: rgba(145, 46, 72, .22); }
 .jobs-section { margin-top: 54px; }
+.jobs-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.jobs-filters label { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.jobs-filters select { width: 220px; max-width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line); color: var(--ink); background: #080e21; font-size: 12px; }
+.jobs-filters select:focus-visible { outline: 2px solid var(--royal); outline-offset: 2px; }
 .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .section-title > div { display: flex; align-items: baseline; gap: 15px; }
 .refresh-note { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; text-transform: uppercase; }
@@ -87,6 +98,7 @@ tbody tr:hover { background: var(--surface); }
 .job-name strong, .job-name small { display: block; }
 .job-name strong { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .job-name small { margin-top: 4px; color: var(--muted); font: 400 9px 'DM Mono', monospace; }
+.job-initiator { display: block; min-width: 80px; max-width: 160px; overflow-wrap: anywhere; }
 .status { width: fit-content; display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; font-size: 10px; font-weight: 700; text-transform: uppercase; border: 1px solid currentColor; }
 .status-completed { color: var(--green); background: rgba(48, 128, 105, .2); }
 .status-running { color: #f0cc73; background: rgba(139, 105, 29, .22); }
@@ -96,6 +108,13 @@ tbody tr:hover { background: var(--surface); }
 .status-running svg, .spin { animation: spin 1.4s linear infinite; }
 .icon-link { display: grid; place-items: center; width: 34px; height: 34px; margin-left: auto; border: 1px solid var(--line); text-decoration: none; }
 .icon-link:hover { color: var(--paper); border-color: var(--ink); background: var(--ink); }
+.job-row-actions { display: flex; justify-content: flex-end; gap: 6px; min-width: 114px; }
+.job-row-actions .icon-link { flex: none; margin: 0; padding: 0; cursor: pointer; }
+.job-row-actions button { color: var(--ink); background: transparent; }
+.job-row-actions .row-delete { color: #ff9aab; }
+.job-row-actions .row-delete:hover:not(:disabled) { color: white; background: #a83b58; border-color: #b94c68; }
+.job-row-actions button:disabled { opacity: .4; cursor: not-allowed; background: transparent; border-color: var(--line); }
+.job-row-actions .icon-link:focus-visible { outline: 2px solid var(--royal); outline-offset: 2px; }
 .empty-state { padding: 65px 20px; text-align: center; border: 1px dashed #405487; background: rgba(14, 23, 48, .58); }
 .empty-state h3 { margin: 12px 0 4px; font: 600 20px 'Newsreader', serif; }
 .empty-state p { margin: 0; color: var(--muted); font-size: 12px; }

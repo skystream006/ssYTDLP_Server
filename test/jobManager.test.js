@@ -73,12 +73,13 @@ test('duplicate source URLs return the previous job without creating another rec
   const url = 'https://music.youtube.com/watch?v=existing';
   await fs.writeFile(process.env.JOB_STORE_PATH, JSON.stringify([{
     id: 'previous-job', url, status: 'completed', files: [],
+    initiatedBy: { id: 'alice-id', name: 'Alice' },
     createdAt: new Date().toISOString()
   }]));
   const manager = await import(`../src/jobManager.js?duplicate=${Date.now()}`);
   for (const status of ['completed', 'failed', 'partially_completed', 'queued', 'running']) {
     manager.getJob('previous-job').status = status;
-    await assert.rejects(manager.createJob(` ${url} `), (error) => {
+    await assert.rejects(manager.createJob(` ${url} `, { id: 'bob-id', name: 'Bob' }), (error) => {
       assert.equal(error.statusCode, 409);
       assert.equal(error.code, 'JOB_ALREADY_EXISTS');
       assert.equal(error.existingJob.id, 'previous-job');
@@ -86,6 +87,7 @@ test('duplicate source URLs return the previous job without creating another rec
       return true;
     });
     assert.equal(manager.getJobs().length, 1);
+    assert.deepEqual(manager.getJob('previous-job').initiatedBy, { id: 'alice-id', name: 'Alice' });
   }
 });
 
@@ -155,13 +157,17 @@ test('rerunning overwrites a finished job while preserving its ID', async (t) =>
   process.env.JOB_STORE_PATH = path.join(outputRoot, 'jobs.json');
 
   const jobManager = await import(`../src/jobManager.js?rerun=${Date.now()}`);
-  const job = await jobManager.createJob('https://music.youtube.com/watch?v=abc');
+  const job = await jobManager.createJob('https://music.youtube.com/watch?v=abc', {
+    id: 'alice-id', name: 'Alice', role: 'admin'
+  });
+  assert.deepEqual(job.initiatedBy, { id: 'alice-id', name: 'Alice' });
   await waitForJobToFinish(job);
   const firstOutputDir = job.outputDir;
   await fs.writeFile(path.join(firstOutputDir, 'old-output.mp3'), 'old');
 
-  const rerun = await jobManager.rerunJob(job.id);
+  const rerun = await jobManager.rerunJob(job.id, { id: 'bob-id', name: 'Bob' });
 
+  assert.deepEqual(rerun.initiatedBy, { id: 'bob-id', name: 'Bob' });
   assert.equal(rerun.id, job.id);
   assert.equal(rerun, job);
   assert.equal(jobManager.getJob(job.id), job);
@@ -207,7 +213,9 @@ test('job history is restored after a manager restart', async (t) => {
   process.env.JOB_STORE_PATH = jobStorePath;
 
   const firstManager = await import(`../src/jobManager.js?persist-write=${Date.now()}`);
-  const createdJob = await firstManager.createJob('https://music.youtube.com/watch?v=persist');
+  const createdJob = await firstManager.createJob('https://music.youtube.com/watch?v=persist', {
+    id: 'alice-id', name: 'Alice'
+  });
   await waitForJobToFinish(createdJob);
 
   while (true) {
@@ -221,6 +229,7 @@ test('job history is restored after a manager restart', async (t) => {
 
   assert.equal(restoredJob.id, createdJob.id);
   assert.equal(restoredJob.url, createdJob.url);
+  assert.deepEqual(restoredJob.initiatedBy, { id: 'alice-id', name: 'Alice' });
   assert.equal(restoredJob.status, createdJob.status);
   assert.equal(restoredJob.command, createdJob.command);
   assert.equal(restoredJob.output, createdJob.output);

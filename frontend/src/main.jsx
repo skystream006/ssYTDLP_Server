@@ -1,4 +1,4 @@
-import { createContext, StrictMode, useContext, useEffect, useState } from 'react';
+import { createContext, StrictMode, useContext, useEffect, useId, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
 import {
@@ -33,6 +33,63 @@ import './styles.css';
 
 const POLL_INTERVAL = 5000;
 const AuthContext = createContext(null);
+
+function ConfirmationDialog({ title, message, action, onAnswer }) {
+  const dialogRef = useRef(null);
+  const titleId = useId();
+  const messageId = useId();
+  const ActionIcon = action === 'delete' ? Trash2 : action === 'rerun' ? RotateCcw : ExternalLink;
+  const actionLabel = action === 'delete' ? 'Delete job' : action === 'rerun' ? 'Rerun job' : 'Open details';
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    return () => {
+      dialog.close();
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, []);
+
+  return <dialog ref={dialogRef} className="confirmation-dialog" aria-labelledby={titleId} aria-describedby={messageId}
+    onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); onAnswer(false); } }}
+    onCancel={(event) => { event.preventDefault(); onAnswer(false); }}>
+    <h2 id={titleId}>{title}</h2>
+    <p id={messageId}>{message}</p>
+    <div className="dialog-actions">
+      <button className="secondary-button" type="button" onClick={() => onAnswer(false)}>Cancel</button>
+      <button className={action === 'delete' ? 'danger-button' : 'primary-button'} type="button" onClick={() => onAnswer(true)}>
+        <ActionIcon size={17} />{actionLabel}
+      </button>
+    </div>
+  </dialog>;
+}
+
+function useConfirmation() {
+  const [options, setOptions] = useState(null);
+  const answerRef = useRef(null);
+
+  useEffect(() => () => {
+    answerRef.current?.(false);
+    answerRef.current = null;
+  }, []);
+
+  function confirm(options) {
+    if (answerRef.current) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      answerRef.current = resolve;
+      setOptions(options);
+    });
+  }
+
+  function answer(value) {
+    answerRef.current?.(value);
+    answerRef.current = null;
+    setOptions(null);
+  }
+
+  return { confirm, dialog: options && <ConfirmationDialog {...options} onAnswer={answer} /> };
+}
 
 async function request(url, options) {
   const response = await fetch(url, options);
@@ -131,10 +188,38 @@ function formatDate(value) {
 }
 
 function JobsPage() {
+  const { confirm, dialog } = useConfirmation();
   const { data: jobs, error: loadError } = usePolling(loadJobs);
   const [url, setUrl] = useState('');
   const [message, setMessage] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [jobAction, setJobAction] = useState(null);
+  const [actionError, setActionError] = useState('');
+  const [userFilter, setUserFilter] = useState('all');
+
+  async function runJobAction(job, action) {
+    if (jobAction || job.status === 'queued' || job.status === 'running') return;
+    const message = action === 'rerun'
+      ? `Rerun ${job.folderName || job.id}? Its existing downloaded files will be replaced.`
+      : `Delete ${job.folderName || job.id} and all of its downloaded files?`;
+    if (!await confirm({ title: action === 'rerun' ? 'Rerun job?' : 'Delete job?', message, action })) return;
+
+    setJobAction({ id: job.id, action });
+    setActionError('');
+    try {
+      const jobUrl = `/api/jobs/${encodeURIComponent(job.id)}`;
+      if (action === 'rerun') {
+        await request(`${jobUrl}/rerun`, { method: 'POST' });
+        window.location.assign(`/job/${encodeURIComponent(job.id)}`);
+      } else {
+        await request(jobUrl, { method: 'DELETE' });
+        window.location.reload();
+      }
+    } catch (error) {
+      setActionError(error.message);
+      setJobAction(null);
+    }
+  }
 
   async function submitJob(event) {
     event.preventDefault();
@@ -153,12 +238,12 @@ function JobsPage() {
         const previous = error.existingJob;
         const detailsUrl = `/job/${encodeURIComponent(previous.id)}`;
         if (previous.status === 'queued' || previous.status === 'running') {
-          if (window.confirm('This URL already has an active job. Open its details?')) {
+          if (await confirm({ title: 'Job already active', message: 'This URL already has an active job. Open its details?', action: 'open' })) {
             window.location.assign(detailsUrl);
           }
           return;
         }
-        if (!window.confirm(`This URL was used in job ${previous.folderName || previous.id}. Rerun it? Its existing downloaded files will be replaced.`)) {
+        if (!await confirm({ title: 'Job already exists', message: `This URL was used in job ${previous.folderName || previous.id}. Rerun it? Its existing downloaded files will be replaced.`, action: 'rerun' })) {
           return;
         }
         const reranJob = await request(`/api/jobs/${encodeURIComponent(previous.id)}/rerun`, { method: 'POST' });
@@ -174,13 +259,23 @@ function JobsPage() {
     }
   }
 
-  const counts = (jobs || []).reduce((result, job) => {
+  const initiators = new Map();
+  for (const job of jobs || []) {
+    const id = job.initiatedBy?.id || 'unknown';
+    if (!initiators.has(id)) initiators.set(id, job.initiatedBy?.name || 'Unknown');
+  }
+  const userOptions = [...initiators].sort((left, right) => left[1].localeCompare(right[1]));
+  const filteredJobs = (jobs || []).filter((job) => (
+    userFilter === 'all' || (job.initiatedBy?.id || 'unknown') === userFilter
+  ));
+  const counts = filteredJobs.reduce((result, job) => {
     result[job.status] = (result[job.status] || 0) + 1;
     return result;
   }, {});
 
   return (
     <AppShell>
+      {dialog}
       <section className="page-heading">
         <div>
           <p className="eyebrow">Download queue</p>
@@ -188,7 +283,7 @@ function JobsPage() {
           <p>Send a YouTube Music track or playlist to your local archive.</p>
         </div>
         <div className="queue-summary" aria-label="Queue summary">
-          <div><strong>{jobs?.length ?? '-'}</strong><span>Total</span></div>
+          <div><strong>{jobs ? filteredJobs.length : '-'}</strong><span>Total</span></div>
           <div><strong>{counts.running || 0}</strong><span>Active</span></div>
           <div><strong>{(counts.completed || 0) + (counts.partially_completed || 0)}</strong><span>Ready</span></div>
         </div>
@@ -225,21 +320,42 @@ function JobsPage() {
           <div><span>02</span><h2>Recent jobs</h2></div>
           <span className="refresh-note"><RefreshCw size={13} /> Refreshes every 5 seconds</span>
         </div>
+        <div className="jobs-filters">
+          <label htmlFor="job-user-filter"><Users size={16} />Initiated by</label>
+          <select id="job-user-filter" value={userFilter} onChange={(event) => setUserFilter(event.target.value)}>
+            <option value="all">All users</option>
+            {userOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            {userFilter !== 'all' && !initiators.has(userFilter) && <option value={userFilter}>Selected user (no jobs)</option>}
+          </select>
+        </div>
         {loadError && <div className="notice error"><CircleAlert size={16} />{loadError}</div>}
+        {actionError && <div className="notice error" role="alert"><CircleAlert size={16} />{actionError}</div>}
         {jobs?.length === 0 && (
           <div className="empty-state"><Disc3 size={34} /><h3>No downloads yet</h3><p>Your first job will appear here.</p></div>
         )}
-        {jobs?.length > 0 && (
+        {jobs?.length > 0 && filteredJobs.length === 0 && (
+          <div className="empty-state"><Users size={34} /><h3>No jobs for this user</h3></div>
+        )}
+        {filteredJobs.length > 0 && (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Job</th><th>Format</th><th>Status</th><th>Created</th><th><span className="sr-only">Open</span></th></tr></thead>
-              <tbody>{jobs.map((job) => (
+              <thead><tr><th>Job</th><th>Format</th><th>Status</th><th>Created</th><th>Initiated by</th><th>Actions</th></tr></thead>
+              <tbody>{filteredJobs.map((job) => (
                 <tr key={job.id}>
                   <td><a className="job-name" href={`/job/${job.id}`}><span>{job.isPlaylist ? <ListMusic size={18} /> : <Music2 size={18} />}</span><div><strong>{job.folderName || 'Preparing download'}</strong><small>{job.id}</small></div></a></td>
                   <td>{job.isPlaylist ? 'Playlist' : 'Track'}</td>
                   <td><StatusBadge status={job.status} /></td>
                   <td>{formatDate(job.createdAt)}</td>
-                  <td><a className="icon-link" href={`/job/${job.id}`} aria-label={`Open job ${job.id}`}><ExternalLink size={17} /></a></td>
+                  <td><span className="job-initiator">{job.initiatedBy?.name || 'Unknown'}</span></td>
+                  <td><div className="job-row-actions">
+                    <a className="icon-link" href={`/job/${job.id}`} aria-label={`Open job ${job.id}`} title="Open job"><ExternalLink size={17} /></a>
+                    <button className="icon-link" type="button" title="Rerun job" aria-label={`Rerun job ${job.id}`} disabled={Boolean(jobAction) || job.status === 'queued' || job.status === 'running'} onClick={() => runJobAction(job, 'rerun')}>
+                      {jobAction?.id === job.id && jobAction.action === 'rerun' ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
+                    </button>
+                    <button className="icon-link row-delete" type="button" title="Delete job" aria-label={`Delete job ${job.id}`} disabled={Boolean(jobAction) || job.status === 'queued' || job.status === 'running'} onClick={() => runJobAction(job, 'delete')}>
+                      {jobAction?.id === job.id && jobAction.action === 'delete' ? <RefreshCw className="spin" size={17} /> : <Trash2 size={17} />}
+                    </button>
+                  </div></td>
                 </tr>
               ))}</tbody>
             </table>
@@ -251,6 +367,7 @@ function JobsPage() {
 }
 
 function JobPage({ id }) {
+  const { confirm, dialog } = useConfirmation();
   const loadJob = () => Promise.all([
     request(`/api/jobs/${id}`),
     request(`/api/jobs/${id}/files`).catch(() => ({ files: [] }))
@@ -264,6 +381,7 @@ function JobPage({ id }) {
   const isActive = job?.status === 'queued' || job?.status === 'running';
 
   async function rerun() {
+    if (!await confirm({ title: 'Rerun job?', message: `Rerun ${job.folderName || job.id}? Its existing downloaded files will be replaced.`, action: 'rerun' })) return;
     setRerunning(true);
     setActionError('');
     try {
@@ -276,7 +394,7 @@ function JobPage({ id }) {
   }
 
   async function remove() {
-    if (!window.confirm('Delete this job and all of its downloaded files?')) {
+    if (!await confirm({ title: 'Delete job?', message: 'Delete this job and all of its downloaded files?', action: 'delete' })) {
       return;
     }
 
@@ -293,6 +411,7 @@ function JobPage({ id }) {
 
   return (
     <AppShell>
+      {dialog}
       <a className="back-link" href="/"><ArrowLeft size={17} /> Back to jobs</a>
       {error && <div className="notice error page-notice"><CircleAlert size={16} />{error}</div>}
       {!job && !error && <div className="loading"><RefreshCw className="spin" /> Loading job</div>}
@@ -322,6 +441,7 @@ function JobPage({ id }) {
             <dl>
               <dt>Source URL</dt><dd><a href={job.url} target="_blank" rel="noreferrer">{job.url}<ExternalLink size={14} /></a></dd>
               <dt>Job ID</dt><dd><code>{job.id}</code></dd>
+              <dt>Initiated by</dt><dd>{job.initiatedBy?.name || 'Unknown'}</dd>
               <dt>Output folder</dt><dd><code>{job.folderName || 'Pending'}</code></dd>
               <dt>Last updated</dt><dd>{formatDate(job.updatedAt)}</dd>
               <dt>Command</dt><dd><code className="command-code">{job.command || 'Pending'}</code></dd>

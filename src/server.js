@@ -195,7 +195,7 @@ app.post('/api/jobs', async (req, res) => {
   }
 
   try {
-    const job = await createJob(url);
+    const job = await createJob(url, req.user);
     return res.status(202).json(job);
   } catch (error) {
     return res.status(error.statusCode || 500).json({
@@ -208,7 +208,7 @@ app.post('/api/jobs', async (req, res) => {
 
 app.post('/api/jobs/:id/rerun', async (req, res) => {
   try {
-    const job = await rerunJob(req.params.id);
+    const job = await rerunJob(req.params.id, req.user);
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }

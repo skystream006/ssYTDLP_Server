@@ -220,12 +220,13 @@ async function getPlaylistFolderName(url, denoPath) {
   return sanitizeFolderName(parsed.title || 'playlist');
 }
 
-function newJob(url) {
+function newJob(url, initiatedBy) {
   const id = randomSongFolderName();
   const now = new Date().toISOString();
   const job = {
     id,
     url,
+    initiatedBy,
     isPlaylist: isPlaylistUrl(url),
     status: 'queued',
     error: null,
@@ -383,7 +384,7 @@ export function isUpdateInProgress() {
   return updateGate !== null;
 }
 
-export async function createJob(url) {
+export async function createJob(url, user = null) {
   await ensureOutputRoot();
   const sourceUrl = url.trim();
   const existingJob = getJobs().find((job) => job.url.trim() === sourceUrl);
@@ -398,13 +399,13 @@ export async function createJob(url) {
     };
     throw error;
   }
-  const job = newJob(sourceUrl);
+  const job = newJob(sourceUrl, user ? { id: user.id, name: user.name } : null);
   await persistJobs();
   startJob(job);
   return job;
 }
 
-export async function rerunJob(id) {
+export async function rerunJob(id, user = null) {
   const job = getJob(id);
   if (!job) {
     return null;
@@ -413,6 +414,7 @@ export async function rerunJob(id) {
   assertJobIsIdle(job, 'rerun');
   await removeJobOutput(job);
 
+  job.initiatedBy = user ? { id: user.id, name: user.name } : null;
   job.status = 'queued';
   job.error = null;
   job.warning = null;

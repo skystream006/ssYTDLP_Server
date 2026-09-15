@@ -3,7 +3,7 @@ import rateLimit from 'express-rate-limit';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { createJob, getFilePath, getJob, getJobs, isFileInsideJobFolder, rerunJob } from './jobManager.js';
+import { createJob, deleteJob, getFilePath, getJob, getJobs, isFileInsideJobFolder, rerunJob } from './jobManager.js';
 import { getSystemHealth } from './health.js';
 import { isYouTubeMusicUrl } from './utils.js';
 import { scheduleDailyMaintenance } from './scheduler.js';
@@ -115,7 +115,19 @@ app.post('/api/jobs/:id/rerun', async (req, res) => {
     }
     return res.status(202).json(job);
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/jobs/:id', async (req, res) => {
+  try {
+    const deleted = await deleteJob(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    return res.status(204).end();
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 

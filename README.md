@@ -39,7 +39,8 @@ It expects yt-dlp at `runtime/yt-dlp/yt-dlp.exe`; override this with
 - Paste a `https://music.youtube.com/...` URL
 - Playlist URL (`/playlist?list=...`) runs with `--yes-playlist`
 - Any other music URL runs with `--no-playlist`
-- Open a job's details and select **Rerun job** to queue the same source again
+- Open a finished job's details to view its command, rerun it under the same job ID,
+  or delete the job and its downloaded files
 
 Jobs are tracked in-memory and show running/completed/failed status.
 Downloaded files are written under `./output/<job-folder>/` and can be downloaded from the job details page.

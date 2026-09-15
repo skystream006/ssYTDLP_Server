@@ -11,6 +11,12 @@ async function makeFakeBin(dir, name, { delayMs = 0 } = {}) {
   return scriptPath;
 }
 
+async function waitForJobToFinish(job) {
+  while (job.status === 'queued' || job.status === 'running') {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 test('jobManager queues jobs around a maintenance update', {
   skip: process.platform === 'win32' && 'requires POSIX executable test fixtures'
 }, async (t) => {
@@ -69,24 +75,47 @@ test('jobManager queues jobs around a maintenance update', {
   });
 });
 
-test('rerunning a job creates a distinct job with the same source', async (t) => {
+test('rerunning overwrites a finished job while preserving its ID', async (t) => {
   const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-rerun-'));
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
   process.env.YTDLP_PATH = path.join(outputRoot, 'missing-yt-dlp');
 
   const jobManager = await import(`../src/jobManager.js?rerun=${Date.now()}`);
-  const original = await jobManager.createJob('https://music.youtube.com/watch?v=abc');
-  const rerun = await jobManager.rerunJob(original.id);
+  const job = await jobManager.createJob('https://music.youtube.com/watch?v=abc');
+  await waitForJobToFinish(job);
+  const firstOutputDir = job.outputDir;
+  await fs.writeFile(path.join(firstOutputDir, 'old-output.mp3'), 'old');
 
-  assert.notEqual(rerun.id, original.id);
-  assert.equal(rerun.url, original.url);
-  assert.equal(rerun.isPlaylist, original.isPlaylist);
-  assert.equal(jobManager.getJob(original.id), original);
+  const rerun = await jobManager.rerunJob(job.id);
+
+  assert.equal(rerun.id, job.id);
+  assert.equal(rerun, job);
+  assert.equal(jobManager.getJob(job.id), job);
+  await assert.rejects(fs.access(firstOutputDir));
   assert.equal(await jobManager.rerunJob('missing-job'), null);
 
-  while (original.status === 'queued' || original.status === 'running' || rerun.status === 'queued' || rerun.status === 'running') {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  await waitForJobToFinish(rerun);
+  assert.match(rerun.command, /yt-dlp/);
+
+  t.after(async () => {
+    await fs.rm(outputRoot, { recursive: true, force: true });
+  });
+});
+
+test('deleting a finished job removes its record and output', async (t) => {
+  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-delete-'));
+  process.env.YTDLP_OUTPUT_ROOT = outputRoot;
+  process.env.YTDLP_PATH = path.join(outputRoot, 'missing-yt-dlp');
+
+  const jobManager = await import(`../src/jobManager.js?delete=${Date.now()}`);
+  const job = await jobManager.createJob('https://music.youtube.com/watch?v=abc');
+  await waitForJobToFinish(job);
+  const jobOutputDir = job.outputDir;
+
+  assert.equal(await jobManager.deleteJob(job.id), true);
+  assert.equal(jobManager.getJob(job.id), undefined);
+  await assert.rejects(fs.access(jobOutputDir));
+  assert.equal(await jobManager.deleteJob('missing-job'), false);
 
   t.after(async () => {
     await fs.rm(outputRoot, { recursive: true, force: true });

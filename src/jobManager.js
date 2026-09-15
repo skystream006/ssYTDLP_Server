@@ -134,11 +134,39 @@ function newJob(url) {
   return job;
 }
 
+function startJob(job) {
+  executeJob(job).catch((error) => {
+    job.status = 'failed';
+    job.error = error.message;
+    job.updatedAt = new Date().toISOString();
+  });
+}
+
+function assertJobIsIdle(job, action) {
+  if (job.status === 'queued' || job.status === 'running') {
+    const error = new Error(`Cannot ${action} a job while it is ${job.status}`);
+    error.statusCode = 409;
+    throw error;
+  }
+}
+
+async function removeJobOutput(job) {
+  if (!job.outputDir) {
+    return;
+  }
+
+  const relative = path.relative(outputRoot, job.outputDir);
+  if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+    await fs.rm(job.outputDir, { recursive: true, force: true });
+  }
+}
+
 async function executeJob(job) {
   // If a maintenance update is running (or about to run), queue behind it.
   await waitForUpdateGate();
 
   const denoPath = resolveDenoPath();
+  const ytDlpPath = resolveYtDlpPath();
 
   runningJobsCount += 1;
   job.status = 'running';
@@ -171,10 +199,12 @@ async function executeJob(job) {
   args.push(job.isPlaylist ? '--yes-playlist' : '--no-playlist');
   args.push(job.url);
 
-  job.command = `yt-dlp ${args.map((value) => (value.includes(' ') ? `"${value}"` : value)).join(' ')}`;
+  job.command = [ytDlpPath, ...args]
+    .map((value) => (value.includes(' ') ? `"${value}"` : value))
+    .join(' ');
 
   try {
-    await runCommand(resolveYtDlpPath(), args);
+    await runCommand(ytDlpPath, args);
     job.files = await listDownloadedFiles(job.outputDir);
     job.status = 'completed';
   } catch (error) {
@@ -234,21 +264,41 @@ export function isUpdateInProgress() {
 export async function createJob(url) {
   await ensureOutputRoot();
   const job = newJob(url);
-  executeJob(job).catch((error) => {
-    job.status = 'failed';
-    job.error = error.message;
-    job.updatedAt = new Date().toISOString();
-  });
+  startJob(job);
   return job;
 }
 
 export async function rerunJob(id) {
-  const originalJob = getJob(id);
-  if (!originalJob) {
+  const job = getJob(id);
+  if (!job) {
     return null;
   }
 
-  return createJob(originalJob.url);
+  assertJobIsIdle(job, 'rerun');
+  await removeJobOutput(job);
+
+  job.status = 'queued';
+  job.error = null;
+  job.folderName = null;
+  job.outputDir = null;
+  job.files = [];
+  job.command = null;
+  job.updatedAt = new Date().toISOString();
+
+  startJob(job);
+  return job;
+}
+
+export async function deleteJob(id) {
+  const job = getJob(id);
+  if (!job) {
+    return false;
+  }
+
+  assertJobIsIdle(job, 'delete');
+  await removeJobOutput(job);
+  jobs.delete(id);
+  return true;
 }
 
 export function getJobs() {

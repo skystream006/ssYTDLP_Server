@@ -19,6 +19,7 @@ import {
   RefreshCw,
   RotateCcw,
   Server,
+  Trash2,
   X
 } from 'lucide-react';
 import './styles.css';
@@ -35,7 +36,9 @@ async function request(url, options) {
     body = { error: text || 'Request failed' };
   }
   if (!response.ok) {
-    throw new Error(body.error || 'Request failed');
+    const error = new Error(body.error || 'Request failed');
+    error.status = response.status;
+    throw error;
   }
   return body;
 }
@@ -216,19 +219,37 @@ function JobPage({ id }) {
   ]);
   const { data, error } = usePolling(loadJob, POLL_INTERVAL, id);
   const [rerunning, setRerunning] = useState(false);
-  const [rerunError, setRerunError] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [actionError, setActionError] = useState('');
   const job = data?.[0];
   const files = data?.[1]?.files || [];
+  const isActive = job?.status === 'queued' || job?.status === 'running';
 
   async function rerun() {
     setRerunning(true);
-    setRerunError('');
+    setActionError('');
     try {
-      const newJob = await request(`/api/jobs/${id}/rerun`, { method: 'POST' });
-      window.location.assign(`/job/${newJob.id}`);
+      await request(`/api/jobs/${id}/rerun`, { method: 'POST' });
+      window.location.reload();
     } catch (requestError) {
-      setRerunError(requestError.message);
+      setActionError(requestError.message);
       setRerunning(false);
+    }
+  }
+
+  async function remove() {
+    if (!window.confirm('Delete this job and all of its downloaded files?')) {
+      return;
+    }
+
+    setDeleting(true);
+    setActionError('');
+    try {
+      await request(`/api/jobs/${id}`, { method: 'DELETE' });
+      window.location.assign('/');
+    } catch (requestError) {
+      setActionError(requestError.message);
+      setDeleting(false);
     }
   }
 
@@ -246,13 +267,17 @@ function JobPage({ id }) {
           </div>
           <div className="detail-actions">
             <div className="record-art"><Disc3 size={70} strokeWidth={1.2} /></div>
-            <button className="primary-button rerun-button" disabled={rerunning} onClick={rerun} type="button">
+            <button className="primary-button job-action-button" disabled={isActive || rerunning || deleting} onClick={rerun} type="button">
               {rerunning ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
               {rerunning ? 'Starting' : 'Rerun job'}
             </button>
+            <button className="danger-button job-action-button" disabled={isActive || rerunning || deleting} onClick={remove} type="button">
+              {deleting ? <RefreshCw className="spin" size={17} /> : <Trash2 size={17} />}
+              {deleting ? 'Deleting' : 'Delete job'}
+            </button>
           </div>
         </section>
-        {rerunError && <div className="notice error page-notice"><CircleAlert size={16} />{rerunError}</div>}
+        {actionError && <div className="notice error page-notice"><CircleAlert size={16} />{actionError}</div>}
         <div className="detail-grid">
           <section className="info-panel">
             <div className="section-title"><div><span>01</span><h2>Job details</h2></div></div>
@@ -261,6 +286,7 @@ function JobPage({ id }) {
               <dt>Job ID</dt><dd><code>{job.id}</code></dd>
               <dt>Output folder</dt><dd><code>{job.folderName || 'Pending'}</code></dd>
               <dt>Last updated</dt><dd>{formatDate(job.updatedAt)}</dd>
+              <dt>Command</dt><dd><code className="command-code">{job.command || 'Pending'}</code></dd>
             </dl>
             {job.error && <div className="notice error"><CircleAlert size={16} />{job.error}</div>}
           </section>

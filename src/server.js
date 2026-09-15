@@ -1,4 +1,5 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createJob, getFilePath, getJob, getJobs, isFileInsideJobFolder } from './jobManager.js';
@@ -7,27 +8,15 @@ import { isYouTubeMusicUrl } from './utils.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
-const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 120;
-const requestLog = new Map();
-
-function rateLimit(req, res, next) {
-  const key = req.ip || req.socket.remoteAddress || 'unknown';
-  const now = Date.now();
-  const timestamps = requestLog.get(key) || [];
-  const withinWindow = timestamps.filter((time) => now - time < RATE_LIMIT_WINDOW_MS);
-
-  if (withinWindow.length >= RATE_LIMIT_MAX_REQUESTS) {
-    return res.status(429).json({ error: 'Too many requests. Please retry shortly.' });
-  }
-
-  withinWindow.push(now);
-  requestLog.set(key, withinWindow);
-  return next();
-}
+const apiLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 120,
+  standardHeaders: true,
+  legacyHeaders: false
+});
 
 app.use(express.json());
-app.use(rateLimit);
+app.use(apiLimiter);
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 
 app.get('/api/jobs', (_req, res) => {

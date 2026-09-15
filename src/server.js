@@ -17,7 +17,7 @@ const { values: options, positionals } = parseArgs({
   },
   allowPositionals: true
 });
-const port = Number(options.port || positionals[0] || process.env.PORT || 3000);
+const port = Number(options.port || positionals[0] || process.env.WEB_API_PORT || process.env.PORT || 3000);
 
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error('Port must be an integer between 1 and 65535');

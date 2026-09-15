@@ -19,7 +19,8 @@ npm start
 On Windows, `setup:deno` may print a PowerShell installation command. Run that
 command before starting the server.
 
-`npm start` builds the React frontend and starts the API at `http://localhost:3000`.
+Copy `.env.example` to `.env`, then adjust its values for your server. `npm start`
+loads `.env`, builds the React frontend, and starts the API at `http://localhost:3000`.
 For frontend development, run `npm run dev` while the API server is running on port 3000.
 To use another port, pass it after `--`:
 
@@ -27,8 +28,9 @@ To use another port, pass it after `--`:
 npm start -- 4000
 ```
 
-The `PORT` environment variable and direct `node src/server.js --port 4000` syntax
-are also supported.
+The `WEB_API_PORT` setting in `.env`, the standard `PORT` environment variable, and
+direct `node src/server.js --port 4000` syntax are also supported. Command-line port
+arguments take precedence over environment variables.
 
 ## Passkey access
 

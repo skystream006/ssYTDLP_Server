@@ -12,10 +12,12 @@ Minimal web app for starting background `yt-dlp` downloads from `music.youtube.c
 npm install
 npm run setup:deno
 npm run setup:ytdlp
- - Will provide a command to run the install, i.e.
- ``` $env:DENO_INSTALL='D:\Workspace\ssYTDLP_Server\runtime\deno'; iwr https://deno.land/install.ps1 -useb | iex ```
+npm run setup:ffmpeg
 npm start
 ```
+
+On Windows, `setup:deno` may print a PowerShell installation command. Run that
+command before starting the server.
 
 `npm start` builds the React frontend and starts the API at `http://localhost:3000`.
 For frontend development, run `npm run dev` while the API server is running on port 3000.
@@ -32,6 +34,8 @@ By default, the server expects Deno at `runtime/deno/bin/deno`.
 You can override this with `DENO_PATH=/absolute/path/to/deno`.
 It expects yt-dlp at `runtime/yt-dlp/yt-dlp.exe`; override this with
 `YTDLP_PATH=/absolute/path/to/yt-dlp`.
+FFmpeg and ffprobe are loaded from `runtime/ffmpeg/bin`; override this with
+`FFMPEG_PATH=/absolute/path/to/ffmpeg/bin`.
 
 ## Usage
 

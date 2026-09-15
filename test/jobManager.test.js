@@ -96,6 +96,7 @@ test('rerunning overwrites a finished job while preserving its ID', async (t) =>
 
   await waitForJobToFinish(rerun);
   assert.match(rerun.command, /yt-dlp/);
+  assert.match(rerun.command, /--ffmpeg-location/);
 
   t.after(async () => {
     await fs.rm(outputRoot, { recursive: true, force: true });

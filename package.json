@@ -10,6 +10,7 @@
     "build": "vite build",
     "test": "node --test",
     "setup:deno": "node scripts/setup-deno-runtime.mjs",
+    "setup:ffmpeg": "node scripts/setup-ffmpeg-runtime.mjs",
     "setup:ytdlp": "node scripts/setup-ytdlp-runtime.mjs"
   },
   "dependencies": {

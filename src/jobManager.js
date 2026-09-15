@@ -55,6 +55,15 @@ function resolveYtDlpPath() {
   return path.resolve(process.cwd(), 'runtime', 'yt-dlp', executable);
 }
 
+function resolveFfmpegLocation() {
+  const fromEnv = process.env.FFMPEG_PATH;
+  if (fromEnv) {
+    return fromEnv;
+  }
+
+  return path.resolve(process.cwd(), 'runtime', 'ffmpeg', 'bin');
+}
+
 async function ensureOutputRoot() {
   await fs.mkdir(outputRoot, { recursive: true });
 }
@@ -167,6 +176,7 @@ async function executeJob(job) {
 
   const denoPath = resolveDenoPath();
   const ytDlpPath = resolveYtDlpPath();
+  const ffmpegLocation = resolveFfmpegLocation();
 
   runningJobsCount += 1;
   job.status = 'running';
@@ -190,6 +200,8 @@ async function executeJob(job) {
     'mp3',
     '--audio-quality',
     '160K',
+    '--ffmpeg-location',
+    ffmpegLocation,
     '--js-runtimes',
     `deno:${denoPath}`,
     '--output',

@@ -1,4 +1,5 @@
 node_modules/
 runtime/deno/
+runtime/ffmpeg/
 runtime/yt-dlp/
 output/

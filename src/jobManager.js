@@ -203,7 +203,15 @@ async function listDownloadedFiles(folderPath) {
   }
 }
 
-async function getPlaylistFolderName(url, denoPath) {
+export function parsePlaylistMetadata(output) {
+  const metadata = JSON.parse(output);
+  const playlistSongCount = Number.isSafeInteger(metadata.playlist_count) && metadata.playlist_count >= 0
+    ? metadata.playlist_count
+    : Array.isArray(metadata.entries) ? metadata.entries.length : null;
+  return { folderName: sanitizeFolderName(metadata.title || 'playlist'), playlistSongCount };
+}
+
+async function getPlaylistMetadata(url, denoPath) {
   const args = [
     '--flat-playlist',
     '--dump-single-json',
@@ -216,8 +224,7 @@ async function getPlaylistFolderName(url, denoPath) {
   ];
 
   const { stdout } = await runCommand(resolveYtDlpPath(), args);
-  const parsed = JSON.parse(stdout);
-  return sanitizeFolderName(parsed.title || 'playlist');
+  return parsePlaylistMetadata(stdout);
 }
 
 function newJob(url, initiatedBy) {
@@ -228,6 +235,7 @@ function newJob(url, initiatedBy) {
     url,
     initiatedBy,
     isPlaylist: isPlaylistUrl(url),
+    playlistSongCount: null,
     status: 'queued',
     error: null,
     warning: null,
@@ -285,10 +293,12 @@ async function executeJob(job) {
   job.updatedAt = new Date().toISOString();
   await persistJobs();
 
-  const folderName = job.isPlaylist
-    ? await getPlaylistFolderName(job.url, denoPath).catch(() => randomSongFolderName())
-    : randomSongFolderName();
+  const playlistMetadata = job.isPlaylist
+    ? await getPlaylistMetadata(job.url, denoPath).catch(() => null)
+    : null;
+  const folderName = playlistMetadata?.folderName || randomSongFolderName();
 
+  job.playlistSongCount = playlistMetadata?.playlistSongCount ?? null;
   job.folderName = folderName;
   job.outputDir = path.join(outputRoot, folderName);
 
@@ -317,6 +327,8 @@ async function executeJob(job) {
   job.command = [ytDlpPath, ...args]
     .map((value) => (value.includes(' ') ? `"${value}"` : value))
     .join(' ');
+
+  await persistJobs();
 
   try {
     const result = await runCommand(ytDlpPath, args);
@@ -415,6 +427,7 @@ export async function rerunJob(id, user = null) {
   await removeJobOutput(job);
 
   job.initiatedBy = user ? { id: user.id, name: user.name } : null;
+  job.playlistSongCount = null;
   job.status = 'queued';
   job.error = null;
   job.warning = null;

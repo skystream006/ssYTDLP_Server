@@ -37,6 +37,21 @@ test('private video errors are classified as warnings', async () => {
   await fs.rm(process.env.JOB_STORE_PATH, { force: true });
 });
 
+test('playlist metadata counts all songs independently of downloaded files', async () => {
+  process.env.JOB_STORE_PATH = path.join(os.tmpdir(), `ssytdlp-metadata-${Date.now()}.json`);
+  const { parsePlaylistMetadata } = await import(`../src/jobManager.js?metadata=${Date.now()}`);
+  assert.deepEqual(parsePlaylistMetadata(JSON.stringify({ title: 'My playlist', playlist_count: 12, entries: [{ id: 'one' }] })), {
+    folderName: 'My_playlist', playlistSongCount: 12
+  });
+  assert.equal(parsePlaylistMetadata(JSON.stringify({ entries: [{ id: 'one' }, null, { id: 'private' }] })).playlistSongCount, 3);
+  assert.equal(parsePlaylistMetadata('{"entries":[]}').playlistSongCount, 0);
+  assert.equal(parsePlaylistMetadata('{"playlist_count":0}').playlistSongCount, 0);
+  for (const playlist_count of [null, -1, 1.5, '12']) {
+    assert.equal(parsePlaylistMetadata(JSON.stringify({ playlist_count })).playlistSongCount, null);
+  }
+  assert.throws(() => parsePlaylistMetadata('not JSON'), SyntaxError);
+});
+
 test('persisted private video failures become partially completed', async (t) => {
   const storeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-private-'));
   const jobStorePath = path.join(storeRoot, 'jobs.json');
@@ -47,6 +62,7 @@ test('persisted private video failures become partially completed', async (t) =>
     status: 'failed',
     error: 'Command failed with exit code 1',
     warning: null,
+    playlistSongCount: 12,
     output: '[stderr]\nERROR: [youtube] magykigZvfE: Private video',
     files: [],
     createdAt: new Date().toISOString(),
@@ -59,6 +75,7 @@ test('persisted private video failures become partially completed', async (t) =>
   assert.equal(job.status, 'partially_completed');
   assert.equal(job.error, null);
   assert.equal(job.warning, 'One or more private videos were skipped.');
+  assert.equal(job.playlistSongCount, 12);
 
   t.after(async () => {
     await fs.rm(storeRoot, { recursive: true, force: true });
@@ -164,9 +181,11 @@ test('rerunning overwrites a finished job while preserving its ID', async (t) =>
   await waitForJobToFinish(job);
   const firstOutputDir = job.outputDir;
   await fs.writeFile(path.join(firstOutputDir, 'old-output.mp3'), 'old');
+  job.playlistSongCount = 99;
 
   const rerun = await jobManager.rerunJob(job.id, { id: 'bob-id', name: 'Bob' });
 
+  assert.equal(rerun.playlistSongCount, null);
   assert.deepEqual(rerun.initiatedBy, { id: 'bob-id', name: 'Bob' });
   assert.equal(rerun.id, job.id);
   assert.equal(rerun, job);

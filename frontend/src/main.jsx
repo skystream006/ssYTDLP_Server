@@ -370,7 +370,7 @@ function JobPage({ id }) {
   const { confirm, dialog } = useConfirmation();
   const loadJob = () => Promise.all([
     request(`/api/jobs/${id}`),
-    request(`/api/jobs/${id}/files`).catch(() => ({ files: [] }))
+    request(`/api/jobs/${id}/files`).catch(() => null)
   ]);
   const { data, error } = usePolling(loadJob, POLL_INTERVAL, id);
   const [rerunning, setRerunning] = useState(false);
@@ -442,6 +442,8 @@ function JobPage({ id }) {
               <dt>Source URL</dt><dd><a href={job.url} target="_blank" rel="noreferrer">{job.url}<ExternalLink size={14} /></a></dd>
               <dt>Job ID</dt><dd><code>{job.id}</code></dd>
               <dt>Initiated by</dt><dd>{job.initiatedBy?.name || 'Unknown'}</dd>
+              <dt>Downloaded files</dt><dd>{data?.[1] ? files.length : 'Not available'}</dd>
+              {job.isPlaylist && <><dt>Playlist songs</dt><dd>{job.playlistSongCount ?? 'Not available'}</dd></>}
               <dt>Output folder</dt><dd><code>{job.folderName || 'Pending'}</code></dd>
               <dt>Last updated</dt><dd>{formatDate(job.updatedAt)}</dd>
               <dt>Command</dt><dd><code className="command-code">{job.command || 'Pending'}</code></dd>

@@ -8,6 +8,7 @@ import { createJob, deleteJob, getFilePath, getJob, getJobs, isFileInsideJobFold
 import { getSystemHealth } from './health.js';
 import { isYouTubeMusicUrl } from './utils.js';
 import { scheduleDailyMaintenance } from './scheduler.js';
+import { attachUser, registerAuthRoutes, requireAuth } from './auth.js';
 
 const app = express();
 const { values: options, positionals } = parseArgs({
@@ -32,6 +33,10 @@ const apiLimiter = rateLimit({
 app.use(express.json());
 app.use('/api', apiLimiter);
 app.use(express.static(path.resolve(process.cwd(), 'public')));
+app.use(attachUser);
+registerAuthRoutes(app);
+app.use('/api/jobs', requireAuth);
+app.use('/api/health', requireAuth);
 
 app.get('/api/jobs', (_req, res) => {
   res.json(getJobs());
@@ -181,6 +186,10 @@ app.get('/api/health', async (_req, res) => {
 });
 
 app.get('/health', (_req, res) => {
+  res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
+});
+
+app.get('/admin', (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 

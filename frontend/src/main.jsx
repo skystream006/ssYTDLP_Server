@@ -1,5 +1,6 @@
-import { StrictMode, useEffect, useState } from 'react';
+import { createContext, StrictMode, useContext, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
 import {
   Activity,
   ArrowDownToLine,
@@ -10,8 +11,10 @@ import {
   Disc3,
   ExternalLink,
   FileAudio,
+  Fingerprint,
   HardDrive,
   ListMusic,
+  LogOut,
   MemoryStick,
   Music2,
   Network,
@@ -19,12 +22,17 @@ import {
   RefreshCw,
   RotateCcw,
   Server,
+  ShieldCheck,
   Trash2,
+  UserCheck,
+  Users,
+  UserX,
   X
 } from 'lucide-react';
 import './styles.css';
 
 const POLL_INTERVAL = 5000;
+const AuthContext = createContext(null);
 
 async function request(url, options) {
   const response = await fetch(url, options);
@@ -38,6 +46,7 @@ async function request(url, options) {
   if (!response.ok) {
     const error = new Error(body.error || 'Request failed');
     error.status = response.status;
+    error.code = body.code;
     throw error;
   }
   return body;
@@ -76,6 +85,7 @@ const loadJobs = () => request('/api/jobs');
 const loadHealth = () => request('/api/health');
 
 function AppShell({ children, section = 'jobs' }) {
+  const { user, logout } = useContext(AuthContext);
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -90,8 +100,14 @@ function AppShell({ children, section = 'jobs' }) {
           <a className={section === 'health' ? 'active' : ''} href="/health">
             <Activity size={17} /> Health
           </a>
+          {user.role === 'admin' && <a className={section === 'admin' ? 'active' : ''} href="/admin">
+            <Users size={17} /> Admin
+          </a>}
         </nav>
-        <div className="service-state"><span /> Service online</div>
+        <div className="account-menu">
+          <span><strong>{user.name}</strong><small>{user.role}</small></span>
+          <button onClick={logout} type="button" aria-label="Log out" title="Log out"><LogOut size={17} /></button>
+        </div>
       </header>
       <main>{children}</main>
     </div>
@@ -364,11 +380,179 @@ function HealthPage() {
   </AppShell>;
 }
 
-function Router() {
+function LoginPage({ onLogin }) {
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState('');
+  const [message, setMessage] = useState(null);
+
+  async function login() {
+    setBusy('login');
+    setMessage(null);
+    try {
+      const ceremony = await request('/api/auth/login/options', { method: 'POST' });
+      const response = await startAuthentication({ optionsJSON: ceremony.options });
+      const result = await request('/api/auth/login/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId: ceremony.requestId, response })
+      });
+      onLogin(result.user);
+    } catch (error) {
+      setMessage({ type: error.code === 'ACCESS_PENDING' ? 'warning' : 'error', text: error.message });
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function register(event) {
+    event.preventDefault();
+    setBusy('register');
+    setMessage(null);
+    try {
+      const ceremony = await request('/api/auth/register/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      const response = await startRegistration({ optionsJSON: ceremony.options });
+      const result = await request('/api/auth/register/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId: ceremony.requestId, response })
+      });
+      if (result.user.status === 'approved') {
+        onLogin(result.user);
+      } else {
+        setName('');
+        setMessage({ type: 'warning', text: 'Passkey registered. An administrator must approve your access before you can log in.' });
+      }
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    } finally {
+      setBusy('');
+    }
+  }
+
+  return <main className="auth-page">
+    <section className="auth-intro">
+      <span className="auth-mark"><Music2 size={28} /></span>
+      <p className="eyebrow">Private music workspace</p>
+      <h1>Open your archive.</h1>
+      <p>Your passkey stays with your password manager or device. The server stores only the public credential needed to recognize you.</p>
+    </section>
+    <section className="auth-panel" aria-labelledby="access-heading">
+      <div className="auth-panel-heading"><Fingerprint size={27} /><div><p>Secure access</p><h2 id="access-heading">Use a passkey</h2></div></div>
+      <button className="primary-button auth-login" disabled={Boolean(busy)} onClick={login} type="button">
+        {busy === 'login' ? <RefreshCw className="spin" size={18} /> : <Fingerprint size={18} />}
+        Login with Passkey
+      </button>
+      <div className="auth-divider"><span>or register</span></div>
+      <form onSubmit={register}>
+        <label htmlFor="registration-name">Display name</label>
+        <input id="registration-name" minLength="2" maxLength="64" required value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name" />
+        <button className="secondary-button" disabled={Boolean(busy)} type="submit">
+          {busy === 'register' ? <RefreshCw className="spin" size={18} /> : <ShieldCheck size={18} />}
+          Register with Passkey
+        </button>
+      </form>
+      {message && <div className={`notice ${message.type}`} role="status">{message.text}</div>}
+    </section>
+  </main>;
+}
+
+function AdminPage() {
+  const { user: currentUser } = useContext(AuthContext);
+  const [users, setUsers] = useState([]);
+  const [error, setError] = useState('');
+  const [updating, setUpdating] = useState('');
+
+  async function loadUsers() {
+    try {
+      const result = await request('/api/admin/users');
+      setUsers(result.users);
+      setError('');
+    } catch (loadError) {
+      setError(loadError.message);
+    }
+  }
+
+  useEffect(() => {
+    loadUsers();
+  }, []);
+
+  async function changeUser(userId, changes) {
+    setUpdating(userId);
+    setError('');
+    try {
+      await request(`/api/admin/users/${userId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(changes)
+      });
+      await loadUsers();
+    } catch (updateError) {
+      setError(updateError.message);
+    } finally {
+      setUpdating('');
+    }
+  }
+
+  const pending = users.filter((user) => user.status === 'pending');
+  return <AppShell section="admin">
+    <section className="page-heading admin-heading">
+      <div><p className="eyebrow">Access control</p><h1>Allowed users.</h1><p>Review passkey registrations and control who can use this server.</p></div>
+      <div className="pending-count"><strong>{pending.length}</strong><span>Awaiting approval</span></div>
+    </section>
+    {error && <div className="notice error page-notice"><CircleAlert size={16} />{error}</div>}
+    <section className="users-section">
+      <div className="section-title"><div><span>01</span><h2>Access requests</h2></div></div>
+      {pending.length === 0 ? <div className="empty-state compact"><UserCheck size={30} /><h3>No pending requests</h3><p>New passkey registrations will appear here.</p></div> : (
+        <div className="user-list">{pending.map((user) => <article className="user-row pending-user" key={user.id}>
+          <UserIdentity user={user} />
+          <button className="primary-button compact-button" disabled={updating === user.id} onClick={() => changeUser(user.id, { status: 'approved' })} type="button"><UserCheck size={16} />Approve</button>
+        </article>)}</div>
+      )}
+    </section>
+    <section className="users-section">
+      <div className="section-title"><div><span>02</span><h2>All users</h2></div><strong>{users.length}</strong></div>
+      <div className="user-list">{users.map((user) => <article className="user-row" key={user.id}>
+        <UserIdentity user={user} />
+        <label className="role-control"><span>Role</span><select disabled={updating === user.id || user.id === currentUser.id} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option></select></label>
+        {user.status === 'approved'
+          ? <button className="danger-button compact-button" disabled={updating === user.id || user.id === currentUser.id} onClick={() => changeUser(user.id, { status: 'revoked' })} type="button"><UserX size={16} />Revoke</button>
+          : <button className="secondary-button compact-button" disabled={updating === user.id} onClick={() => changeUser(user.id, { status: 'approved' })} type="button"><UserCheck size={16} />Allow</button>}
+      </article>)}</div>
+    </section>
+  </AppShell>;
+}
+
+function UserIdentity({ user }) {
+  return <div className="user-identity"><span>{user.name.slice(0, 1).toUpperCase()}</span><div><strong>{user.name}</strong><small>{user.status} · {user.credentialCount} passkey{user.credentialCount === 1 ? '' : 's'}</small></div></div>;
+}
+
+function Router({ user }) {
   const jobMatch = window.location.pathname.match(/^\/job\/([^/]+)\/?$/);
   if (jobMatch) return <JobPage id={decodeURIComponent(jobMatch[1])} />;
   if (window.location.pathname === '/health') return <HealthPage />;
+  if (window.location.pathname === '/admin' && user.role === 'admin') return <AdminPage />;
   return <JobsPage />;
 }
 
-createRoot(document.getElementById('root')).render(<StrictMode><Router /></StrictMode>);
+function App() {
+  const [user, setUser] = useState(undefined);
+
+  useEffect(() => {
+    request('/api/auth/me').then((result) => setUser(result.user)).catch(() => setUser(null));
+  }, []);
+
+  async function logout() {
+    await request('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    setUser(null);
+  }
+
+  if (user === undefined) return <div className="auth-loading"><Fingerprint className="spin" size={28} />Checking passkey session</div>;
+  if (!user) return <LoginPage onLogin={setUser} />;
+  return <AuthContext.Provider value={{ user, logout }}><Router user={user} /></AuthContext.Provider>;
+}
+
+createRoot(document.getElementById('root')).render(<StrictMode><App /></StrictMode>);

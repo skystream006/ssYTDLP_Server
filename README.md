@@ -30,6 +30,28 @@ npm start -- 4000
 The `PORT` environment variable and direct `node src/server.js --port 4000` syntax
 are also supported.
 
+## Passkey access
+
+The app and operational APIs require passkey authentication. On a new server, register
+the first passkey to create the initial approved administrator. Later registrations are
+saved as pending and cannot log in until an administrator approves them from **Admin**.
+Administrators can approve or revoke access and assign user or admin roles.
+Complete the first registration locally before exposing a new server to other users,
+because the first verified passkey is intentionally trusted as the initial administrator.
+
+Passkeys work on `localhost` without TLS. Other hosts must be served over HTTPS. When the
+public address differs from the address seen by Express, configure both values explicitly:
+
+```bash
+PASSKEY_RP_ID=music.example.com
+PASSKEY_ORIGIN=https://music.example.com
+npm start
+```
+
+Users, public passkey credentials, access decisions, and hashed login sessions are stored
+in `data/auth.json`. Set `AUTH_STORE_PATH` to use a different file. Private passkey keys
+remain in the user's authenticator, such as Bitwarden, and are never sent to the server.
+
 By default, the server expects Deno at `runtime/deno/bin/deno`.
 You can override this with `DENO_PATH=/absolute/path/to/deno`.
 It expects yt-dlp at `runtime/yt-dlp/yt-dlp.exe`; override this with

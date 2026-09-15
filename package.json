@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test",
-    "setup:deno": "node scripts/setup-deno-runtime.mjs"
+    "setup:deno": "node scripts/setup-deno-runtime.mjs",
+    "setup:ytdlp": "node scripts/setup-ytdlp-runtime.mjs"
   },
   "dependencies": {
     "express": "^4.21.2",

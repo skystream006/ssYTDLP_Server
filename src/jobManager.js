@@ -45,6 +45,16 @@ function resolveDenoPath() {
   return path.resolve(process.cwd(), 'runtime', 'deno', 'bin', exe);
 }
 
+function resolveYtDlpPath() {
+  const fromEnv = process.env.YTDLP_PATH;
+  if (fromEnv) {
+    return fromEnv;
+  }
+
+  const executable = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+  return path.resolve(process.cwd(), 'runtime', 'yt-dlp', executable);
+}
+
 async function ensureOutputRoot() {
   await fs.mkdir(outputRoot, { recursive: true });
 }
@@ -98,7 +108,7 @@ async function getPlaylistFolderName(url, denoPath) {
     url
   ];
 
-  const { stdout } = await runCommand('yt-dlp', args);
+  const { stdout } = await runCommand(resolveYtDlpPath(), args);
   const parsed = JSON.parse(stdout);
   return sanitizeFolderName(parsed.title || 'playlist');
 }
@@ -164,7 +174,7 @@ async function executeJob(job) {
   job.command = `yt-dlp ${args.map((value) => (value.includes(' ') ? `"${value}"` : value)).join(' ')}`;
 
   try {
-    await runCommand('yt-dlp', args);
+    await runCommand(resolveYtDlpPath(), args);
     job.files = await listDownloadedFiles(job.outputDir);
     job.status = 'completed';
   } catch (error) {
@@ -200,7 +210,7 @@ export async function runMaintenanceUpdate() {
     await waitForNoJobsInProgress();
 
     try {
-      await runCommand('yt-dlp', ['-U']);
+      await runCommand(resolveYtDlpPath(), ['-U']);
     } catch (error) {
       console.error('yt-dlp update failed:', error.message);
     }

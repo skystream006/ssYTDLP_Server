@@ -11,14 +11,16 @@ async function makeFakeBin(dir, name, { delayMs = 0 } = {}) {
   return scriptPath;
 }
 
-test('jobManager queues jobs around a maintenance update', async (t) => {
+test('jobManager queues jobs around a maintenance update', {
+  skip: process.platform === 'win32' && 'requires POSIX executable test fixtures'
+}, async (t) => {
   const binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-bin-'));
   const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-out-'));
 
-  await makeFakeBin(binDir, 'yt-dlp', { delayMs: 300 });
+  const fakeYtDlp = await makeFakeBin(binDir, 'yt-dlp', { delayMs: 300 });
   const fakeDeno = await makeFakeBin(binDir, 'deno', { delayMs: 0 });
 
-  process.env.PATH = `${binDir}:${process.env.PATH}`;
+  process.env.YTDLP_PATH = fakeYtDlp;
   process.env.DENO_PATH = fakeDeno;
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
 

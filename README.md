@@ -5,18 +5,20 @@ Minimal web app for starting background `yt-dlp` downloads from `music.youtube.c
 ## Requirements
 
 - Node.js 20+
-- `yt-dlp` available in PATH
 
 ## Setup
 
 ```bash
 npm install
 npm run setup:deno
+npm run setup:ytdlp
 npm start
 ```
 
 By default, the server expects Deno at `runtime/deno/bin/deno`.
 You can override this with `DENO_PATH=/absolute/path/to/deno`.
+It expects yt-dlp at `runtime/yt-dlp/yt-dlp.exe`; override this with
+`YTDLP_PATH=/absolute/path/to/yt-dlp`.
 
 ## Usage
 

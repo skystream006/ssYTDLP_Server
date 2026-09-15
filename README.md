@@ -56,6 +56,15 @@ PASSKEY_ORIGIN=https://music.example.com:4000
 npm start
 ```
 
+Do not use a raw IP address for `PASSKEY_RP_ID`; passkey clients require a domain-shaped
+relying-party ID. For LAN-only use, configure a hostname in local DNS, or use a resolving
+hostname such as `192-168-3-175.sslip.io` for the server at `192.168.3.175`:
+
+```bash
+PASSKEY_RP_ID=192-168-3-175.sslip.io
+PASSKEY_ORIGIN=https://192-168-3-175.sslip.io:4000
+```
+
 Users, public passkey credentials, access decisions, and hashed login sessions are stored
 in `data/auth.json`. Set `AUTH_STORE_PATH` to use a different file. Private passkey keys
 remain in the user's authenticator, such as Bitwarden, and are never sent to the server.

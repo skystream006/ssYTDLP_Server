@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import net from 'node:net';
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -23,6 +24,11 @@ const sessionCookie = 'ssytdlp_session';
 function getWebAuthnConfig(req) {
   const rpID = process.env.PASSKEY_RP_ID || req.hostname;
   const origin = process.env.PASSKEY_ORIGIN || `${req.protocol}://${req.get('host')}`;
+  if (net.isIP(rpID)) {
+    const error = new Error('PASSKEY_RP_ID must be a hostname, not an IP address');
+    error.statusCode = 500;
+    throw error;
+  }
   return { rpID, origin };
 }
 

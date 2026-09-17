@@ -32,6 +32,76 @@ npm start -- --http-port 3000 --https-port 4000
 The legacy `--port`, positional port, and standard `PORT` environment variable configure
 the HTTP redirect listener. Command-line arguments take precedence over environment variables.
 
+## Docker
+
+Install Docker Engine with the Compose plugin, or Docker Desktop using Linux containers.
+No local Node.js, Deno, yt-dlp, or FFmpeg installation is needed. The image builds the
+frontend and includes Node.js 24, Deno, Linux yt-dlp, FFmpeg, and ffprobe. Linux amd64
+and arm64 are supported. The app runs as a non-root user.
+
+For a new local installation, no `.env` file is required:
+
+```bash
+docker compose up -d --build
+docker compose ps
+docker compose logs -f app
+```
+
+Open `https://localhost:4000`, trust the generated local certificate, and register
+the first administrator passkey. HTTP on `http://localhost:3000` redirects to HTTPS.
+Compose publishes both ports on `127.0.0.1` by default. Stop with `docker compose down`.
+
+Compose reads settings from `.env` if present. An existing `.env` overrides the local
+passkey defaults, so ensure its hostname and origin match the URL you use. For LAN
+access, configure DNS and a trusted certificate as described under **Passkey access**,
+then set these values in `.env` after registering the initial administrator:
+
+```dotenv
+DOCKER_BIND_ADDRESS=0.0.0.0
+WEB_API_PORT=3123
+HTTPS_WEB_PORT=4123
+PASSKEY_RP_ID=music.example.com
+PASSKEY_ORIGIN=https://music.example.com:4000
+```
+
+Passkeys are tied to the relying-party hostname. For a deployment hostname other than
+`localhost`, configure that hostname before first registration and access it locally
+using DNS or a hosts-file entry while ports are still bound to loopback. Changing the
+hostname later requires registering passkeys for the new hostname. When changing
+`HTTPS_WEB_PORT`, also update the port in `PASSKEY_ORIGIN`. Apply configuration changes
+with `docker compose up -d`.
+
+The `data` named volume preserves SQLite accounts, sessions, job history, and generated
+TLS certificates; `output` preserves downloaded media and download archives. They
+survive container recreation and `docker compose down`. **Do not use
+`docker compose down -v` unless you intend to delete all stored data and downloads.**
+Back up both volumes while the app is stopped. Local `data`, `output`, `.env`, and
+runtime directories are not copied into the image; existing host data is not migrated
+automatically. Container paths are fixed at `/app/data` and `/app/output` in this
+Compose configuration.
+
+For your own TLS certificate, add a read-only bind mount such as
+`./certs:/app/certs:ro` to the app's `volumes` in `compose.yaml`, then set
+`HTTPS_KEY_PATH=/app/certs/server-key.pem` and
+`HTTPS_CERT_PATH=/app/certs/server-cert.pem` in `.env`. The files must be readable
+by the container's `node` user (UID 1000). Host paths cannot be used directly.
+
+For a transcription service running on the Docker host, use
+`TRANSCRIPTION_ENDPOINT=http://host.docker.internal:4317/api/transcribe` in `.env`.
+Inside the container, `localhost` refers to the container itself. On Linux, the host
+service must listen on an interface reachable from Docker, with firewall access allowed.
+For another Compose service, use its service name instead of `localhost`.
+
+The container health check probes HTTPS with local certificate verification disabled
+only for that probe. Daily yt-dlp and Deno self-updates remain enabled; runtime binaries
+are writable by the app user. Those updates last until the container is recreated.
+To refresh the base image, npm dependencies from the lockfile, and bundled runtimes:
+
+```bash
+docker compose build --pull --no-cache
+docker compose up -d
+```
+
 ## Passkey access
 
 The app and operational APIs require passkey authentication. On a new server, register
@@ -49,8 +119,8 @@ certificate with `HTTPS_KEY_PATH` and `HTTPS_CERT_PATH`.
 The passkey origin must include `HTTPS_WEB_PORT` when it is not the default port 443:
 
 ```bash
-WEB_API_PORT=3000
-HTTPS_WEB_PORT=4000
+WEB_API_PORT=3123
+HTTPS_WEB_PORT=4123
 PASSKEY_RP_ID=music.example.com
 PASSKEY_ORIGIN=https://music.example.com:4000
 npm start

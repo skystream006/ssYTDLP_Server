@@ -1,0 +1,27 @@
+services:
+  app:
+    build: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${DOCKER_BIND_ADDRESS:-127.0.0.1}:${WEB_API_PORT:-3000}:${WEB_API_PORT:-3000}"
+      - "${DOCKER_BIND_ADDRESS:-127.0.0.1}:${HTTPS_WEB_PORT:-4000}:${HTTPS_WEB_PORT:-4000}"
+    environment:
+      WEB_API_PORT: ${WEB_API_PORT:-3000}
+      HTTPS_WEB_PORT: ${HTTPS_WEB_PORT:-4000}
+      PASSKEY_RP_ID: ${PASSKEY_RP_ID:-localhost}
+      PASSKEY_ORIGIN: ${PASSKEY_ORIGIN:-https://localhost:4000}
+      MAX_CONNECTIONS: ${MAX_CONNECTIONS:-500}
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      TRANSCRIPTION_ENDPOINT: ${TRANSCRIPTION_ENDPOINT:-}
+      HTTPS_KEY_PATH: ${HTTPS_KEY_PATH:-}
+      HTTPS_CERT_PATH: ${HTTPS_CERT_PATH:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - data:/app/data
+      - output:/app/output
+
+volumes:
+  data:
+  output:

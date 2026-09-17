@@ -470,7 +470,7 @@ function ContributorDialog({ job, onClose, onSaved }) {
   </dialog>;
 }
 
-function TranscriptionDialog({ jobId, file, onClose, onSaved }) {
+function TranscriptionDialog({ file, onClose, onSubmit }) {
   const dialogRef = useRef(null);
   const titleId = useId();
   const [addLyrics, setAddLyrics] = useState(false);
@@ -478,7 +478,6 @@ function TranscriptionDialog({ jobId, file, onClose, onSaved }) {
   const [lyrics, setLyrics] = useState('');
   const [mode, setMode] = useState('prompt');
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
   const modes = [
     ['prompt', 'Prompt', 'Biases recognition toward known words.'],
     ['align', 'Align', 'Maps authoritative lyric lines onto ASR timing.'],
@@ -495,24 +494,14 @@ function TranscriptionDialog({ jobId, file, onClose, onSaved }) {
     };
   }, []);
 
-  async function submit(event) {
+  function submit(event) {
     event.preventDefault();
     if (submitting) return;
     setSubmitting(true);
-    setError('');
-    try {
-      await request(`/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(file.name)}/transcribe`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...(addLyrics ? { lyrics: lyrics.trim(), lyrics_mode: mode } : {}),
-          ...(language ? { language } : {})
-        })
-      });
-      onSaved();
-    } catch (requestError) {
-      setError(requestError.message);
-      setSubmitting(false);
-    }
+    onSubmit(file, {
+      ...(addLyrics ? { lyrics: lyrics.trim(), lyrics_mode: mode } : {}),
+      ...(language ? { language } : {})
+    });
   }
 
   return <dialog ref={dialogRef} className={`confirmation-dialog transcription-dialog${addLyrics ? ' transcription-dialog-expanded' : ''}`} aria-labelledby={titleId}
@@ -541,8 +530,6 @@ function TranscriptionDialog({ jobId, file, onClose, onSaved }) {
           <textarea id={`${titleId}-lyrics`} value={lyrics} onChange={(event) => setLyrics(event.target.value)} required maxLength={100000} rows={8} />
         </>}
       </fieldset>
-      {error && <div className="notice error" role="alert">{error}</div>}
-      {submitting && <p className="transcription-pending" role="status"><RefreshCw className="spin" size={17} />Transcribing song...</p>}
       <div className="dialog-actions">
         <button className="secondary-button" type="button" disabled={submitting} onClick={onClose}>Cancel</button>
         <button className="primary-button" type="submit" disabled={submitting || (addLyrics && !lyrics.trim())}><Mic size={17} />{submitting ? 'Submitting' : 'Submit'}</button>
@@ -586,6 +573,7 @@ function JobPage({ id }) {
   const [deletingFile, setDeletingFile] = useState(null);
   const [editingContributors, setEditingContributors] = useState(false);
   const [transcribingFile, setTranscribingFile] = useState(null);
+  const [pendingTranscription, setPendingTranscription] = useState(null);
   const [transcriptionNotice, setTranscriptionNotice] = useState('');
   const [actionError, setActionError] = useState('');
   const job = data?.[0];
@@ -595,7 +583,27 @@ function JobPage({ id }) {
   const hasPendingTranscription = Object.values(job?.transcriptions || {}).some((transcription) => transcription.status === 'sent');
   const canModify = canModifyJob(user, job);
   const canManage = canManageJob(user, job);
-  const mutationDisabled = !canModify || isActive || hasPendingTranscription || rerunning || deleting || deletingFile !== null || editingContributors || transcribingFile !== null;
+  const mutationDisabled = !canModify || isActive || hasPendingTranscription || pendingTranscription !== null || rerunning || deleting || deletingFile !== null || editingContributors || transcribingFile !== null;
+
+  async function transcribe(file, options) {
+    if (pendingTranscription) return;
+    setPendingTranscription({ name: file.name, status: 'sent', requestedAt: new Date().toISOString() });
+    setTranscribingFile(null);
+    setTranscriptionNotice('');
+    setActionError('');
+    try {
+      await request(`/api/jobs/${encodeURIComponent(id)}/files/${encodeURIComponent(file.name)}/transcribe`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(options)
+      });
+      setTranscriptionNotice(`Transcription complete: ${file.name}`);
+    } catch (requestError) {
+      setActionError(`Transcription request for ${file.name}: ${requestError.message}`);
+    } finally {
+      setPendingTranscription(null);
+      setFileRevision((revision) => revision + 1);
+    }
+  }
 
   async function rerun() {
     if (mutationDisabled) return;
@@ -647,11 +655,7 @@ function JobPage({ id }) {
     <AppShell>
       {dialog}
       <a className="back-link" href="/"><ArrowLeft size={17} /> Back to jobs</a>
-      {transcribingFile && <TranscriptionDialog jobId={id} file={transcribingFile} onClose={() => setTranscribingFile(null)} onSaved={() => {
-        setTranscriptionNotice(`Transcription complete: ${transcribingFile.name}`);
-        setTranscribingFile(null);
-        setFileRevision((revision) => revision + 1);
-      }} />}
+      {transcribingFile && <TranscriptionDialog file={transcribingFile} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
       {editingContributors && <ContributorDialog job={job} onClose={() => setEditingContributors(false)} onSaved={() => {
         setEditingContributors(false);
         setFileRevision((revision) => revision + 1);
@@ -717,7 +721,7 @@ function JobPage({ id }) {
                   {file.isSong ? <a className="song-file-link" href={`/job/${encodeURIComponent(id)}/player?${new URLSearchParams({ song: file.name, play: '1' })}`} aria-label={`Play ${file.name}`} title="Play song">
                     <span className="file-icon"><FileAudio size={19} /></span>
                     <span><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small>
-                      <TranscriptionStatus transcription={job.transcriptions?.[file.name]} />
+                      <TranscriptionStatus transcription={pendingTranscription?.name === file.name ? pendingTranscription : job.transcriptions?.[file.name]} />
                     </span>
                   </a> : <>
                     <span className="file-icon"><FileAudio size={19} /></span>

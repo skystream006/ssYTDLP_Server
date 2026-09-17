@@ -244,10 +244,12 @@ Optionally enable **Add lyrics**, enter the lyrics, and select exactly one mode:
 - **Correct**: replaces recognized text while preserving ASR segment timing.
 
 The info icons show these descriptions on hover or keyboard focus. **Cancel** closes
-the dialog without sending anything. **Submit** waits for the result and refreshes
-the files. Owners, contributors, and administrators can transcribe idle jobs.
+the dialog without sending anything. **Submit** closes the dialog immediately and
+shows **Transcription request sent** beside the song while the request continues.
+The page refreshes the song status and files when the request finishes; errors are
+shown on the page. Owners, contributors, and administrators can transcribe idle jobs.
 Other modifications to that job are blocked while transcription is in progress.
-Once submitted, transcription cannot be cancelled from the dialog.
+Once submitted, transcription cannot be cancelled from the app.
 
 Each submitted song shows its latest transcription status beside its name:
 **Transcription request sent**, **Transcribed**, **Transcription failed**, or

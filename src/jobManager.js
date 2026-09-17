@@ -8,6 +8,20 @@ import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTran
 
 const jobs = new Map();
 const jobMutations = new Set();
+const transcriptionQueues = new Map();
+const deletingFiles = new Map();
+const fileMutationTails = new Map();
+
+async function mutateJobFiles(id, mutate) {
+  const operation = (fileMutationTails.get(id) || Promise.resolve()).then(mutate);
+  const tail = operation.catch(() => {});
+  fileMutationTails.set(id, tail);
+  try {
+    return await operation;
+  } finally {
+    if (fileMutationTails.get(id) === tail) fileMutationTails.delete(id);
+  }
+}
 const database = openDatabase();
 const outputRoot = process.env.YTDLP_OUTPUT_ROOT || path.resolve(process.cwd(), 'output');
 
@@ -289,8 +303,8 @@ function assertCanModifyJob(job, user, allowContributors = false) {
   }
 }
 
-function assertJobIsIdle(job, action) {
-  if (jobMutations.has(job.id)) {
+function assertJobIsIdle(job, action, allowTranscription = false) {
+  if (jobMutations.has(job.id) || (!allowTranscription && (transcriptionQueues.has(job.id) || deletingFiles.has(job.id)))) {
     const error = new Error('Another change to this job is in progress');
     error.statusCode = 409;
     throw error;
@@ -511,10 +525,14 @@ export function isValidJobFileName(fileName) {
 }
 
 export async function transcribeJobFile(id, fileName, options, user = null) {
-  const job = getJob(id);
+  const existingQueue = transcriptionQueues.get(id);
+  const job = existingQueue?.job || getJob(id);
   if (!job) return null;
   assertCanModifyJob(job, user, true);
-  assertJobIsIdle(job, 'transcribe');
+  assertJobIsIdle(job, 'transcribe', true);
+  if (existingQueue?.files.has(fileName) || deletingFiles.get(id)?.has(fileName)) {
+    throw Object.assign(new Error('Another change to this song is in progress'), { statusCode: 409 });
+  }
   if (!isValidJobFileName(fileName) || !isSongFile(fileName)) {
     throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
   }
@@ -522,7 +540,24 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
     throw Object.assign(new Error('Song not found'), { statusCode: 404 });
   }
   validateTranscriptionOptions(options);
-  jobMutations.add(id);
+  const queue = existingQueue || { job, files: new Set(), tail: Promise.resolve() };
+  const requestedAt = new Date().toISOString();
+  job.transcriptions = { ...job.transcriptions, [fileName]: { status: 'sent', requestedAt } };
+  job.updatedAt = requestedAt;
+  writeJob(database, { ...getJob(id), transcriptions: job.transcriptions, updatedAt: requestedAt });
+  queue.files.add(fileName);
+  transcriptionQueues.set(id, queue);
+  const operation = queue.tail.then(() => executeTranscription(job, fileName, options, requestedAt));
+  queue.tail = operation.catch(() => {});
+  try {
+    return await operation;
+  } finally {
+    queue.files.delete(fileName);
+    if (queue.files.size === 0) transcriptionQueues.delete(id);
+  }
+}
+
+async function executeTranscription(job, fileName, options, requestedAt) {
   try {
     const filePath = getFilePath(job, fileName);
     const realPath = await fs.realpath(filePath).catch(() => null);
@@ -533,29 +568,21 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
     if (!isFileInsideJobFolder({ outputDir: realFolder }, realPath)) {
       throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
     }
-    const requestedAt = new Date().toISOString();
-    job.transcriptions = { ...job.transcriptions, [fileName]: { status: 'sent', requestedAt } };
-    job.updatedAt = requestedAt;
-    await persistJob(job);
-    try {
-      const results = await requestTranscription(filePath, options);
-      await replaceTranscribedFiles(job, fileName, results, async (updatedJob) => {
-        updatedJob.transcriptions[fileName] = {
-          status: 'transcribed', requestedAt, completedAt: new Date().toISOString()
-        };
-        await persistJob(updatedJob);
-      });
-    } catch (error) {
-      job.updatedAt = new Date().toISOString();
-      job.transcriptions[fileName] = {
-        status: 'failed', requestedAt, completedAt: job.updatedAt, error: error.message
+    const results = await requestTranscription(filePath, options);
+    await mutateJobFiles(job.id, () => replaceTranscribedFiles(job, fileName, results, async (updatedJob) => {
+      updatedJob.transcriptions[fileName] = {
+        status: 'transcribed', requestedAt, completedAt: new Date().toISOString()
       };
-      await persistJob(job);
-      throw error;
-    }
+      await persistJob(updatedJob);
+    }));
     return job;
-  } finally {
-    jobMutations.delete(id);
+  } catch (error) {
+    job.updatedAt = new Date().toISOString();
+    job.transcriptions[fileName] = {
+      status: 'failed', requestedAt, completedAt: job.updatedAt, error: error.message
+    };
+    await persistJob(job);
+    throw error;
   }
 }
 
@@ -564,7 +591,10 @@ export async function deleteJobFile(id, fileName, user = null) {
   if (!job) return null;
 
   assertCanModifyJob(job, user, true);
-  assertJobIsIdle(job, 'remove files from');
+  assertJobIsIdle(job, 'remove files from', true);
+  if (transcriptionQueues.get(id)?.files.has(fileName) || deletingFiles.get(id)?.has(fileName)) {
+    throw Object.assign(new Error('Another change to this song is in progress'), { statusCode: 409 });
+  }
   if (!isValidJobFileName(fileName)) {
     const error = new Error('Invalid file path');
     error.statusCode = 400;
@@ -582,18 +612,24 @@ export async function deleteJobFile(id, fileName, user = null) {
     throw error;
   }
 
-  jobMutations.add(id);
+  const pending = deletingFiles.get(id) || new Set();
+  pending.add(fileName);
+  deletingFiles.set(id, pending);
   try {
-    await fs.unlink(filePath).catch((error) => {
-      if (error.code !== 'ENOENT') throw error;
+    return await mutateJobFiles(id, async () => {
+      await fs.unlink(filePath).catch((error) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+      const currentJob = transcriptionQueues.get(id)?.job || getJob(id);
+      currentJob.files = currentJob.files.filter((name) => name !== fileName);
+      if (currentJob.transcriptions) delete currentJob.transcriptions[fileName];
+      currentJob.updatedAt = new Date().toISOString();
+      await persistJob(currentJob);
+      return currentJob;
     });
-    job.files = job.files.filter((name) => name !== fileName);
-    if (job.transcriptions) delete job.transcriptions[fileName];
-    job.updatedAt = new Date().toISOString();
-    await persistJob(job);
-    return job;
   } finally {
-    jobMutations.delete(id);
+    pending.delete(fileName);
+    if (pending.size === 0) deletingFiles.delete(id);
   }
 }
 

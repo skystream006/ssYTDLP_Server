@@ -248,7 +248,14 @@ the dialog without sending anything. **Submit** closes the dialog immediately an
 shows **Transcription request sent** beside the song while the request continues.
 The page refreshes the song status and files when the request finishes; errors are
 shown on the page. Owners, contributors, and administrators can transcribe idle jobs.
-Other modifications to that job are blocked while transcription is in progress.
+Job deletion, reruns, and contributor changes are blocked while transcription is
+in progress. Individual songs can still be deleted unless that song has a pending
+transcription or deletion. Deleting one song leaves other songs' buttons available;
+file deletion and audio replacement steps are serialized to avoid conflicting writes.
+Only the requested song's transcription button is disabled; other songs can still
+be submitted. Requests for different songs in the same job are processed one at a
+time to avoid conflicting audio replacements. Waiting songs also show
+**Transcription request sent**. Duplicate requests for a pending song return `409`.
 Once submitted, transcription cannot be cancelled from the app.
 
 Each submitted song shows its latest transcription status beside its name:

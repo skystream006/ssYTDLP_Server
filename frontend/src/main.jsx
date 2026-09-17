@@ -570,10 +570,10 @@ function JobPage({ id }) {
   const { data, error } = usePolling(loadJob, POLL_INTERVAL, `${id}:${fileRevision}`);
   const [rerunning, setRerunning] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [deletingFile, setDeletingFile] = useState(null);
+  const [deletingFiles, setDeletingFiles] = useState({});
   const [editingContributors, setEditingContributors] = useState(false);
   const [transcribingFile, setTranscribingFile] = useState(null);
-  const [pendingTranscription, setPendingTranscription] = useState(null);
+  const [pendingTranscriptions, setPendingTranscriptions] = useState({});
   const [transcriptionNotice, setTranscriptionNotice] = useState('');
   const [actionError, setActionError] = useState('');
   const job = data?.[0];
@@ -583,11 +583,18 @@ function JobPage({ id }) {
   const hasPendingTranscription = Object.values(job?.transcriptions || {}).some((transcription) => transcription.status === 'sent');
   const canModify = canModifyJob(user, job);
   const canManage = canManageJob(user, job);
-  const mutationDisabled = !canModify || isActive || hasPendingTranscription || pendingTranscription !== null || rerunning || deleting || deletingFile !== null || editingContributors || transcribingFile !== null;
+  const transcriptionDisabled = !canModify || isActive || rerunning || deleting || editingContributors;
+  const mutationDisabled = transcriptionDisabled || hasPendingTranscription || Object.keys(pendingTranscriptions).length > 0 || Object.keys(deletingFiles).length > 0 || transcribingFile !== null;
+
+  function songMutationDisabled(name) {
+    return transcriptionDisabled || Boolean(deletingFiles[name]) || Boolean(pendingTranscriptions[name]) || job?.transcriptions?.[name]?.status === 'sent';
+  }
 
   async function transcribe(file, options) {
-    if (pendingTranscription) return;
-    setPendingTranscription({ name: file.name, status: 'sent', requestedAt: new Date().toISOString() });
+    if (songMutationDisabled(file.name)) return;
+    setPendingTranscriptions((current) => ({
+      ...current, [file.name]: { status: 'sent', requestedAt: new Date().toISOString() }
+    }));
     setTranscribingFile(null);
     setTranscriptionNotice('');
     setActionError('');
@@ -600,7 +607,11 @@ function JobPage({ id }) {
     } catch (requestError) {
       setActionError(`Transcription request for ${file.name}: ${requestError.message}`);
     } finally {
-      setPendingTranscription(null);
+      setPendingTranscriptions((current) => {
+        const remaining = { ...current };
+        delete remaining[file.name];
+        return remaining;
+      });
       setFileRevision((revision) => revision + 1);
     }
   }
@@ -637,9 +648,9 @@ function JobPage({ id }) {
   }
 
   async function removeFile(file) {
-    if (mutationDisabled) return;
+    if (songMutationDisabled(file.name)) return;
     if (!await confirm({ title: 'Delete song?', message: `Delete ${file.name} from this job?`, action: 'delete', label: 'Delete song' })) return;
-    setDeletingFile(file.name);
+    setDeletingFiles((current) => ({ ...current, [file.name]: true }));
     setActionError('');
     try {
       await request(`/api/jobs/${encodeURIComponent(id)}/files/${encodeURIComponent(file.name)}`, { method: 'DELETE' });
@@ -647,7 +658,11 @@ function JobPage({ id }) {
     } catch (requestError) {
       setActionError(requestError.message);
     } finally {
-      setDeletingFile(null);
+      setDeletingFiles((current) => {
+        const remaining = { ...current };
+        delete remaining[file.name];
+        return remaining;
+      });
     }
   }
 
@@ -721,17 +736,17 @@ function JobPage({ id }) {
                   {file.isSong ? <a className="song-file-link" href={`/job/${encodeURIComponent(id)}/player?${new URLSearchParams({ song: file.name, play: '1' })}`} aria-label={`Play ${file.name}`} title="Play song">
                     <span className="file-icon"><FileAudio size={19} /></span>
                     <span><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small>
-                      <TranscriptionStatus transcription={pendingTranscription?.name === file.name ? pendingTranscription : job.transcriptions?.[file.name]} />
+                      <TranscriptionStatus transcription={pendingTranscriptions[file.name] || job.transcriptions?.[file.name]} />
                     </span>
                   </a> : <>
                     <span className="file-icon"><FileAudio size={19} /></span>
                     <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div>
                   </>}
                   <div className="file-row-actions">
-                    {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" title="Transcribe song" aria-label={`Transcribe ${file.name}`} disabled={mutationDisabled} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
+                    {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" title="Transcribe song" aria-label={`Transcribe ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
                     <a href={file.downloadUrl} aria-label={`Download ${file.name}`} title="Download song"><ArrowDownToLine size={18} /></a>
-                    {canModify && <button className="icon-link" type="button" title="Delete song" aria-label={`Delete song ${file.name}`} disabled={mutationDisabled} onClick={() => removeFile(file)}>
-                      {deletingFile === file.name ? <RefreshCw className="spin" size={18} /> : <Trash2 size={18} />}
+                    {canModify && <button className="icon-link" type="button" title="Delete song" aria-label={`Delete song ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => removeFile(file)}>
+                      {deletingFiles[file.name] ? <RefreshCw className="spin" size={18} /> : <Trash2 size={18} />}
                     </button>}
                   </div>
                 </li>

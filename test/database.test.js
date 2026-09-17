@@ -54,7 +54,7 @@ test('legacy users, passkeys, sessions and complete job records migrate once wit
   assert.equal(store.getSessionUser('test-session').id, 'admin-id');
   assert.deepEqual(store.findCredential('key-id').credential.publicKey, Buffer.from('public-key'));
   const manager = await import(`../src/jobManager.js?migration=${crypto.randomUUID()}`);
-  assert.deepEqual(manager.getJob('finished'), job);
+  assert.deepEqual(manager.getJob('finished'), { ...job, playlistTitle: 'My playlist' });
   assert.equal(manager.getJob('interrupted').status, 'failed');
   assert.match(manager.getJob('interrupted').error, /interrupted/);
   assert.equal(await fs.readFile(process.env.AUTH_STORE_PATH, 'utf8'), authText);

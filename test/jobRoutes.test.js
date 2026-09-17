@@ -16,6 +16,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   process.env.DATABASE_PATH = path.join(directory, 'test.sqlite');
   process.env.AUTH_STORE_PATH = path.join(directory, 'auth.json');
   process.env.JOB_STORE_PATH = path.join(directory, 'jobs.json');
+  await fs.mkdir(path.join(directory, 'public'));
+  await fs.writeFile(path.join(directory, 'public', 'index.html'), '<!doctype html><title>Test app shell</title>');
   const store = await import('../src/authStore.js');
   let server;
   context.after(async () => {
@@ -109,6 +111,69 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     request.on('error', reject);
     request.end(body === undefined ? undefined : JSON.stringify(body));
   });
+  async function waitForJob(id, headers) {
+    let response;
+    do {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      response = await call(`/api/jobs/${id}`, 'GET', headers);
+      assert.equal(response.status, 200, response.text);
+    } while (['queued', 'running'].includes(response.body.status));
+    return response;
+  }
+  for (const route of ['/', '/job', '/job/music', '/job/music/player']) {
+    assert.equal((await call(route)).status, 200);
+  }
+  for (const route of ['/api/library', '/api/library/tracks', '/api/preferences']) {
+    assert.equal((await call(route)).status, 401);
+  }
+  assert.equal((await call('/api/library', 'PUT', {}, {})).status, 401);
+  assert.equal((await call('/api/library/links', 'POST', {}, { jobId: 'music' })).status, 401);
+  assert.equal((await call('/api/library/songs/move', 'POST', {}, {})).status, 401);
+  assert.equal((await call('/api/preferences', 'PUT', {}, { theme: 'black' })).status, 401);
+  assert.deepEqual((await call('/api/preferences', 'PUT', credentials.Owner[0], { theme: 'royal-purple', userId: users.Other.id })).body,
+    { theme: 'royal-purple', mode: 'light' });
+  assert.deepEqual((await call('/api/preferences', 'PUT', credentials.Owner[1], { mode: 'dark' })).body, { theme: 'royal-purple', mode: 'dark' });
+  assert.deepEqual((await call('/api/preferences', 'GET', credentials.Owner[1])).body, { theme: 'royal-purple', mode: 'dark' });
+  assert.deepEqual((await call('/api/preferences', 'GET', credentials.Other[0])).body, { theme: 'light', mode: 'light' });
+  assert.equal((await call('/api/preferences', 'PUT', credentials.Owner[0], { mode: 'invalid' })).status, 400);
+  assert.equal((await call('/api/preferences', 'PUT', credentials.Owner[0], { theme: 'invalid' })).status, 400);
+  const initialLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+  assert.equal(initialLibrary.jobs.length, 3);
+  assert.equal(initialLibrary.entries.some((entry) => entry.id === 'unowned'), false);
+  assert.deepEqual((await call('/api/library', 'GET', credentials.Other[0])).body.jobs, []);
+  assert.deepEqual((await call('/api/library', 'GET', credentials.Admin[0])).body.jobs, []);
+  assert.equal((await call('/api/library/tracks?entryId=music', 'GET', credentials.Other[0])).status, 404);
+  assert.equal((await call('/api/library/links', 'POST', credentials.Other[0], { jobId: 'music' })).status, 403);
+  assert.equal(initialLibrary.jobs.find((job) => job.id === 'music').playlistTitle, 'music');
+  assert.deepEqual(initialLibrary.jobs.find((job) => job.id === 'music').contributors, []);
+  assert.deepEqual(initialLibrary.jobs.find((job) => job.id === 'music').transcriptions, {});
+  const organized = {
+    version: initialLibrary.version,
+    entries: [
+      { id: 'folder-mixes', type: 'folder', name: 'Mixes', parentId: null },
+      { id: 'shared', type: 'playlist', parentId: 'folder-mixes' },
+      { id: 'folder-live', type: 'folder', name: 'Live', parentId: 'folder-mixes' },
+      { id: 'music', type: 'playlist', parentId: 'folder-live' },
+      { id: 'owned', type: 'playlist', parentId: null }
+    ],
+    songOrder: { music: ['keep.mp3', songName, `[NoVocals]/${songName}`] }
+  };
+  const savedLibrary = await call('/api/library', 'PUT', credentials.Owner[1], organized);
+  assert.equal(savedLibrary.status, 200);
+  assert.deepEqual((await call('/api/library', 'GET', credentials.Owner[0])).body.entries, organized.entries);
+  assert.equal((await call('/api/library', 'PUT', credentials.Owner[0], organized)).status, 409);
+  assert.deepEqual((await call('/api/preferences', 'GET', credentials.Owner[0])).body, { theme: 'royal-purple', mode: 'dark' });
+  const folderTracks = await call('/api/library/tracks?entryId=folder-mixes', 'GET', credentials.Owner[0]);
+  assert.deepEqual(folderTracks.body.files.map((file) => [file.jobId, file.name]), [
+    ['shared', songName], ['shared', 'keep.mp3'],
+    ['music', 'keep.mp3'], ['music', songName], ['music', `[NoVocals]/${songName}`]
+  ]);
+  assert.deepEqual((await call('/api/jobs/music/files', 'GET', credentials.Owner[0])).body.files.map((file) => file.name), organized.songOrder.music);
+  assert.deepEqual((await call('/api/jobs/music', 'GET', credentials.Owner[1])).body.files, organized.songOrder.music);
+  assert.deepEqual((await call('/api/jobs/music/files', 'GET', credentials.Other[0])).body.files.map((file) => file.name),
+    [songName, 'keep.mp3', `[NoVocals]/${songName}`]);
+  assert.equal((await call('/api/library/tracks?entryId=folder-mixes', 'GET', credentials.Other[0])).status, 404);
+  assert.equal((await call('/api/library/tracks?entryId=missing', 'GET', credentials.Owner[0])).status, 404);
   const encodedSong = encodeURIComponent(`[NoVocals]/${songName}`);
   const streamRoute = `/api/jobs/music/stream/${encodedSong}`;
   const lyricsRoute = `/api/jobs/music/lyrics/${encodedSong}`;
@@ -122,6 +187,34 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(lyrics.body.title, 'A song');
   assert.equal(lyrics.body.uslt, 'First line\nSecond line');
   assert.deepEqual(lyrics.body.sylt, [{ time: 1, text: 'First line' }, { time: 2.5, text: 'Second line' }]);
+  const metadataRoute = `/api/jobs/music/files/${encodedSong}/metadata`;
+  const artwork = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+  assert.equal((await call(metadataRoute, 'PATCH', {}, { title: 'Denied' })).status, 401);
+  assert.equal((await call(metadataRoute, 'PATCH', credentials.Other[0], { title: 'Denied' })).status, 403);
+  for (const body of [{ title: 7 }, { artist: 'bad\u0000tag' }, { unknown: 'field' }, { artwork: 'https://example.com/image.png' },
+    { artwork: 'data:image/png;base64,aW52YWxpZA==' }, { artwork: artwork.replace('image/png', 'image/jpeg') }, { title: 'x'.repeat(501) }]) {
+    assert.equal((await call(metadataRoute, 'PATCH', credentials.Owner[0], body)).status, 400);
+  }
+  const edited = await call(metadataRoute, 'PATCH', credentials.Owner[0], {
+    title: 'Edited song', artist: 'Edited artist', album: 'New album', performerInfo: 'Album artist',
+    genre: 'Jazz', year: '2026', trackNumber: '2/9', partOfSet: '1/2', artwork
+  });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.body.title, 'Edited song');
+  assert.equal(edited.body.artwork, artwork);
+  assert.deepEqual(edited.body.sylt, lyrics.body.sylt);
+  assert.equal(edited.body.uslt, lyrics.body.uslt);
+  assert.equal((await call(lyricsRoute, 'GET', credentials.Owner[0])).body.performerInfo, 'Album artist');
+  const changedFile = await fs.readFile(path.join(musicDir, '[NoVocals]', songName));
+  assert.deepEqual(NodeID3.removeTagsFromBuffer(changedFile), NodeID3.removeTagsFromBuffer(taggedAudio));
+  assert.equal(NodeID3.read(changedFile).trackNumber, '2/9');
+  assert.equal((await call('/api/jobs/music/files', 'GET', credentials.Owner[0])).body.files.find((file) => file.name === `[NoVocals]/${songName}`).title, 'Edited song');
+  const retainedArtwork = await call(metadataRoute, 'PATCH', credentials.Admin[1], { artist: '' });
+  assert.equal(retainedArtwork.body.artist, '');
+  assert.equal(retainedArtwork.body.artwork, artwork);
+  assert.equal((await call(metadataRoute, 'PATCH', credentials.Owner[1], { artwork: null })).body.artwork, null);
+  assert.equal((await call('/api/jobs/music/files/..%2Foutside.mp3/metadata', 'PATCH', credentials.Owner[0], { title: 'Bad' })).status, 400);
+  assert.equal((await call('/api/jobs/music/files/missing.mp3/metadata', 'PATCH', credentials.Owner[0], { title: 'Missing' })).status, 404);
   assert.equal((await call('/api/jobs/music/stream/..%2Foutside.mp3', 'GET', credentials.Owner[0])).status, 400);
   assert.equal((await call(`/api/jobs/owned/download/${encodeURIComponent(songName)}`, 'GET', credentials.Other[0])).text, 'song');
   const transcribeRoute = `/api/jobs/music/files/${encodedSong}/transcribe`;
@@ -145,10 +238,24 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const shared = await call(contributorRoute, 'PUT', credentials.Owner[0], { userIds: [users.Other.id, users.Other.id] });
   assert.equal(shared.status, 200);
   assert.deepEqual(shared.body.contributors, [{ id: users.Other.id, name: 'Other' }]);
+  assert.equal((await call(`/api/jobs/shared/files/${encodeURIComponent(songName)}/metadata`, 'PATCH', credentials.Other[0], { title: 'Contributor edit' })).status, 200);
+  const actionLibrary = (await call('/api/library', 'GET', credentials.Other[0])).body;
+  assert.deepEqual(actionLibrary.jobs.find((job) => job.id === 'shared').contributors, shared.body.contributors);
+  assert.deepEqual(actionLibrary.jobs.map((job) => job.id), ['shared']);
+  assert.equal((await call('/api/library', 'GET', credentials.Owner[0])).body.jobs.find((job) => job.id === 'music').transcriptions[`[NoVocals]/${songName}`].status, 'failed');
   const persistedShared = JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get('shared').data);
   assert.deepEqual(persistedShared.contributors, shared.body.contributors);
   closeDatabases();
   assert.equal(shared.body.initiatedBy.id, users.Owner.id);
+  const titleRoute = '/api/jobs/shared/title';
+  assert.equal((await call(titleRoute, 'PATCH', {}, { playlistTitle: 'Private edit' })).status, 401);
+  assert.equal((await call(titleRoute, 'PATCH', credentials.Other[0], { playlistTitle: 'Contributor edit' })).status, 403);
+  assert.equal((await call(titleRoute, 'PATCH', credentials.Owner[0], { playlistTitle: ' ' })).status, 400);
+  const renamed = await call(titleRoute, 'PATCH', credentials.Owner[1], { playlistTitle: 'Shared favorites' });
+  assert.equal(renamed.status, 200);
+  assert.equal(renamed.body.playlistTitle, 'Shared favorites');
+  assert.equal(renamed.body.folderName, 'shared');
+  assert.equal((await call('/api/jobs/missing/title', 'PATCH', credentials.Owner[0], { playlistTitle: 'Missing' })).status, 404);
   assert.deepEqual((await call('/api/jobs/shared', 'GET', credentials.Other[0])).body.contributors, shared.body.contributors);
   assert.deepEqual((await call('/api/jobs', 'GET', credentials.Other[0])).body.find((job) => job.id === 'shared').contributors, shared.body.contributors);
   const sharedDuplicate = await call('/api/jobs', 'POST', credentials.Other[0], { url: 'https://music.youtube.com/watch?v=shared' });
@@ -162,11 +269,9 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     const rerun = await call('/api/jobs/shared/rerun', 'POST', headers);
     assert.equal(rerun.status, 202);
     assert.equal(rerun.body.initiatedBy.id, users.Owner.id);
+    assert.equal(rerun.body.playlistTitle, 'Shared favorites');
     assert.deepEqual(rerun.body.contributors, shared.body.contributors);
-    let current;
-    do {
-      current = await call('/api/jobs/shared', 'GET', headers);
-    } while (['queued', 'running'].includes(current.body.status));
+    await waitForJob('shared', headers);
   }
   assert.equal((await call(contributorRoute, 'PUT', credentials.Admin[1], { userIds: [] })).status, 200);
   for (const headers of credentials.Other) {
@@ -206,10 +311,41 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const rerun = await call('/api/jobs/owned/rerun', 'POST', credentials.Admin[1]);
   assert.equal(rerun.status, 202);
   assert.equal(rerun.body.initiatedBy.id, users.Owner.id);
-  let current;
-  do {
-    current = await call('/api/jobs/owned', 'GET', credentials.Owner[0]);
-  } while (['queued', 'running'].includes(current.body.status));
+  await waitForJob('owned', credentials.Owner[0]);
   assert.equal((await call('/api/jobs/owned', 'DELETE', credentials.Owner[0])).status, 204);
   assert.equal((await call('/api/jobs/owned', 'GET', credentials.Owner[0])).status, 404);
+
+  const single = await call('/api/jobs', 'POST', credentials.Owner[0], { url: 'https://music.youtube.com/watch?v=individual' });
+  assert.equal(single.status, 202);
+  const singleId = single.body.id;
+  const current = await waitForJob(singleId, credentials.Owner[0]);
+  await fs.writeFile(path.join(current.body.outputDir, 'single.mp3'), 'single song');
+  writeJob(openDatabase(), { ...current.body, files: ['single.mp3'] });
+  closeDatabases();
+  const singlesLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+  assert.equal(singlesLibrary.playlists.find((playlist) => playlist.id === 'individual-songs').protected, true);
+  assert.equal(singlesLibrary.entries.some((entry) => entry.id === singleId), false);
+  const individualTracks = (await call('/api/library/tracks?entryId=individual-songs', 'GET', credentials.Owner[0])).body.files;
+  assert.equal(individualTracks[0].jobId, singleId);
+  assert.equal(individualTracks[0].playlistId, 'individual-songs');
+  assert.equal((await call('/api/library/tracks?entryId=individual-songs', 'GET', credentials.Other[0])).status, 404);
+  const move = { version: singlesLibrary.version, jobId: singleId, name: 'single.mp3', playlistId: 'folder-mixes' };
+  assert.equal((await call('/api/library/songs/move', 'POST', credentials.Owner[0], move)).status, 400);
+  assert.equal((await call('/api/library/songs/move', 'POST', credentials.Owner[1], { ...move, playlistId: 'music' })).status, 200);
+  assert.equal((await call('/api/library/songs/move', 'POST', credentials.Owner[0], { ...move, playlistId: 'music' })).status, 409);
+  const moved = (await call('/api/library/tracks?entryId=music', 'GET', credentials.Owner[0])).body.files.at(-1);
+  assert.equal(moved.jobId, singleId);
+  assert.equal(moved.playlistId, 'music');
+  assert.equal((await call(moved.downloadUrl, 'GET', credentials.Owner[0])).text, 'single song');
+  assert.equal((await call('/api/library/links', 'POST', credentials.Other[1], { jobId: singleId })).status, 403);
+  assert.equal((await call(`/api/jobs/${singleId}/contributors`, 'PUT', credentials.Owner[0], { userIds: [users.Other.id] })).status, 200);
+  const otherLink = await call('/api/library/links', 'POST', credentials.Other[1], { jobId: singleId });
+  assert.equal(otherLink.status, 200);
+  assert.equal(otherLink.body.selectedId, 'individual-songs');
+  assert.equal((await call('/api/library/tracks?entryId=individual-songs', 'GET', credentials.Other[0])).body.files[0].jobId, singleId);
+  assert.equal((await call(`/api/jobs/${singleId}/contributors`, 'PUT', credentials.Owner[0], { userIds: [] })).status, 200);
+  assert.deepEqual((await call('/api/library/tracks?entryId=individual-songs', 'GET', credentials.Other[0])).body.files, []);
+  assert.equal((await call('/api/library/links', 'POST', credentials.Owner[0], { jobId: 'missing' })).status, 404);
+  assert.equal((await call(`/api/jobs/${singleId}`, 'DELETE', credentials.Owner[0])).status, 204);
+  assert.equal((await call('/api/library', 'GET', credentials.Owner[0])).body.entries.some((entry) => entry.id === 'individual-songs'), true);
 });

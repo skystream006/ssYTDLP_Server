@@ -1,0 +1,218 @@
+import { useEffect, useId, useRef, useState } from 'react';
+import { Check, CircleAlert, Clock3, FileAudio, ImagePlus, Info, Mic, Music2, RefreshCw, Save, Trash2, X } from 'lucide-react';
+import { transcriptionLanguages } from '../../src/transcriptionLanguages.js';
+
+export function canManageJob(user, job) {
+  return Boolean(user && job && (user.role === 'admin' || user.id === job.initiatedBy?.id));
+}
+
+export function isContributor(user, job) {
+  return Boolean(user?.id && job?.contributors?.some((contributor) => contributor.id === user.id));
+}
+
+export function canModifyJob(user, job) {
+  return canManageJob(user, job) || isContributor(user, job);
+}
+
+export function formatDate(value) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+  }).format(new Date(value));
+}
+
+export function formatBytes(value) {
+  if (!Number.isFinite(value)) return '-';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
+  const dialogRef = useRef(null);
+  const uploadRef = useRef(null);
+  const headingId = useId();
+  const [values, setValues] = useState(null);
+  const [artwork, setArtwork] = useState(null);
+  const [artworkChanged, setArtworkChanged] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [readingImage, setReadingImage] = useState(false);
+  const [error, setError] = useState('');
+  const fields = [['title', 'Title'], ['artist', 'Artist'], ['album', 'Album'], ['performerInfo', 'Album artist'],
+    ['genre', 'Genre'], ['year', 'Year'], ['trackNumber', 'Track number'], ['partOfSet', 'Disc number']];
+
+  useEffect(() => {
+    let active = true;
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    request(`/api/jobs/${encodeURIComponent(jobId)}/lyrics/${encodeURIComponent(file.name)}`)
+      .then((result) => {
+        if (!active) return;
+        setValues(Object.fromEntries(fields.map(([field]) => [field, result[field] || ''])));
+        setArtwork(result.artwork);
+      }).catch((loadError) => { if (active) setError(loadError.message); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, [jobId, file.name, request]);
+
+  async function chooseArtwork(event) {
+    const image = event.target.files?.[0];
+    event.target.value = '';
+    if (!image) return;
+    setError('');
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(image.type) || image.size > 2 * 1024 * 1024) {
+      setError('Choose a JPEG, PNG or WebP image no larger than 2 MB.'); return;
+    }
+    setReadingImage(true);
+    try {
+      const data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Unable to read artwork.'));
+        reader.readAsDataURL(image);
+      });
+      await new Promise((resolve, reject) => {
+        const preview = new Image();
+        preview.onload = resolve;
+        preview.onerror = reject;
+        preview.src = data;
+      });
+      setArtwork(data);
+      setArtworkChanged(true);
+    } catch { setError('Unable to open this image. Choose a different artwork file.'); }
+    finally { setReadingImage(false); }
+  }
+
+  async function save(event) {
+    event.preventDefault();
+    if (!values || saving || readingImage) return;
+    setSaving(true);
+    setError('');
+    try {
+      const result = await request(`/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(file.name)}/metadata`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...values, ...(artworkChanged ? { artwork } : {}) })
+      });
+      onSaved(result);
+      onClose();
+    } catch (saveError) { setError(saveError.message); }
+    finally { setSaving(false); }
+  }
+
+  return <dialog ref={dialogRef} className="confirmation-dialog metadata-dialog" aria-labelledby={headingId}
+    onCancel={(event) => { event.preventDefault(); if (!saving && !readingImage) onClose(); }}>
+    <form onSubmit={save}>
+      <div className="folder-dialog-heading"><h2 id={headingId}>Edit song metadata</h2><button className="music-icon-button" type="button" title="Close" aria-label="Close metadata editor" disabled={saving || readingImage} onClick={onClose}><X size={18} /></button></div>
+      <p className="metadata-filename">{file.name}</p>
+      {loading && <p role="status">Loading metadata...</p>}
+      {values && <fieldset disabled={saving || readingImage} className="metadata-fields">
+        <div className="metadata-artwork"><div className="metadata-artwork-preview">{artwork ? <img src={artwork} alt="Song artwork preview" /> : <Music2 size={40} />}</div>
+          <div><input ref={uploadRef} type="file" accept="image/jpeg,image/png,image/webp" aria-label="Artwork file" hidden onChange={chooseArtwork} />
+            <button className="secondary-button compact-button" type="button" onClick={() => uploadRef.current.click()}><ImagePlus size={17} />Choose artwork</button>
+            <button className="music-icon-button" type="button" title="Remove artwork" aria-label="Remove artwork" disabled={!artwork} onClick={() => { setArtwork(null); setArtworkChanged(true); }}><Trash2 size={17} /></button></div>
+        </div>
+        <div className="metadata-inputs">{fields.map(([field, label]) => <label key={field} htmlFor={`${headingId}-${field}`}>{label}
+          <input id={`${headingId}-${field}`} value={values[field]} maxLength={500} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />
+        </label>)}</div>
+      </fieldset>}
+      {error && <p className="notice error" role="alert">{error}</p>}
+      <div className="dialog-actions"><button className="secondary-button" type="button" disabled={saving || readingImage} onClick={onClose}>Cancel</button>
+        <button className="primary-button" type="submit" disabled={loading || !values || saving || readingImage}>{saving ? <RefreshCw className="spin" size={17} /> : <Save size={17} />}{saving ? 'Saving...' : 'Save changes'}</button></div>
+    </form>
+  </dialog>;
+}
+
+export function TranscriptionDialog({ file, onClose, onSubmit }) {
+  const dialogRef = useRef(null);
+  const titleId = useId();
+  const [addLyrics, setAddLyrics] = useState(false);
+  const [language, setLanguage] = useState('');
+  const [lyrics, setLyrics] = useState('');
+  const [mode, setMode] = useState('prompt');
+  const [submitting, setSubmitting] = useState(false);
+  const modes = [
+    ['prompt', 'Prompt', 'Biases recognition toward known words.'],
+    ['align', 'Align', 'Maps authoritative lyric lines onto ASR timing.'],
+    ['correct', 'Correct', 'Replaces recognized text while preserving ASR segment timing.']
+  ];
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    return () => {
+      dialog.close();
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, []);
+
+  function submit(event) {
+    event.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+    onSubmit(file, {
+      ...(addLyrics ? { lyrics: lyrics.trim(), lyrics_mode: mode } : {}),
+      ...(language ? { language } : {})
+    });
+  }
+
+  return <dialog ref={dialogRef} className={`confirmation-dialog transcription-dialog${addLyrics ? ' transcription-dialog-expanded' : ''}`} aria-labelledby={titleId}
+    onCancel={(event) => { event.preventDefault(); if (!submitting) onClose(); }}>
+    <form onSubmit={submit}>
+      <h2 id={titleId}>Transcribe song</h2>
+      <p className="transcription-file"><FileAudio size={22} /><span>{file.name}<small>{formatBytes(file.sizeBytes)}</small></span></p>
+      <fieldset disabled={submitting} className="transcription-fields">
+        <label className="transcription-language" htmlFor={`${titleId}-language`}>Language (optional)
+          <select id={`${titleId}-language`} value={language} onChange={(event) => setLanguage(event.target.value)}>
+            <option value="">Auto-detect</option>
+            {transcriptionLanguages.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
+          </select>
+        </label>
+        <label className="lyrics-toggle"><input type="checkbox" checked={addLyrics} onChange={(event) => setAddLyrics(event.target.checked)} />Add lyrics</label>
+        {addLyrics && <>
+          <fieldset className="lyrics-mode-options"><legend>Lyrics mode</legend>
+            {modes.map(([value, label, description]) => <div className="lyrics-mode-option" key={value}>
+              <label><input type="radio" name="lyrics-mode" value={value} checked={mode === value} required onChange={() => setMode(value)} />{label}</label>
+              <span className="info-helper"><button type="button" aria-label={`About ${label}`} aria-describedby={`${titleId}-${value}`}><Info size={16} /></button>
+                <span role="tooltip" id={`${titleId}-${value}`}>{description}</span>
+              </span>
+            </div>)}
+          </fieldset>
+          <label className="lyrics-input-label" htmlFor={`${titleId}-lyrics`}>Lyrics</label>
+          <textarea id={`${titleId}-lyrics`} value={lyrics} onChange={(event) => setLyrics(event.target.value)} required maxLength={100000} rows={8} />
+        </>}
+      </fieldset>
+      <div className="dialog-actions">
+        <button className="secondary-button" type="button" disabled={submitting} onClick={onClose}>Cancel</button>
+        <button className="primary-button" type="submit" disabled={submitting || (addLyrics && !lyrics.trim())}><Mic size={17} />{submitting ? 'Submitting' : 'Submit'}</button>
+      </div>
+    </form>
+  </dialog>;
+}
+
+export function TranscriptionStatus({ transcription }) {
+  const states = {
+    sent: { label: 'Transcription request sent', Icon: RefreshCw },
+    transcribed: { label: 'Transcribed', Icon: Check },
+    failed: { label: 'Transcription failed', Icon: CircleAlert },
+    interrupted: { label: 'Interrupted', Icon: Clock3 }
+  };
+  const state = states[transcription?.status];
+  if (!state) return null;
+  const { label, Icon } = state;
+  const details = [
+    `Requested: ${formatDate(transcription.requestedAt)}`,
+    transcription.completedAt && `Finished: ${formatDate(transcription.completedAt)}`,
+    transcription.error
+  ].filter(Boolean).join('\n');
+  return <span className={`song-transcription song-transcription-${transcription.status}`} title={details}>
+    <Icon size={13} className={transcription.status === 'sent' ? 'spin' : undefined} aria-hidden="true" />
+    <span>{label}</span>
+  </span>;
+}

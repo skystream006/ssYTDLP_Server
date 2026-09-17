@@ -25,6 +25,7 @@
     "file-type": "^22.1.0",
     "helmet": "^8.3.0",
     "lucide-react": "^1.46.0",
+    "mobile-drag-drop": "^3.0.0-rc.0",
     "node-id3": "^0.2.9",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

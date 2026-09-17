@@ -119,6 +119,13 @@ export function openDatabase() {
           name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS private_access_tokens_user ON private_access_tokens(user_id);
+        CREATE TABLE IF NOT EXISTS user_preferences (
+          user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+          theme TEXT NOT NULL DEFAULT 'light',
+          theme_mode TEXT CHECK(theme_mode IN ('light', 'dark')),
+          library TEXT NOT NULL DEFAULT '{"entries":[],"songOrder":{}}' CHECK(json_valid(library)),
+          library_version INTEGER NOT NULL DEFAULT 0
+        );
         CREATE TABLE IF NOT EXISTS jobs (
           id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL,
           created_at TEXT NOT NULL, data TEXT NOT NULL CHECK(json_valid(data))
@@ -127,6 +134,9 @@ export function openDatabase() {
         CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created_at DESC);
         CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status);
       `);
+      if (!database.pragma('table_info(user_preferences)').some((column) => column.name === 'theme_mode')) {
+        database.exec("ALTER TABLE user_preferences ADD COLUMN theme_mode TEXT CHECK(theme_mode IN ('light', 'dark'))");
+      }
       migrateLegacy(database);
     }).immediate();
     connections.set(filePath, database);

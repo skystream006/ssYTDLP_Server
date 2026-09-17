@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import { isPlaylistUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
 import { openDatabase, writeJob } from './database.js';
 import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
+import { updateSongMetadata } from './music.js';
 
 const jobs = new Map();
 const jobMutations = new Set();
@@ -37,11 +38,16 @@ let updateGate = null;
 async function loadJobs() {
   const storedJobs = database.prepare(`SELECT data FROM jobs
     WHERE status IN ('queued', 'running', 'failed', 'warning')
+    OR json_extract(jobs.data, '$.playlistTitle') IS NULL
     OR EXISTS (SELECT 1 FROM json_each(jobs.data, '$.transcriptions')
       WHERE json_extract(value, '$.status') = 'sent')`).all();
   for (const { data } of storedJobs) {
     const job = JSON.parse(data);
     let updatedStoredJob = false;
+    if (!job.playlistTitle) {
+      job.playlistTitle = inferPlaylistTitle(job);
+      updatedStoredJob = true;
+    }
     if (job.status === 'queued' || job.status === 'running') {
       job.status = 'failed';
       job.error = 'Job was interrupted by a server restart';
@@ -218,12 +224,20 @@ async function listDownloadedFiles(folderPath) {
   }
 }
 
+function inferPlaylistTitle(job) {
+  const folderTitle = (job.folderName || '').replace(/_song_[0-9a-f-]{36}$/i, '');
+  if (folderTitle && !/^song_[0-9a-f-]{36}$/i.test(folderTitle)) return folderTitle.replaceAll('_', ' ');
+  const song = (job.files || []).find(isSongFile);
+  return song ? path.basename(song, path.extname(song)) : 'Untitled playlist';
+}
+
 export function parsePlaylistMetadata(output) {
   const metadata = JSON.parse(output);
+  const playlistTitle = typeof metadata.title === 'string' && metadata.title.trim() ? metadata.title.trim() : 'playlist';
   const playlistSongCount = Number.isSafeInteger(metadata.playlist_count) && metadata.playlist_count >= 0
     ? metadata.playlist_count
     : Array.isArray(metadata.entries) ? metadata.entries.length : null;
-  return { folderName: sanitizeFolderName(metadata.title || 'playlist'), playlistSongCount };
+  return { playlistTitle, folderName: sanitizeFolderName(playlistTitle), playlistSongCount };
 }
 
 async function getPlaylistMetadata(url, denoPath) {
@@ -251,6 +265,7 @@ function newJob(url, initiatedBy) {
     initiatedBy,
     contributors: [],
     isPlaylist: isPlaylistUrl(url),
+    playlistTitle: null,
     playlistSongCount: null,
     status: 'queued',
     error: null,
@@ -345,6 +360,7 @@ async function executeJob(job) {
     : null;
   const folderName = job.folderName || (playlistMetadata ? `${playlistMetadata.folderName}_${job.id}` : randomSongFolderName());
 
+  job.playlistTitle = job.playlistTitleOverride || playlistMetadata?.playlistTitle || job.playlistTitle;
   job.playlistSongCount = playlistMetadata?.playlistSongCount ?? null;
   job.folderName = folderName;
   job.outputDir = job.outputDir || path.join(outputRoot, folderName);
@@ -402,6 +418,7 @@ async function executeJob(job) {
     }
   }
 
+  job.playlistTitle ||= inferPlaylistTitle(job);
   job.updatedAt = new Date().toISOString();
   await persistJob(job);
 }
@@ -464,6 +481,7 @@ function createJobRecord(sourceUrl, user) {
     error.existingJob = {
       id: existingJob.id,
       status: existingJob.status,
+      playlistTitle: JSON.parse(existingJob.data).playlistTitle,
       folderName: JSON.parse(existingJob.data).folderName,
       initiatedBy: JSON.parse(existingJob.data).initiatedBy,
       contributors: JSON.parse(existingJob.data).contributors || []
@@ -472,6 +490,21 @@ function createJobRecord(sourceUrl, user) {
   }
   const job = newJob(sourceUrl, user ? { id: user.id, name: user.name } : null);
   writeJob(database, job);
+  return job;
+}
+
+export async function setJobTitle(id, title, user = null) {
+  const job = getJob(id);
+  if (!job) return null;
+  assertJobAccess(job, user);
+  assertJobIsIdle(job, 'rename');
+  if (typeof title !== 'string' || !title.trim() || title.trim().length > 200 || /[\x00-\x1f\x7f]/.test(title)) {
+    throw Object.assign(new Error('Playlist title must be between 1 and 200 characters without control characters'), { statusCode: 400 });
+  }
+  job.playlistTitle = title.trim();
+  job.playlistTitleOverride = job.playlistTitle;
+  job.updatedAt = new Date().toISOString();
+  await persistJob(job);
   return job;
 }
 
@@ -586,6 +619,33 @@ async function executeTranscription(job, fileName, options, requestedAt) {
   }
 }
 
+export async function setSongMetadata(id, fileName, value, user = null) {
+  const job = getJob(id);
+  if (!job) return null;
+  assertCanModifyJob(job, user, true);
+  assertJobIsIdle(job, 'edit metadata for');
+  if (!isValidJobFileName(fileName) || !isSongFile(fileName)) {
+    throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
+  }
+  if (!job.outputDir || !job.files.includes(fileName)) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+  jobMutations.add(id);
+  try {
+    return await mutateJobFiles(id, async () => {
+      const filePath = getFilePath(job, fileName);
+      const realPath = await fs.realpath(filePath).catch(() => null);
+      if (!realPath || !(await fs.stat(realPath)).isFile()) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+      if (!isFileInsideJobFolder({ outputDir: await fs.realpath(job.outputDir) }, realPath)) {
+        throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
+      }
+      const metadata = await updateSongMetadata(realPath, value);
+      job.songMetadata = { ...job.songMetadata, [fileName]: { title: metadata.title, artist: metadata.artist, album: metadata.album } };
+      job.updatedAt = new Date().toISOString();
+      await persistJob(job);
+      return metadata;
+    });
+  } finally { jobMutations.delete(id); }
+}
+
 export async function deleteJobFile(id, fileName, user = null) {
   const job = getJob(id);
   if (!job) return null;
@@ -623,6 +683,7 @@ export async function deleteJobFile(id, fileName, user = null) {
       const currentJob = transcriptionQueues.get(id)?.job || getJob(id);
       currentJob.files = currentJob.files.filter((name) => name !== fileName);
       if (currentJob.transcriptions) delete currentJob.transcriptions[fileName];
+      if (currentJob.songMetadata) delete currentJob.songMetadata[fileName];
       currentJob.updatedAt = new Date().toISOString();
       await persistJob(currentJob);
       return currentJob;

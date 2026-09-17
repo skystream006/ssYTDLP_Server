@@ -1,6 +1,7 @@
 # ssYTDLP_Server
 
-Minimal web app for starting background `yt-dlp` downloads from `music.youtube.com` URLs.
+ssMusic Player is a personal music library backed by ssYTDLP download jobs from
+`music.youtube.com` URLs.
 
 ## Requirements
 
@@ -23,6 +24,10 @@ Copy `.env.example` to `.env`, then adjust its values for your server. `npm star
 loads `.env`, builds the React frontend, starts an HTTP redirect on `WEB_API_PORT`,
 and serves the app and API over TLS on `HTTPS_WEB_PORT`.
 For frontend development, run `npm run dev` while the API server is running.
+Vite proxies `/api` to the configured local `HTTPS_WEB_PORT` (4000 by default).
+Set `DEV_API_TARGET` to override the development API URL. Certificate verification
+is relaxed only for loopback development API targets; remote targets are verified.
+Passkey login still requires an origin matching the server's `PASSKEY_ORIGIN`.
 To override either listener from the command line:
 
 ```bash
@@ -158,8 +163,9 @@ FFmpeg and ffprobe are loaded from `runtime/ffmpeg/bin`; override this with
 
 ## Usage
 
-- Open the HTTPS URL configured by `PASSKEY_ORIGIN`
-- Paste a `https://music.youtube.com/...` URL
+- Open the HTTPS URL configured by `PASSKEY_ORIGIN` to use **ssMusic Player** at `/`.
+- Select **Jobs** or **Add music** to open the download dashboard at `/job`.
+- Paste a `https://music.youtube.com/...` URL.
 - Submitting the same source URL (ignoring surrounding whitespace) prompts to rerun
     the most recent matching job. Confirming keeps its downloaded files and opens its
     details under the same job ID; cancelling leaves it unchanged. Active matches can
@@ -199,6 +205,15 @@ Private videos skipped by yt-dlp produce a partially completed job rather than a
 Downloaded files are written under `./output/<job-folder>/` and can be downloaded from the job details page.
 Use **Download all** on a job with files to download its songs as a ZIP archive.
 Job details include the command and complete captured stdout and stderr output.
+Jobs record a separate `playlistTitle`, preserving the source title's spaces and
+punctuation. The job list, details, music library, and ZIP name use this title.
+Existing jobs receive readable titles derived from their folder or song names;
+their output folders and download archives are not renamed or moved.
+Owners and administrators can use the pencil beside **Playlist Title** in job
+details to rename an idle job. Contributors cannot rename it. Custom titles
+survive reruns and never rename output directories. The API is
+`PATCH /api/jobs/:id/title` with `{ "playlistTitle": "My favorites" }`;
+titles must contain 1-200 characters without control characters.
 
 Reruns reuse the original output folder and pass `--no-overwrites` and
 `--download-archive` to yt-dlp. Successfully downloaded video IDs are recorded in
@@ -225,7 +240,131 @@ Owners and administrators can manage contributors with:
     insufficient permissions return `403`, missing jobs return `404`, and active or
     busy jobs return `409`.
 
-## Transcription and music player
+## Personal music library
+
+The main page (`/`) is titled **{USERNAME}'s Music**, including the browser tab.
+It lists only jobs you initiated or contribute to, using their **Playlist Title**.
+This personal-library rule also applies to administrators. The Jobs dashboard keeps
+its existing broader access rules. Select a playlist on the left to browse its songs
+on the right. Search playlists or songs independently.
+The playback dock supports play/pause, previous/next, shuffle, repeat, seeking,
+volume, a playback queue, embedded artwork, and synchronized or plain-text lyrics.
+Lyrics open over a darkened page while the playback dock remains visible and
+interactive. Close lyrics with the close button, the backdrop, or Escape.
+Browsing another playlist or folder does not interrupt the playing queue.
+The same dock and audio element stay active when navigating to Jobs, job details,
+the job player, Health, Admin, or Settings, including browser Back/Forward.
+Logging out stops playback. Reloading the browser or opening another tab starts a
+new player session; playback is not transferred between tabs.
+On narrow screens, switch between **Playlists** and **Songs**; volume controls are hidden.
+
+**Add Playlist** opens a URL dialog for a YouTube Music playlist or individual
+song. It uses the same validation, duplicate confirmation, and permitted reruns
+as **Add job** on `/job`, without leaving the music library. Cancelling a duplicate
+confirmation does not rerun or link it.
+An existing URL owned by someone else cannot be added until its owner makes you a contributor.
+
+The first individual-song link creates a permanent **Individual Songs** playlist
+for that user. Later individual links share this playlist instead of creating
+one library entry per song. It stays available when empty and cannot be deleted,
+even if all its source jobs are removed. Contributors can link an existing
+individual job to their own independent collection. Removing contributor access
+removes that job's songs from their library.
+
+Use **New playlist folder** to create a folder. A selected folder becomes the
+default location for new subfolders. Folders support nesting up to 32 levels.
+The selected item's **Location** menu moves it to any valid folder or back to
+the library root. Drag a playlist onto a folder to move it inside, or onto another
+playlist to place it before that playlist. The up/down buttons also reorder the
+selected playlist or folder. Folders can be renamed; deleting a folder moves its
+immediate contents to its parent without deleting any music.
+
+A selected folder plays all descendant playlists in their saved tree order, then
+each playlist's songs in its saved song order. Drag a song within its playlist
+to reorder it, including when browsing a folder. Job
+details and the existing `/job/:id/player` view show the same saved song order.
+New playlists appear at the library root; new songs append after saved song
+positions. Deleted jobs and files are removed from the saved layout automatically.
+
+On phones and tablets, press and hold a song's grip or a playlist/folder name
+for a moment, then drag to organize it. Valid drop targets are highlighted, and
+dragging near the edge scrolls the list. Swipe normally to scroll without
+reordering. On narrow screens, use **Move to playlist** to move songs between
+the separate Songs and Playlists views. Touch controls have larger hit targets;
+tap or drag the seek bar to change playback position. Use the device's volume
+buttons for volume on touch devices.
+
+Song rows offer the same transcription dialog, status, and delete confirmation as
+job details. These actions use the source job's owner/contributor permissions and
+busy state, including for moved songs. Deleting a song removes the source file
+from every user's library, not just the current personal playlist.
+
+Use a song's **Move to playlist** button, or drag it onto a playlist in the
+sidebar, to move it between playlists. Songs cannot be placed directly in
+playlist folders. Moves belong to your account; source audio, download archives,
+job file lists, and other users' memberships stay intact. Songs retain their
+source job ID, so identical filenames from different jobs remain distinct and
+playable. If a destination job is deleted, surviving songs return to their
+original playlist or Individual Songs. Reordering also updates the corresponding
+source-job song order shown in job details.
+
+Themes, folders, playlist order, and song order belong to the signed-in account
+and persist in SQLite across browsers and server restarts. Organizing your library
+does not change anyone else's layout or grant additional job-management access.
+Choose the palette icon in the account bar or **User settings > Appearance** for
+Porcelain, Midnight blue, Royal purple, Gold, Green, Pink, or Black. Every color
+has **Light** and **Dark** counterparts. Color and mode are saved separately;
+changing color keeps the chosen mode. Existing Black and Midnight blue users
+retain dark mode on upgrade; the other existing themes retain light mode.
+
+Authenticated library APIs (sessions and PATs):
+
+- `GET /api/preferences` and `PUT /api/preferences` with `{ "theme": "royal-purple", "mode": "dark" }`.
+    Theme IDs are `light`, `midnight`, `royal-purple`, `gold`, `green`, `pink`, and `black`.
+    Either field can be updated independently; mode is `light` or `dark`.
+- `GET /api/library`: returns `version`, `entries`, `songOrder`, `playlistSongOrder`,
+    `songMoves`, `singleJobIds`, visible `playlists`, and source `jobs` summaries.
+- `PUT /api/library`: saves `version`, `entries`, and `songOrder`. Playlist entries
+    have `{ "id": "JOB_ID", "type": "playlist", "parentId": null }`; folder entries
+    add `"name"` and use a unique `folder-`-prefixed ID. A `parentId` references a folder.
+    Entries are ordered among siblings. `songOrder` maps job IDs to filename arrays.
+    `playlistSongOrder` maps playlist IDs to ordered track keys, each key being
+    `JSON.stringify([jobId, filename])`. `songMoves` contains `{ jobId, name, playlistId }`
+    overrides. Omitted membership fields are preserved. `singleJobIds` is server-managed;
+    omitting the protected `individual-songs` entry cannot delete the collection.
+    Stale versions return `409`, so simultaneous tabs cannot silently overwrite changes.
+- `POST /api/library/links` with `{ "jobId": "JOB_ID" }`: link an existing job,
+    creating or updating Individual Songs for individual jobs. Normal `/api/jobs`
+    submission also registers individual links automatically. Only owners and
+    contributors can link a job; unrelated accounts receive `403`.
+- `POST /api/library/songs/move` with `{ "version": 1, "jobId": "SOURCE_JOB_ID", "name": "song.mp3", "playlistId": "DESTINATION_ID" }`:
+    move a song to a playlist, appending it after that playlist's current songs.
+    Folder and unavailable destinations are rejected; stale versions return `409`.
+- `GET /api/library/tracks?entryId=ENTRY_ID`: returns ordered playable files for a
+    playlist or folder, including each file's source `jobId`, current `playlistId`, and `playlistTitle`. Omit
+    `entryId` to retrieve all music in library order.
+
+## Song metadata and artwork
+
+The pencil beside an MP3 song opens **Edit song metadata** in the library or job
+details. Edit title, artist, album, album artist, genre, year, track number, and disc
+number. Choose or remove artwork; uploads must be JPEG, PNG, or WebP, at most 2 MB.
+Other audio formats remain playable but do not offer the MP3 tag editor.
+
+Edits update the source MP3, including for personally moved songs, and therefore
+are visible to everyone using that source. Filenames, audio data, embedded lyrics,
+and download archives are preserved. The playing dock's text and artwork update
+without restarting the audio. Owners, contributors, and administrators can edit
+idle jobs; active downloads and conflicting file mutations return `409`.
+
+`PATCH /api/jobs/:id/files/:name/metadata` accepts a JSON object with any of
+`title`, `artist`, `album`, `performerInfo` (album artist), `genre`, `year`,
+`trackNumber`, and `partOfSet` (disc number). Text fields are limited to 500
+characters. Include `artwork` as a base64 image data URL to replace it, `null` to
+remove it, or omit it to preserve the current cover. The response contains the
+updated song metadata. URL-encode the full filename, including `[NoVocals]/`.
+
+## Transcription and job player
 
 Set `TRANSCRIPTION_ENDPOINT` in `.env` to the transcription service's complete URL,
 for example `http://localhost:4317/api/transcribe`, then restart the server.
@@ -355,7 +494,7 @@ Existing old tokens are discarded on upgrade; generate new PATs from User settin
 
 The app uses SQLite at `data/ssytdlp.sqlite`. Set `DATABASE_PATH` to choose another
 location on a local disk. No separate database service is required. Users, credentials,
-and sessions have separate tables; jobs are stored as individual records with indexed
+sessions, and per-user library preferences have separate tables; jobs are stored as individual records with indexed
 URLs, statuses, and creation dates. Flexible job metadata is encoded as JSON within
 each row, rather than rewriting a single JSON file containing the entire history.
 Only active jobs are retained in memory. Writes are transactional, with WAL journaling

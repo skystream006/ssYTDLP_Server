@@ -7,9 +7,11 @@ import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, transcribeJobFile } from './jobManager.js';
+import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setSongMetadata, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { readSongMetadata } from './music.js';
+import { getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey } from './library.js';
+import { getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, setLibrary, setTheme } from './libraryStore.js';
 import { getSystemHealth } from './health.js';
 import { isYouTubeMusicUrl } from './utils.js';
 import { scheduleDailyMaintenance } from './scheduler.js';
@@ -66,6 +68,7 @@ const authLimiters = {
 };
 
 app.use('/api', apiLimiter);
+app.use('/api/jobs/:id/files/:name/metadata', express.json({ limit: '3mb' }));
 app.use(express.json({ limit: '128kb' }));
 app.use(helmet({
   contentSecurityPolicy: {
@@ -87,11 +90,107 @@ app.use(helmet({
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 app.use(attachUser);
 registerAuthRoutes(app, authLimiters);
-app.use('/api/jobs', requireAuth);
+app.use(['/api/jobs', '/api/library', '/api/preferences'], requireAuth, (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
 app.use('/api/health', requireAuth);
 
-app.get('/api/jobs', (_req, res) => {
-  res.json(getJobs());
+app.get('/api/preferences', (req, res) => {
+  res.json(getPreferences(req.user.id));
+});
+
+app.put('/api/preferences', (req, res) => {
+  try {
+    return res.json(setTheme(req.user.id, req.body?.theme, req.body?.mode));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+function getLibraryJobs(user) {
+  return getJobs().filter((job) => job.initiatedBy?.id === user.id
+    || job.contributors?.some((contributor) => contributor.id === user.id));
+}
+
+app.get('/api/library', (req, res) => {
+  const jobs = getLibraryJobs(req.user);
+  const library = getLibrary(req.user.id, jobs);
+  const tracks = getPlaylistTracks(library, jobs);
+  const jobMap = new Map(jobs.map((job) => [job.id, job]));
+  const playlists = library.entries.filter((entry) => entry.type === 'playlist').map((entry) => {
+    const job = jobMap.get(entry.id);
+    return { id: entry.id, jobId: job?.id || null, playlistTitle: entry.name || job?.playlistTitle,
+      protected: Boolean(entry.protected), status: job?.status || 'completed', initiatedBy: job?.initiatedBy || req.user,
+      updatedAt: job?.updatedAt, songCount: tracks.get(entry.id).filter((track) => isSongFile(track.name)).length };
+  });
+  res.json({ ...library, playlists, jobs: jobs.map((job) => ({
+    id: job.id, isPlaylist: job.isPlaylist, playlistTitle: job.playlistTitle, status: job.status, initiatedBy: job.initiatedBy,
+    contributors: job.contributors || [], transcriptions: job.transcriptions || {},
+    updatedAt: job.updatedAt, songCount: (job.files || []).filter(isSongFile).length
+  })) });
+});
+
+app.put('/api/library', (req, res) => {
+  try {
+    return res.json(setLibrary(req.user.id, req.body, getLibraryJobs(req.user)));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.post('/api/library/links', (req, res) => {
+  try {
+    if (typeof req.body?.jobId !== 'string') return res.status(400).json({ error: 'A job ID is required' });
+    const job = getJob(req.body.jobId);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    const jobs = getLibraryJobs(req.user);
+    if (!jobs.some((item) => item.id === job.id)) return res.status(403).json({ error: 'Only job owners and contributors can add this playlist' });
+    const library = linkLibraryJob(req.user.id, job, jobs);
+    return res.json({ ...library, selectedId: job.isPlaylist === false ? individualSongsId : job.id });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.post('/api/library/songs/move', (req, res) => {
+  try {
+    return res.json(moveLibrarySong(req.user.id, req.body, getLibraryJobs(req.user)));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.get('/api/library/tracks', async (req, res) => {
+  try {
+    const jobs = getLibraryJobs(req.user);
+    const library = getLibrary(req.user.id, jobs);
+    const selectedId = req.query.entryId ?? null;
+    if (selectedId !== null && typeof selectedId !== 'string') return res.status(400).json({ error: 'Invalid library selection' });
+    if (selectedId !== null && !library.entries.some((entry) => entry.id === selectedId)) {
+      return res.status(404).json({ error: 'Library selection not found' });
+    }
+    const jobMap = new Map(jobs.map((job) => [job.id, job]));
+    const playlistTracks = getPlaylistTracks(library, jobs);
+    const tracks = getPlaylistIds(library.entries, selectedId).flatMap((id) => playlistTracks.get(id)).filter((track) => isSongFile(track.name));
+    const sourceFiles = await Promise.all([...new Set(tracks.map((track) => track.jobId))].map(async (id) => {
+      const files = await listJobFiles(jobMap.get(id));
+      return files.filter((file) => file.isSong).map((file) => [songKey({ jobId: id, name: file.name }), file]);
+    }));
+    const files = new Map(sourceFiles.flat());
+    return res.json({ files: tracks.filter((track) => files.has(songKey(track))).map((track) => ({
+      ...files.get(songKey(track)), ...track,
+      playlistTitle: track.playlistId === individualSongsId ? 'Individual Songs' : jobMap.get(track.playlistId)?.playlistTitle
+    })), version: library.version });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.get('/api/jobs', (req, res) => {
+  const jobs = getJobs();
+  const library = getLibrary(req.user.id, jobs);
+  res.json(jobs.map((job) => ({ ...job, files: orderFiles(job.files || [], library.songOrder[job.id]) })));
 });
 
 app.get('/api/jobs/:id', (req, res) => {
@@ -99,7 +198,18 @@ app.get('/api/jobs/:id', (req, res) => {
   if (!job) {
     return res.status(404).json({ error: 'Job not found' });
   }
-  return res.json(job);
+  const library = getLibrary(req.user.id, [job]);
+  return res.json({ ...job, files: orderFiles(job.files || [], library.songOrder[job.id]) });
+});
+
+app.patch('/api/jobs/:id/title', async (req, res) => {
+  try {
+    const job = await setJobTitle(req.params.id, req.body?.playlistTitle, req.user);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    return res.json(job);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
 });
 
 app.get('/api/jobs/:id/files', async (req, res) => {
@@ -108,13 +218,24 @@ app.get('/api/jobs/:id/files', async (req, res) => {
     return res.status(404).json({ error: 'Job not found' });
   }
 
+  try {
+    const library = getLibrary(req.user.id, [job]);
+    return res.json({ jobId: job.id, files: await listJobFiles(job, library.songOrder[job.id]) });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+async function listJobFiles(job, order) {
+  if (!job.outputDir) return [];
   const files = [];
-  for (const fileName of job.files) {
+  for (const fileName of orderFiles(job.files || [], order)) {
     if (!isValidJobFileName(fileName)) continue;
     const absoluteFilePath = getFilePath(job, fileName);
     const stat = await fs.stat(absoluteFilePath).catch(() => null);
     if (stat?.isFile()) {
       files.push({
+        ...job.songMetadata?.[fileName],
         name: fileName,
         sizeBytes: stat.size,
         downloadUrl: `/api/jobs/${job.id}/download/${encodeURIComponent(fileName)}`,
@@ -124,8 +245,8 @@ app.get('/api/jobs/:id/files', async (req, res) => {
     }
   }
 
-  return res.json({ jobId: job.id, files });
-});
+  return files;
+}
 
 async function resolveRequestedFile(req, songOnly = false) {
   const job = getJob(req.params.id);
@@ -177,6 +298,16 @@ app.get('/api/jobs/:id/lyrics/:name', async (req, res) => {
   }
 });
 
+app.patch('/api/jobs/:id/files/:name/metadata', async (req, res) => {
+  try {
+    const metadata = await setSongMetadata(req.params.id, req.params.name, req.body, req.user);
+    if (!metadata) return res.status(404).json({ error: 'Job not found' });
+    return res.json(metadata);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
 app.post('/api/jobs/:id/files/:name/transcribe', async (req, res) => {
   try {
     const job = await transcribeJobFile(req.params.id, req.params.name, req.body || {}, req.user);
@@ -205,7 +336,7 @@ app.get('/api/jobs/:id/download-all', async (req, res) => {
     return res.status(404).json({ error: 'Job has no downloadable files' });
   }
 
-  const archiveName = `${String(job.folderName || job.id).replace(/[^a-z0-9._-]+/gi, '_')}.zip`;
+  const archiveName = `${String(job.playlistTitle || job.id).replace(/[^a-z0-9._-]+/gi, '_')}.zip`;
   res.attachment(archiveName);
   res.type('application/zip');
 
@@ -236,6 +367,7 @@ app.post('/api/jobs', async (req, res) => {
 
   try {
     const job = await createJob(url, req.user);
+    linkLibraryJob(req.user.id, job, getLibraryJobs(req.user));
     return res.status(202).json(job);
   } catch (error) {
     return res.status(error.statusCode || 500).json({
@@ -319,7 +451,7 @@ app.get(['/admin', '/admin/users/:id', '/settings'], (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 
-app.get(['/job/:id', '/job/:id/player'], (_req, res) => {
+app.get(['/job', '/job/:id', '/job/:id/player'], (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 

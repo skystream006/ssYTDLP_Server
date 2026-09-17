@@ -14,13 +14,15 @@ import {
   FileAudio,
   Fingerprint,
   HardDrive,
-  Info,
   KeyRound,
   ListMusic,
   LogOut,
   MemoryStick,
+  Moon,
   Music2,
   Network,
+  Palette,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -28,6 +30,7 @@ import {
   Server,
   Settings,
   ShieldCheck,
+  Sun,
   Trash2,
   Mic,
   UserCheck,
@@ -36,8 +39,13 @@ import {
   X
 } from 'lucide-react';
 import './styles.css';
-import MusicPlayer from './MusicPlayer.jsx';
-import { transcriptionLanguages } from '../../src/transcriptionLanguages.js';
+import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
+import MusicLibrary from './MusicLibrary.jsx';
+import { submitJobUrl } from './jobSubmission.js';
+import { navigate, useNavigation } from './navigation.js';
+import { initializeTouchControls } from './touchControls.js';
+import { themes } from '../../src/library.js';
+import { canManageJob, canModifyJob, isContributor, formatBytes, formatDate, MetadataDialog, TranscriptionDialog, TranscriptionStatus } from './SongActions.jsx';
 
 const POLL_INTERVAL = 5000;
 const AuthContext = createContext(null);
@@ -150,17 +158,55 @@ function usePolling(loader, interval = POLL_INTERVAL, pollingKey = 'default') {
 const loadJobs = () => request('/api/jobs');
 const loadHealth = () => request('/api/health');
 
+function ThemeChoices() {
+  const { theme, themeMode, changeTheme, themeSaving, themeError } = useContext(AuthContext);
+  return <>
+    <div className="theme-mode-controls" role="group" aria-label="Theme mode">
+      <button type="button" aria-pressed={themeMode === 'light'} disabled={themeSaving} onClick={() => changeTheme(theme, 'light')}><Sun size={17} />Light</button>
+      <button type="button" aria-pressed={themeMode === 'dark'} disabled={themeSaving} onClick={() => changeTheme(theme, 'dark')}><Moon size={17} />Dark</button>
+    </div>
+    <div className="theme-choices" role="group" aria-label="Color theme">
+      {themes.map((option) => <button className="theme-choice" type="button" key={option.id}
+        aria-label={`${option.name} theme`} aria-pressed={theme === option.id} title={option.name} disabled={themeSaving} onClick={() => changeTheme(option.id)}>
+        <span className="theme-swatch" style={{ backgroundColor: option.color }}>{theme === option.id && <Check size={19} />}</span><span>{option.name}</span>
+      </button>)}
+    </div>
+    {themeSaving && <p className="sr-only" role="status">Saving theme</p>}
+    {themeError && <p className="notice error" role="alert">{themeError}</p>}
+  </>;
+}
+
+function ThemeDialog({ onClose }) {
+  const dialogRef = useRef(null);
+  const headingId = useId();
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    return () => { dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, []);
+  return <dialog ref={dialogRef} className="confirmation-dialog theme-dialog" aria-labelledby={headingId} onCancel={(event) => { event.preventDefault(); onClose(); }}>
+    <div className="folder-dialog-heading"><h2 id={headingId}>Appearance</h2><button className="music-icon-button" type="button" aria-label="Close appearance" title="Close" onClick={onClose}><X size={18} /></button></div>
+    <ThemeChoices />
+  </dialog>;
+}
+
 function AppShell({ children, section = 'jobs' }) {
   const { user, logout } = useContext(AuthContext);
+  const [choosingTheme, setChoosingTheme] = useState(false);
+  useEffect(() => { document.title = section === 'music' ? `${user.name}'s Music` : `${section.charAt(0).toUpperCase()}${section.slice(1)} | ssYTDLP`; }, [section, user.name]);
   return (
     <div className="app-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="ssYTDLP jobs">
+        <a className="brand" href="/" aria-label="ssMusic Player">
           <span className="brand-mark"><Music2 size={18} strokeWidth={2.5} /></span>
-          <span>ssYTDLP</span>
+          <span>ssMusic</span>
         </a>
         <nav aria-label="Main navigation">
-          <a className={section === 'jobs' ? 'active' : ''} href="/">
+          <a className={section === 'music' ? 'active' : ''} href="/" title="Music library" aria-label="Music library">
+            <Music2 size={17} /> Music
+          </a>
+          <a className={section === 'jobs' ? 'active' : ''} href="/job" title="Jobs" aria-label="Jobs">
             <ListMusic size={17} /> Jobs
           </a>
           <a className={section === 'health' ? 'active' : ''} href="/health">
@@ -172,11 +218,13 @@ function AppShell({ children, section = 'jobs' }) {
         </nav>
         <div className="account-menu">
           <span><strong>{user.name}</strong><small>{user.role}</small></span>
+          <button onClick={() => setChoosingTheme(true)} type="button" aria-label="Choose theme" title="Choose theme"><Palette size={17} /></button>
           <a href="/settings" className={section === 'settings' ? 'active' : ''} aria-label="User settings" title="User settings"><Settings size={17} /></a>
           <button onClick={logout} type="button" aria-label="Log out" title="Log out"><LogOut size={17} /></button>
         </div>
       </header>
-      <main>{children}</main>
+      <main className={section === 'music' ? 'music-main' : undefined}>{children}</main>
+      {choosingTheme && <ThemeDialog onClose={() => setChoosingTheme(false)} />}
     </div>
   );
 }
@@ -190,28 +238,18 @@ function StatusBadge({ status }) {
   return <span className={`status status-${status}`}>{icon}{label}</span>;
 }
 
-function formatDate(value) {
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
-  }).format(new Date(value));
-}
-
-function canManageJob(user, job) {
-  return Boolean(user && job && (user.role === 'admin' || user.id === job.initiatedBy?.id));
-}
-
-function isContributor(user, job) {
-  return Boolean(user?.id && job?.contributors?.some((contributor) => contributor.id === user.id));
-}
-
-function canModifyJob(user, job) {
-  return canManageJob(user, job) || isContributor(user, job);
+function MusicHomePage() {
+  const { user } = useContext(AuthContext);
+  const { confirm, dialog } = useConfirmation();
+  return <AppShell section="music"><MusicLibrary user={user} request={request} confirm={confirm} />{dialog}</AppShell>;
 }
 
 function JobsPage() {
+  const playback = usePlayback();
   const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
-  const { data: jobs, error: loadError } = usePolling(loadJobs);
+  const [revision, setRevision] = useState(0);
+  const { data: jobs, error: loadError } = usePolling(loadJobs, POLL_INTERVAL, revision);
   const [url, setUrl] = useState('');
   const [message, setMessage] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -223,8 +261,8 @@ function JobsPage() {
     if (!canModifyJob(user, job) || jobAction || job.status === 'queued' || job.status === 'running') return;
     if (action === 'delete' && !canManageJob(user, job)) return;
     const message = action === 'rerun'
-      ? `Rerun ${job.folderName || job.id}? Keep existing songs and download missing ones?`
-      : `Delete ${job.folderName || job.id} and all of its downloaded files?`;
+      ? `Rerun ${job.playlistTitle || job.id}? Keep existing songs and download missing ones?`
+      : `Delete ${job.playlistTitle || job.id} and all of its downloaded files?`;
     if (!await confirm({ title: action === 'rerun' ? 'Rerun job?' : 'Delete job?', message, action })) return;
 
     setJobAction({ id: job.id, action });
@@ -233,10 +271,12 @@ function JobsPage() {
       const jobUrl = `/api/jobs/${encodeURIComponent(job.id)}`;
       if (action === 'rerun') {
         await request(`${jobUrl}/rerun`, { method: 'POST' });
-        window.location.assign(`/job/${encodeURIComponent(job.id)}`);
+        navigate(`/job/${encodeURIComponent(job.id)}`);
       } else {
         await request(jobUrl, { method: 'DELETE' });
-        window.location.reload();
+        playback.removeJob(job.id);
+        setRevision((current) => current + 1);
+        setJobAction(null);
       }
     } catch (error) {
       setActionError(error.message);
@@ -249,34 +289,11 @@ function JobsPage() {
     setSubmitting(true);
     setMessage(null);
     try {
-      let job;
-      try {
-        job = await request('/api/jobs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url })
-        });
-      } catch (error) {
-        if (error.code !== 'JOB_ALREADY_EXISTS' || !error.existingJob) throw error;
-        const previous = error.existingJob;
-        const detailsUrl = `/job/${encodeURIComponent(previous.id)}`;
-        if (!canModifyJob(user, previous)) {
-          if (await confirm({ title: 'Job already exists', message: 'This URL already has a job owned by another user. Open its details?', action: 'open' })) {
-            window.location.assign(detailsUrl);
-          }
-          return;
-        }
-        if (previous.status === 'queued' || previous.status === 'running') {
-          if (await confirm({ title: 'Job already active', message: 'This URL already has an active job. Open its details?', action: 'open' })) {
-            window.location.assign(detailsUrl);
-          }
-          return;
-        }
-        if (!await confirm({ title: 'Job already exists', message: `This URL was used in job ${previous.folderName || previous.id}. Rerun it, keeping existing songs and downloading missing ones?`, action: 'rerun' })) {
-          return;
-        }
-        const reranJob = await request(`/api/jobs/${encodeURIComponent(previous.id)}/rerun`, { method: 'POST' });
-        window.location.assign(`/job/${encodeURIComponent(reranJob.id)}`);
+      const result = await submitJobUrl(url, { request, user, confirm });
+      if (!result) return;
+      const { job, created } = result;
+      if (!created) {
+        navigate(`/job/${encodeURIComponent(job.id)}`);
         return;
       }
       setUrl('');
@@ -371,10 +388,10 @@ function JobsPage() {
         {filteredJobs.length > 0 && (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Job</th><th>Format</th><th>Status</th><th>Created</th><th>Songs</th><th>Files</th><th>Initiated by</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Playlist Title</th><th>Format</th><th>Status</th><th>Created</th><th>Songs</th><th>Files</th><th>Initiated by</th><th>Actions</th></tr></thead>
               <tbody>{filteredJobs.map((job) => (
                 <tr key={job.id}>
-                  <td><a className="job-name" href={`/job/${job.id}`}><span>{job.isPlaylist ? <ListMusic size={18} /> : <Music2 size={18} />}</span><div><strong>{job.folderName || 'Preparing download'}</strong><small>{job.id}</small></div></a></td>
+                  <td><a className="job-name" href={`/job/${job.id}`}><span>{job.isPlaylist ? <ListMusic size={18} /> : <Music2 size={18} />}</span><div><strong>{job.playlistTitle || 'Preparing playlist'}</strong><small>{job.id}</small></div></a></td>
                   <td>{job.isPlaylist ? 'Playlist' : 'Track'}</td>
                   <td><StatusBadge status={job.status} /></td>
                   <td>{formatDate(job.createdAt)}</td>
@@ -470,96 +487,9 @@ function ContributorDialog({ job, onClose, onSaved }) {
   </dialog>;
 }
 
-function TranscriptionDialog({ file, onClose, onSubmit }) {
-  const dialogRef = useRef(null);
-  const titleId = useId();
-  const [addLyrics, setAddLyrics] = useState(false);
-  const [language, setLanguage] = useState('');
-  const [lyrics, setLyrics] = useState('');
-  const [mode, setMode] = useState('prompt');
-  const [submitting, setSubmitting] = useState(false);
-  const modes = [
-    ['prompt', 'Prompt', 'Biases recognition toward known words.'],
-    ['align', 'Align', 'Maps authoritative lyric lines onto ASR timing.'],
-    ['correct', 'Correct', 'Replaces recognized text while preserving ASR segment timing.']
-  ];
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    const previousFocus = document.activeElement;
-    dialog.showModal();
-    return () => {
-      dialog.close();
-      if (previousFocus?.isConnected) previousFocus.focus();
-    };
-  }, []);
-
-  function submit(event) {
-    event.preventDefault();
-    if (submitting) return;
-    setSubmitting(true);
-    onSubmit(file, {
-      ...(addLyrics ? { lyrics: lyrics.trim(), lyrics_mode: mode } : {}),
-      ...(language ? { language } : {})
-    });
-  }
-
-  return <dialog ref={dialogRef} className={`confirmation-dialog transcription-dialog${addLyrics ? ' transcription-dialog-expanded' : ''}`} aria-labelledby={titleId}
-    onCancel={(event) => { event.preventDefault(); if (!submitting) onClose(); }}>
-    <form onSubmit={submit}>
-      <h2 id={titleId}>Transcribe song</h2>
-      <p className="transcription-file"><FileAudio size={22} /><span>{file.name}<small>{formatBytes(file.sizeBytes)}</small></span></p>
-      <fieldset disabled={submitting} className="transcription-fields">
-        <label className="transcription-language" htmlFor={`${titleId}-language`}>Language (optional)
-          <select id={`${titleId}-language`} value={language} onChange={(event) => setLanguage(event.target.value)}>
-            <option value="">Auto-detect</option>
-            {transcriptionLanguages.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
-          </select>
-        </label>
-        <label className="lyrics-toggle"><input type="checkbox" checked={addLyrics} onChange={(event) => setAddLyrics(event.target.checked)} />Add lyrics</label>
-        {addLyrics && <>
-          <fieldset className="lyrics-mode-options"><legend>Lyrics mode</legend>
-            {modes.map(([value, label, description]) => <div className="lyrics-mode-option" key={value}>
-              <label><input type="radio" name="lyrics-mode" value={value} checked={mode === value} required onChange={() => setMode(value)} />{label}</label>
-              <span className="info-helper"><button type="button" aria-label={`About ${label}`} aria-describedby={`${titleId}-${value}`}><Info size={16} /></button>
-                <span role="tooltip" id={`${titleId}-${value}`}>{description}</span>
-              </span>
-            </div>)}
-          </fieldset>
-          <label className="lyrics-input-label" htmlFor={`${titleId}-lyrics`}>Lyrics</label>
-          <textarea id={`${titleId}-lyrics`} value={lyrics} onChange={(event) => setLyrics(event.target.value)} required maxLength={100000} rows={8} />
-        </>}
-      </fieldset>
-      <div className="dialog-actions">
-        <button className="secondary-button" type="button" disabled={submitting} onClick={onClose}>Cancel</button>
-        <button className="primary-button" type="submit" disabled={submitting || (addLyrics && !lyrics.trim())}><Mic size={17} />{submitting ? 'Submitting' : 'Submit'}</button>
-      </div>
-    </form>
-  </dialog>;
-}
-
-function TranscriptionStatus({ transcription }) {
-  const states = {
-    sent: { label: 'Transcription request sent', Icon: RefreshCw },
-    transcribed: { label: 'Transcribed', Icon: Check },
-    failed: { label: 'Transcription failed', Icon: CircleAlert },
-    interrupted: { label: 'Interrupted', Icon: Clock3 }
-  };
-  const state = states[transcription?.status];
-  if (!state) return null;
-  const { label, Icon } = state;
-  const details = [
-    `Requested: ${formatDate(transcription.requestedAt)}`,
-    transcription.completedAt && `Finished: ${formatDate(transcription.completedAt)}`,
-    transcription.error
-  ].filter(Boolean).join('\n');
-  return <span className={`song-transcription song-transcription-${transcription.status}`} title={details}>
-    <Icon size={13} className={transcription.status === 'sent' ? 'spin' : undefined} aria-hidden="true" />
-    <span>{label}</span>
-  </span>;
-}
-
 function JobPage({ id }) {
+  const playback = usePlayback();
+  const [editingMetadata, setEditingMetadata] = useState(null);
   const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
   const [fileRevision, setFileRevision] = useState(0);
@@ -572,6 +502,9 @@ function JobPage({ id }) {
   const [deleting, setDeleting] = useState(false);
   const [deletingFiles, setDeletingFiles] = useState({});
   const [editingContributors, setEditingContributors] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
+  const [savingTitle, setSavingTitle] = useState(false);
   const [transcribingFile, setTranscribingFile] = useState(null);
   const [pendingTranscriptions, setPendingTranscriptions] = useState({});
   const [transcriptionNotice, setTranscriptionNotice] = useState('');
@@ -583,8 +516,25 @@ function JobPage({ id }) {
   const hasPendingTranscription = Object.values(job?.transcriptions || {}).some((transcription) => transcription.status === 'sent');
   const canModify = canModifyJob(user, job);
   const canManage = canManageJob(user, job);
-  const transcriptionDisabled = !canModify || isActive || rerunning || deleting || editingContributors;
+  const transcriptionDisabled = !canModify || isActive || rerunning || deleting || editingContributors || savingTitle;
   const mutationDisabled = transcriptionDisabled || hasPendingTranscription || Object.keys(pendingTranscriptions).length > 0 || Object.keys(deletingFiles).length > 0 || transcribingFile !== null;
+
+  async function saveTitle(event) {
+    event.preventDefault();
+    if (!canManage || mutationDisabled || !titleDraft.trim()) return;
+    setSavingTitle(true);
+    setActionError('');
+    try {
+      await request(`/api/jobs/${encodeURIComponent(id)}/title`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playlistTitle: titleDraft })
+      });
+      setEditingTitle(false);
+      setFileRevision((revision) => revision + 1);
+    } catch (requestError) {
+      setActionError(requestError.message);
+    } finally { setSavingTitle(false); }
+  }
 
   function songMutationDisabled(name) {
     return transcriptionDisabled || Boolean(deletingFiles[name]) || Boolean(pendingTranscriptions[name]) || job?.transcriptions?.[name]?.status === 'sent';
@@ -618,12 +568,13 @@ function JobPage({ id }) {
 
   async function rerun() {
     if (mutationDisabled) return;
-    if (!await confirm({ title: 'Rerun job?', message: `Rerun ${job.folderName || job.id}? Keep existing songs and download missing ones?`, action: 'rerun' })) return;
+    if (!await confirm({ title: 'Rerun job?', message: `Rerun ${job.playlistTitle || job.id}? Keep existing songs and download missing ones?`, action: 'rerun' })) return;
     setRerunning(true);
     setActionError('');
     try {
       await request(`/api/jobs/${id}/rerun`, { method: 'POST' });
-      window.location.reload();
+      setFileRevision((revision) => revision + 1);
+      setRerunning(false);
     } catch (requestError) {
       setActionError(requestError.message);
       setRerunning(false);
@@ -640,7 +591,8 @@ function JobPage({ id }) {
     setActionError('');
     try {
       await request(`/api/jobs/${id}`, { method: 'DELETE' });
-      window.location.assign('/');
+      playback.removeJob(id);
+      navigate('/job');
     } catch (requestError) {
       setActionError(requestError.message);
       setDeleting(false);
@@ -654,6 +606,7 @@ function JobPage({ id }) {
     setActionError('');
     try {
       await request(`/api/jobs/${encodeURIComponent(id)}/files/${encodeURIComponent(file.name)}`, { method: 'DELETE' });
+      playback.removeSong(id, file.name);
       setFileRevision((revision) => revision + 1);
     } catch (requestError) {
       setActionError(requestError.message);
@@ -669,8 +622,12 @@ function JobPage({ id }) {
   return (
     <AppShell>
       {dialog}
-      <a className="back-link" href="/"><ArrowLeft size={17} /> Back to jobs</a>
+      <a className="back-link" href="/job"><ArrowLeft size={17} /> Back to jobs</a>
       {transcribingFile && <TranscriptionDialog file={transcribingFile} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
+      {editingMetadata && <MetadataDialog file={editingMetadata} jobId={id} request={request} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
+        playback.updateMetadata(id, editingMetadata.name, result);
+        setFileRevision((revision) => revision + 1);
+      }} />}
       {editingContributors && <ContributorDialog job={job} onClose={() => setEditingContributors(false)} onSaved={() => {
         setEditingContributors(false);
         setFileRevision((revision) => revision + 1);
@@ -681,7 +638,7 @@ function JobPage({ id }) {
         <section className="detail-heading">
           <div>
             <p className="eyebrow">{job.isPlaylist ? 'Playlist download' : 'Track download'}</p>
-            <h1>{job.folderName || 'Preparing download'}</h1>
+            <h1>{job.playlistTitle || 'Preparing playlist'}</h1>
             <div className="detail-meta"><StatusBadge status={job.status} /><span>Created {formatDate(job.createdAt)}</span></div>
           </div>
           <div className="detail-actions">
@@ -713,7 +670,15 @@ function JobPage({ id }) {
               </dd>
               <dt>Downloaded files</dt><dd>{data?.[1] ? files.length : 'Not available'}</dd>
               {job.isPlaylist && <><dt>Playlist songs</dt><dd>{job.playlistSongCount ?? 'Not available'}</dd></>}
-              <dt>Output folder</dt><dd><code>{job.folderName || 'Pending'}</code></dd>
+              <dt>Playlist Title</dt><dd>
+                {editingTitle ? <form className="playlist-title-editor" onSubmit={saveTitle}>
+                  <input aria-label="Playlist Title" autoFocus required maxLength={200} value={titleDraft} disabled={mutationDisabled} onChange={(event) => setTitleDraft(event.target.value)} />
+                  <button className="music-icon-button" type="submit" title="Save playlist title" aria-label="Save playlist title" disabled={mutationDisabled || !titleDraft.trim()}>{savingTitle ? <RefreshCw className="spin" size={17} /> : <Check size={17} />}</button>
+                  <button className="music-icon-button" type="button" title="Cancel title edit" aria-label="Cancel title edit" disabled={savingTitle} onClick={() => setEditingTitle(false)}><X size={17} /></button>
+                </form> : <div className="playlist-title-value"><span>{job.playlistTitle || 'Pending'}</span>
+                  {canManage && <button className="music-icon-button" type="button" title="Edit playlist title" aria-label="Edit playlist title" disabled={mutationDisabled} onClick={() => { setTitleDraft(job.playlistTitle || ''); setEditingTitle(true); }}><Pencil size={16} /></button>}
+                </div>}
+              </dd>
               <dt>Last updated</dt><dd>{formatDate(job.updatedAt)}</dd>
               <dt>Command</dt><dd><code className="command-code">{job.command || 'Pending'}</code></dd>
             </dl>
@@ -735,7 +700,7 @@ function JobPage({ id }) {
                 <li key={file.name}>
                   {file.isSong ? <a className="song-file-link" href={`/job/${encodeURIComponent(id)}/player?${new URLSearchParams({ song: file.name, play: '1' })}`} aria-label={`Play ${file.name}`} title="Play song">
                     <span className="file-icon"><FileAudio size={19} /></span>
-                    <span><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small>
+                    <span><strong>{file.title || file.name}</strong><small>{file.title ? `${file.name} / ` : ''}{formatBytes(file.sizeBytes)}</small>
                       <TranscriptionStatus transcription={pendingTranscriptions[file.name] || job.transcriptions?.[file.name]} />
                     </span>
                   </a> : <>
@@ -743,6 +708,7 @@ function JobPage({ id }) {
                     <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div>
                   </>}
                   <div className="file-row-actions">
+                    {canModify && /\.mp3$/i.test(file.name) && <button className="icon-link" type="button" title="Edit song metadata" aria-label={`Edit metadata ${file.name}`} disabled={mutationDisabled} onClick={() => setEditingMetadata(file)}><Pencil size={18} /></button>}
                     {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" title="Transcribe song" aria-label={`Transcribe ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
                     <a href={file.downloadUrl} aria-label={`Download ${file.name}`} title="Download song"><ArrowDownToLine size={18} /></a>
                     {canModify && <button className="icon-link" type="button" title="Delete song" aria-label={`Delete song ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => removeFile(file)}>
@@ -761,18 +727,6 @@ function JobPage({ id }) {
       </>}
     </AppShell>
   );
-}
-
-function formatBytes(value) {
-  if (!Number.isFinite(value)) return '-';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let size = value;
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
 function Metric({ icon, label, value, detail, percent }) {
@@ -1003,6 +957,10 @@ function UserSettingsPage({ userId }) {
         <UserIdentity user={details} />
         <dl><div><dt>Role</dt><dd>{details.role}</dd></div><div><dt>Joined</dt><dd>{formatDate(details.createdAt)}</dd></div><div><dt>User ID</dt><dd>{details.id}</dd></div></dl>
       </section>
+      {!userId && <section className="theme-section" aria-labelledby="appearance-heading">
+        <div className="section-title"><div><Palette size={19} /><h2 id="appearance-heading">Appearance</h2></div></div>
+        <ThemeChoices />
+      </section>}
       <section className="pat-section" aria-labelledby="pat-heading">
         <div className="section-title"><div><KeyRound size={19} /><h2 id="pat-heading">Private Access Tokens</h2></div><strong>{tokens.length}</strong></div>
         {!userId && <form className="pat-form" onSubmit={generate}>
@@ -1092,24 +1050,69 @@ function UserIdentity({ user }) {
 }
 
 function Router({ user }) {
+  const revision = useNavigation();
+  return <PageRoutes key={revision} user={user} />;
+}
+
+function PageRoutes({ user }) {
   const userMatch = window.location.pathname.match(/^\/admin\/users\/([^/]+)\/?$/);
   if (userMatch && user.role === 'admin') return <UserSettingsPage userId={decodeURIComponent(userMatch[1])} />;
   if (window.location.pathname === '/settings') return <UserSettingsPage />;
   const playerMatch = window.location.pathname.match(/^\/job\/([^/]+)\/player\/?$/);
   if (playerMatch) return <AppShell><MusicPlayer id={decodeURIComponent(playerMatch[1])} request={request} /></AppShell>;
   const jobMatch = window.location.pathname.match(/^\/job\/([^/]+)\/?$/);
-  if (jobMatch) return <JobPage id={decodeURIComponent(jobMatch[1])} />;
+  if (jobMatch) return <JobPage key={jobMatch[1]} id={decodeURIComponent(jobMatch[1])} />;
   if (window.location.pathname === '/health') return <HealthPage />;
   if (window.location.pathname === '/admin' && user.role === 'admin') return <AdminPage />;
-  return <JobsPage />;
+  if (/^\/job\/?$/.test(window.location.pathname)) return <JobsPage />;
+  return <MusicHomePage />;
 }
 
 function App() {
   const [user, setUser] = useState(undefined);
+  const [preferences, setPreferences] = useState(null);
+  const [themeSaving, setThemeSaving] = useState(false);
+  const [themeError, setThemeError] = useState('');
+  const accountRef = useRef(null);
+  const themeSaveRef = useRef(false);
 
   useEffect(() => {
     request('/api/auth/me').then((result) => setUser(result.user)).catch(() => setUser(null));
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    accountRef.current = user?.id || null;
+    setThemeError('');
+    if (user) {
+      request('/api/preferences').then((result) => { if (active) setPreferences({ ...result, userId: user.id }); })
+        .catch((error) => {
+          if (active) { setPreferences({ theme: 'light', mode: 'light', userId: user.id }); setThemeError(error.message); }
+        });
+    } else setPreferences(null);
+    return () => { active = false; accountRef.current = null; };
+  }, [user?.id]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = preferences?.userId === user?.id ? preferences?.theme || 'light' : 'light';
+    document.documentElement.dataset.themeMode = preferences?.userId === user?.id ? preferences?.mode || 'light' : 'light';
+  }, [preferences, user?.id]);
+
+  async function changeTheme(theme, mode = preferences?.mode || 'light') {
+    if (!user || themeSaveRef.current || (theme === preferences?.theme && mode === preferences?.mode)) return;
+    const previous = preferences;
+    const userId = user.id;
+    themeSaveRef.current = true;
+    setThemeSaving(true);
+    setThemeError('');
+    setPreferences({ userId, theme, mode });
+    try {
+      const result = await request('/api/preferences', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ theme, mode }) });
+      if (accountRef.current === userId) setPreferences({ ...result, userId });
+    } catch (error) {
+      if (accountRef.current === userId) { setPreferences(previous); setThemeError(error.message); }
+    } finally { themeSaveRef.current = false; setThemeSaving(false); }
+  }
 
   async function logout() {
     await request('/api/auth/logout', { method: 'POST' }).catch(() => {});
@@ -1118,7 +1121,9 @@ function App() {
 
   if (user === undefined) return <div className="auth-loading"><Fingerprint className="spin" size={28} />Checking passkey session</div>;
   if (!user) return <LoginPage onLogin={setUser} />;
-  return <AuthContext.Provider value={{ user, logout }}><Router user={user} /></AuthContext.Provider>;
+  if (preferences?.userId !== user.id) return <div className="auth-loading"><RefreshCw className="spin" size={24} />Loading account</div>;
+  return <AuthContext.Provider value={{ user, logout, theme: preferences.theme, themeMode: preferences.mode, changeTheme, themeSaving, themeError }}><PlaybackProvider key={user.id} request={request}><Router user={user} /></PlaybackProvider></AuthContext.Provider>;
 }
 
+initializeTouchControls();
 createRoot(document.getElementById('root')).render(<StrictMode><App /></StrictMode>);

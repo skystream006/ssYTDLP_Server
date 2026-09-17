@@ -56,8 +56,10 @@ test('playlist metadata counts all songs independently of downloaded files', asy
   process.env.JOB_STORE_PATH = path.join(os.tmpdir(), `ssytdlp-metadata-${Date.now()}.json`);
   const { parsePlaylistMetadata } = await import(`../src/jobManager.js?metadata=${Date.now()}`);
   assert.deepEqual(parsePlaylistMetadata(JSON.stringify({ title: 'My playlist', playlist_count: 12, entries: [{ id: 'one' }] })), {
-    folderName: 'My_playlist', playlistSongCount: 12
+    playlistTitle: 'My playlist', folderName: 'My_playlist', playlistSongCount: 12
   });
+  assert.equal(parsePlaylistMetadata('{"title":"Jazz / Soul: live"}').playlistTitle, 'Jazz / Soul: live');
+  assert.equal(parsePlaylistMetadata('{}').playlistTitle, 'playlist');
   assert.equal(parsePlaylistMetadata(JSON.stringify({ entries: [{ id: 'one' }, null, { id: 'private' }] })).playlistSongCount, 3);
   assert.equal(parsePlaylistMetadata('{"entries":[]}').playlistSongCount, 0);
   assert.equal(parsePlaylistMetadata('{"playlist_count":0}').playlistSongCount, 0);
@@ -65,6 +67,62 @@ test('playlist metadata counts all songs independently of downloaded files', asy
     assert.equal(parsePlaylistMetadata(JSON.stringify({ playlist_count })).playlistSongCount, null);
   }
   assert.throws(() => parsePlaylistMetadata('not JSON'), SyntaxError);
+});
+
+test('legacy jobs receive readable titles without changing their output folders', async () => {
+  const suffix = 'song_12345678-1234-1234-1234-123456789abc';
+  const records = [
+    { id: 'playlist', folderName: `Late_Night_Jazz_${suffix}`, files: [], expected: 'Late Night Jazz' },
+    { id: 'single', folderName: suffix, files: ['A beautiful song.mp3'], expected: 'A beautiful song' },
+    { id: 'empty', folderName: suffix, files: [], expected: 'Untitled playlist' }
+  ];
+  await fs.writeFile(process.env.JOB_STORE_PATH, JSON.stringify(records.map(({ expected, ...job }) => ({
+    ...job, url: `https://music.youtube.com/watch?v=${job.id}`, status: 'completed', outputDir: `/output/${job.folderName}`
+  }))));
+  const manager = await import(`../src/jobManager.js?titles=${Date.now()}`);
+  for (const record of records) {
+    const job = manager.getJob(record.id);
+    assert.equal(job.playlistTitle, record.expected);
+    assert.equal(job.folderName, record.folderName);
+    assert.equal(job.outputDir, `/output/${record.folderName}`);
+    assert.equal(JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get(record.id).data).playlistTitle, record.expected);
+  }
+});
+
+test('playlist titles are owner-editable metadata and survive reruns and reloads', async () => {
+  const directory = path.dirname(process.env.DATABASE_PATH);
+  process.env.YTDLP_OUTPUT_ROOT = directory;
+  process.env.YTDLP_PATH = process.execPath;
+  const owner = { id: 'owner', role: 'user' };
+  const admin = { id: 'admin', role: 'admin' };
+  const job = { id: 'rename', url: 'https://music.youtube.com/playlist?list=rename', status: 'completed',
+    isPlaylist: true, playlistTitle: 'Original title', folderName: 'unchanged', outputDir: path.join(directory, 'unchanged'),
+    initiatedBy: owner, contributors: [{ id: 'contributor' }], files: [], createdAt: new Date().toISOString() };
+  writeJob(openDatabase(), job);
+  const manager = await import(`../src/jobManager.js?rename=${Date.now()}`);
+  for (const user of [null, { id: 'stranger', role: 'user' }, { id: 'contributor', role: 'user' }]) {
+    await assert.rejects(manager.setJobTitle(job.id, 'Denied', user), { statusCode: 403 });
+  }
+  for (const title of [null, 42, '', '  ', 'a'.repeat(201), 'Bad\nTitle']) {
+    await assert.rejects(manager.setJobTitle(job.id, title, owner), { statusCode: 400 });
+  }
+  for (const status of ['queued', 'running']) {
+    writeJob(openDatabase(), { ...job, status });
+    await assert.rejects(manager.setJobTitle(job.id, 'Busy', owner), { statusCode: 409 });
+  }
+  writeJob(openDatabase(), job);
+  const renamed = await manager.setJobTitle(job.id, '  Jazz / Soul: Live  ', owner);
+  assert.equal(renamed.playlistTitle, 'Jazz / Soul: Live');
+  assert.equal(renamed.folderName, job.folderName);
+  assert.equal(renamed.outputDir, job.outputDir);
+  assert.equal(renamed.playlistTitleOverride, renamed.playlistTitle);
+  await manager.setJobTitle(job.id, 'Owner collection', admin);
+  const rerun = await manager.rerunJob(job.id, owner);
+  await waitForJobToFinish(rerun);
+  assert.equal(manager.getJob(job.id).playlistTitle, 'Owner collection');
+  const reloaded = await import(`../src/jobManager.js?renamed-reload=${Date.now()}`);
+  assert.equal(reloaded.getJob(job.id).playlistTitleOverride, 'Owner collection');
+  assert.equal(await manager.setJobTitle('missing', 'Title', owner), null);
 });
 
 test('persisted private video failures become partially completed', async (t) => {
@@ -201,6 +259,7 @@ async function assertRerunPreservesOutput(t, isPlaylist) {
   const archivePath = path.join(firstOutputDir, '.download-archive.txt');
   await fs.writeFile(archivePath, 'youtube abc\n');
   job.files = ['old-output.mp3'];
+  job.playlistTitle = 'My favorite songs';
   job.playlistSongCount = 99;
   writeJob(openDatabase(), job);
 
@@ -214,6 +273,7 @@ async function assertRerunPreservesOutput(t, isPlaylist) {
   assert.equal(jobManager.getJob(job.id), rerun);
   assert.equal(rerun.outputDir, firstOutputDir);
   assert.equal(rerun.folderName, firstFolderName);
+  assert.equal(rerun.playlistTitle, 'My favorite songs');
   assert.deepEqual(rerun.files, ['old-output.mp3']);
   assert.equal(await jobManager.rerunJob('missing-job'), null);
 
@@ -292,6 +352,7 @@ test('individual song removal enforces ownership, validates paths and preserves 
       await assert.rejects(manager.deleteJob(job.id, user), { statusCode: 409 });
       await assert.rejects(manager.rerunJob(job.id, user), { statusCode: 409 });
       await assert.rejects(manager.setJobContributors(job.id, [], user), { statusCode: 409 });
+      await assert.rejects(manager.setSongMetadata(job.id, songName, { title: 'Busy' }, user), { statusCode: 409 });
     }
   }
   writeJob(openDatabase(), job);
@@ -302,6 +363,7 @@ test('individual song removal enforces ownership, validates paths and preserves 
   assert.equal(await manager.deleteJobFile('unknown', songName, owner), null);
 
   const removal = manager.deleteJobFile(job.id, songName, owner);
+  await assert.rejects(manager.setSongMetadata(job.id, 'second.mp3', { title: 'Busy' }, owner), { statusCode: 409 });
   await assert.rejects(manager.setJobContributors(job.id, [], owner), { statusCode: 409 });
   await assert.rejects(manager.rerunJob(job.id, owner), { statusCode: 409 });
   await assert.rejects(manager.deleteJob(job.id, admin), { statusCode: 409 });
@@ -339,6 +401,7 @@ test('legacy folders shared with another owner require an administrator to modif
   await assert.rejects(manager.rerunJob(job.id, owner), { statusCode: 403 });
   await assert.rejects(manager.deleteJob(job.id, owner), { statusCode: 403 });
   await assert.rejects(manager.deleteJobFile(job.id, 'song.mp3', owner), { statusCode: 403 });
+  await assert.rejects(manager.setSongMetadata(job.id, 'song.mp3', { title: 'Denied' }, owner), { statusCode: 403 });
   await manager.deleteJobFile(job.id, 'song.mp3', { id: 'admin', role: 'admin' });
   await assert.rejects(fs.access(path.join(folder, 'song.mp3')));
 });

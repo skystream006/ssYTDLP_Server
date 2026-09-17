@@ -4,7 +4,7 @@ import si from 'systeminformation';
 export async function getTranscriptionHealth() {
   const endpoint = process.env.TRANSCRIPTION_ENDPOINT?.trim();
   if (!endpoint) {
-    return { status: 'not_configured', message: 'TRANSCRIPTION_ENDPOINT is not configured' };
+    return { status: 'inactive', message: 'TRANSCRIPTION_ENDPOINT is not configured' };
   }
 
   try {
@@ -12,13 +12,10 @@ export async function getTranscriptionHealth() {
       method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(2000)
     });
     await response.body?.cancel();
-    if (response.ok || response.status === 405) {
-      return { status: 'active', message: 'Endpoint reachable; transcription readiness not verified' };
-    }
-    return { status: 'error', message: `Endpoint returned HTTP ${response.status}` };
+    return { status: 'active', message: `Endpoint returned HTTP ${response.status}` };
   } catch (error) {
     return {
-      status: 'unreachable',
+      status: 'inactive',
       message: error.name === 'TimeoutError' ? 'Endpoint timed out after 2 seconds' : 'Unable to connect to endpoint'
     };
   }

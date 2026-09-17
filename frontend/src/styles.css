@@ -185,6 +185,8 @@ code { font: 400 11px 'DM Mono', monospace; }
 .metric-top svg { width: 18px; }
 .metric-top small { color: var(--muted); font: 500 10px 'DM Mono', monospace; text-transform: uppercase; }
 .metric > strong { font: 600 36px 'Newsreader', serif; }
+.transcription-active { color: var(--green); }
+.transcription-inactive { color: #ff8585; }
 .metric > p { margin: 5px 0 18px; color: var(--muted); font-size: 11px; }
 .meter { height: 5px; overflow: hidden; background: #202d50; }
 .meter span { display: block; height: 100%; background: var(--royal); transition: width .5s ease; }
@@ -254,6 +256,12 @@ code { font: 400 11px 'DM Mono', monospace; }
 .file-list .song-file-link { display: grid; grid-column: span 2; grid-template-columns: 40px minmax(0, 1fr); gap: 10px; align-items: center; align-self: stretch; width: auto; height: auto; min-height: 36px; color: var(--ink); background: transparent; text-decoration: none; }
 .file-list .song-file-link:hover { color: var(--green); }
 .file-list .song-file-link:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+.song-transcription { display: flex; align-items: center; gap: 5px; margin-top: 6px; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.song-transcription svg { flex: none; }
+.song-transcription-sent { color: #a9c8ff; }
+.song-transcription-transcribed { color: var(--green); }
+.song-transcription-failed { color: #ff9aab; }
+.song-transcription-interrupted { color: #f0ce87; }
 .file-row-actions .song-transcribe { color: var(--green); }
 .file-row-actions .song-transcribe:hover:not(:disabled) { color: var(--paper); background: var(--green); border-color: var(--green); }
 .transcription-dialog { width: min(540px, calc(100% - 32px)); }

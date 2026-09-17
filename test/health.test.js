@@ -14,7 +14,7 @@ function configureEndpoint(context, endpoint = 'http://transcription:4317/api/tr
 test('transcription health skips requests when not configured', async (context) => {
   configureEndpoint(context, ' ');
   const probe = context.mock.method(globalThis, 'fetch', () => assert.fail('Unexpected request'));
-  assert.equal((await getTranscriptionHealth()).status, 'not_configured');
+  assert.equal((await getTranscriptionHealth()).status, 'inactive');
   assert.equal(probe.mock.callCount(), 0);
 });
 
@@ -34,12 +34,12 @@ test('transcription health uses a bounded HEAD probe and accepts POST-only endpo
   }
 });
 
-test('transcription health reports HTTP errors and redirects without leaking the endpoint', async (context) => {
+test('transcription health treats HTTP errors and redirects as active without leaking the endpoint', async (context) => {
   configureEndpoint(context, 'http://transcription:4317/api/transcribe?token=secret');
   for (const status of [301, 401, 403, 404, 500, 503]) {
     const probe = context.mock.method(globalThis, 'fetch', async () => new Response(null, { status }));
     assert.deepEqual(await getTranscriptionHealth(), {
-      status: 'error', message: `Endpoint returned HTTP ${status}`
+      status: 'active', message: `Endpoint returned HTTP ${status}`
     });
     probe.mock.restore();
   }
@@ -49,7 +49,7 @@ test('transcription health reports network failures without throwing', async (co
   configureEndpoint(context);
   context.mock.method(globalThis, 'fetch', async () => { throw new TypeError('fetch failed'); });
   assert.deepEqual(await getTranscriptionHealth(), {
-    status: 'unreachable', message: 'Unable to connect to endpoint'
+    status: 'inactive', message: 'Unable to connect to endpoint'
   });
 });
 
@@ -59,6 +59,6 @@ test('transcription health reports timeouts without throwing', async (context) =
     throw new DOMException('Timed out', 'TimeoutError');
   });
   assert.deepEqual(await getTranscriptionHealth(), {
-    status: 'unreachable', message: 'Endpoint timed out after 2 seconds'
+    status: 'inactive', message: 'Endpoint timed out after 2 seconds'
   });
 });

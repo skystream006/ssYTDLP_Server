@@ -249,6 +249,15 @@ the files. Owners, contributors, and administrators can transcribe idle jobs.
 Other modifications to that job are blocked while transcription is in progress.
 Once submitted, transcription cannot be cancelled from the dialog.
 
+Each submitted song shows its latest transcription status beside its name:
+**Transcription request sent**, **Transcribed**, **Transcription failed**, or
+**Interrupted**. Statuses refresh automatically and persist across page refreshes
+and server restarts. Hover over a status for request and finish times and any error.
+**Transcribed** means the response was validated and the returned audio saved, not
+merely that the service responded. Unfinished requests become **Interrupted** after
+a server restart and are not retried automatically. Submitting again replaces the
+song's latest status; songs without a tracked request have no status indicator.
+
 `POST /api/jobs/:id/files/:name/transcribe` accepts JSON `{}` without lyrics or
 `{ "lyrics": "Known lyric lines", "lyrics_mode": "align" }` with lyrics. URL-encode
 the complete filename, including `[NoVocals]/` for accompaniment tracks. The server
@@ -380,10 +389,10 @@ completes.
 Open `/health` on your configured HTTPS origin to view CPU, memory, network, disk,
 and transcription-service status. The server probes `TRANSCRIPTION_ENDPOINT` with
 a HEAD request and a two-second timeout on each health refresh; no audio is sent.
-**Active** means the endpoint responded successfully or returned HTTP 405 (a
-POST-only route). It does not verify model readiness or a successful transcription.
-Other responses show **HTTP error** with the status code; connection failures and
-timeouts show **Unreachable**. An unset endpoint shows **Not configured**.
+**Active** means any HTTP response was received, including redirects and error
+responses such as 404 or 500. It does not verify model readiness or a successful
+transcription. Connection failures, timeouts, and an unset endpoint show **Inactive**.
+The detail text includes the HTTP status or the reason no response was received.
 
 ## Tests
 

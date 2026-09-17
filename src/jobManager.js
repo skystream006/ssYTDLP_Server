@@ -21,7 +21,10 @@ const privateVideoPattern = /\b(?:private video|video is private)\b/i;
 let updateGate = null;
 
 async function loadJobs() {
-  const storedJobs = database.prepare("SELECT data FROM jobs WHERE status IN ('queued', 'running', 'failed', 'warning')").all();
+  const storedJobs = database.prepare(`SELECT data FROM jobs
+    WHERE status IN ('queued', 'running', 'failed', 'warning')
+    OR EXISTS (SELECT 1 FROM json_each(jobs.data, '$.transcriptions')
+      WHERE json_extract(value, '$.status') = 'sent')`).all();
   for (const { data } of storedJobs) {
     const job = JSON.parse(data);
     let updatedStoredJob = false;
@@ -37,6 +40,14 @@ async function loadJobs() {
       job.status = 'partially_completed';
       job.error = null;
       job.warning = 'One or more private videos were skipped.';
+      updatedStoredJob = true;
+    }
+    for (const transcription of Object.values(job.transcriptions || {})) {
+      if (transcription.status !== 'sent') continue;
+      transcription.status = 'interrupted';
+      transcription.completedAt = new Date().toISOString();
+      transcription.error = 'Transcription was interrupted by a server restart';
+      job.updatedAt = transcription.completedAt;
       updatedStoredJob = true;
     }
     if (updatedStoredJob) writeJob(database, job);
@@ -522,8 +533,26 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
     if (!isFileInsideJobFolder({ outputDir: realFolder }, realPath)) {
       throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
     }
-    const results = await requestTranscription(filePath, options);
-    await replaceTranscribedFiles(job, fileName, results, persistJob);
+    const requestedAt = new Date().toISOString();
+    job.transcriptions = { ...job.transcriptions, [fileName]: { status: 'sent', requestedAt } };
+    job.updatedAt = requestedAt;
+    await persistJob(job);
+    try {
+      const results = await requestTranscription(filePath, options);
+      await replaceTranscribedFiles(job, fileName, results, async (updatedJob) => {
+        updatedJob.transcriptions[fileName] = {
+          status: 'transcribed', requestedAt, completedAt: new Date().toISOString()
+        };
+        await persistJob(updatedJob);
+      });
+    } catch (error) {
+      job.updatedAt = new Date().toISOString();
+      job.transcriptions[fileName] = {
+        status: 'failed', requestedAt, completedAt: job.updatedAt, error: error.message
+      };
+      await persistJob(job);
+      throw error;
+    }
     return job;
   } finally {
     jobMutations.delete(id);
@@ -559,6 +588,7 @@ export async function deleteJobFile(id, fileName, user = null) {
       if (error.code !== 'ENOENT') throw error;
     });
     job.files = job.files.filter((name) => name !== fileName);
+    if (job.transcriptions) delete job.transcriptions[fileName];
     job.updatedAt = new Date().toISOString();
     await persistJob(job);
     return job;

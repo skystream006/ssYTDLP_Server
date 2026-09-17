@@ -551,6 +551,27 @@ function TranscriptionDialog({ jobId, file, onClose, onSaved }) {
   </dialog>;
 }
 
+function TranscriptionStatus({ transcription }) {
+  const states = {
+    sent: { label: 'Transcription request sent', Icon: RefreshCw },
+    transcribed: { label: 'Transcribed', Icon: Check },
+    failed: { label: 'Transcription failed', Icon: CircleAlert },
+    interrupted: { label: 'Interrupted', Icon: Clock3 }
+  };
+  const state = states[transcription?.status];
+  if (!state) return null;
+  const { label, Icon } = state;
+  const details = [
+    `Requested: ${formatDate(transcription.requestedAt)}`,
+    transcription.completedAt && `Finished: ${formatDate(transcription.completedAt)}`,
+    transcription.error
+  ].filter(Boolean).join('\n');
+  return <span className={`song-transcription song-transcription-${transcription.status}`} title={details}>
+    <Icon size={13} className={transcription.status === 'sent' ? 'spin' : undefined} aria-hidden="true" />
+    <span>{label}</span>
+  </span>;
+}
+
 function JobPage({ id }) {
   const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
@@ -571,9 +592,10 @@ function JobPage({ id }) {
   const files = data?.[1]?.files || [];
   const firstSong = files.find((file) => file.isSong);
   const isActive = job?.status === 'queued' || job?.status === 'running';
+  const hasPendingTranscription = Object.values(job?.transcriptions || {}).some((transcription) => transcription.status === 'sent');
   const canModify = canModifyJob(user, job);
   const canManage = canManageJob(user, job);
-  const mutationDisabled = !canModify || isActive || rerunning || deleting || deletingFile !== null || editingContributors || transcribingFile !== null;
+  const mutationDisabled = !canModify || isActive || hasPendingTranscription || rerunning || deleting || deletingFile !== null || editingContributors || transcribingFile !== null;
 
   async function rerun() {
     if (mutationDisabled) return;
@@ -694,7 +716,9 @@ function JobPage({ id }) {
                 <li key={file.name}>
                   {file.isSong ? <a className="song-file-link" href={`/job/${encodeURIComponent(id)}/player?${new URLSearchParams({ song: file.name, play: '1' })}`} aria-label={`Play ${file.name}`} title="Play song">
                     <span className="file-icon"><FileAudio size={19} /></span>
-                    <span><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></span>
+                    <span><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small>
+                      <TranscriptionStatus transcription={job.transcriptions?.[file.name]} />
+                    </span>
                   </a> : <>
                     <span className="file-icon"><FileAudio size={19} /></span>
                     <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div>
@@ -746,9 +770,6 @@ function HealthPage() {
   const memoryPercent = health ? health.memory.usedBytes / health.memory.totalBytes * 100 : 0;
   const diskUsed = health ? health.storage.totalBytes - health.storage.freeBytes : 0;
   const diskPercent = health ? diskUsed / health.storage.totalBytes * 100 : 0;
-  const transcriptionLabels = {
-    active: 'Active', unreachable: 'Unreachable', error: 'HTTP error', not_configured: 'Not configured'
-  };
 
   return <AppShell section="health">
     <section className="page-heading health-heading">
@@ -765,7 +786,7 @@ function HealthPage() {
         <Metric icon={<HardDrive />} label="Storage free" value={formatBytes(health.storage.freeBytes)} detail={`${formatBytes(health.storage.totalBytes)} total`} percent={diskPercent} />
         <Metric icon={<Network />} label="Network in" value={`${formatBytes(health.network.rxSec)}/s`} detail={`${formatBytes(health.network.rxBytes)} received`} />
         <Metric icon={<Network />} label="Network out" value={`${formatBytes(health.network.txSec)}/s`} detail={`${formatBytes(health.network.txBytes)} sent`} />
-        <Metric icon={<Mic />} label="Transcription service" value={transcriptionLabels[health.transcription?.status] || 'Unknown'} detail={health.transcription?.message || 'Status unavailable'} />
+        <Metric icon={<Mic />} label="Transcription service" value={health.transcription?.status === 'active' ? <span className="transcription-active">Active</span> : <span className="transcription-inactive">Inactive</span>} detail={health.transcription?.message || 'Status unavailable'} />
       </section>
     </>}
   </AppShell>;

@@ -400,12 +400,20 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   }
   const pending = manager.transcribeJobFile(job.id, songName, { lyrics: ' Known words ', lyrics_mode: 'align', language: 'vi' }, owner);
   await received;
+  const sent = manager.getJob(job.id).transcriptions[songName];
+  assert.equal(sent.status, 'sent');
+  assert.ok(Number.isFinite(Date.parse(sent.requestedAt)));
+  assert.equal(sent.completedAt, undefined);
   await assert.rejects(manager.deleteJob(job.id, owner), { statusCode: 409 });
   await assert.rejects(manager.rerunJob(job.id, owner), { statusCode: 409 });
   await assert.rejects(manager.deleteJobFile(job.id, songName, owner), { statusCode: 409 });
   await assert.rejects(manager.transcribeJobFile(job.id, songName, {}, owner), { statusCode: 409 });
   releaseRequest();
   await pending;
+  const transcribed = manager.getJob(job.id).transcriptions[songName];
+  assert.equal(transcribed.status, 'transcribed');
+  assert.equal(transcribed.requestedAt, sent.requestedAt);
+  assert.ok(Date.parse(transcribed.completedAt) >= Date.parse(sent.requestedAt));
   gate = Promise.resolve();
   assert.equal(payload.get('file').name, songName);
   assert.deepEqual(Buffer.from(await payload.get('file').arrayBuffer()), audio);
@@ -440,6 +448,10 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   }
   responseStatus = 500;
   await assert.rejects(manager.transcribeJobFile(job.id, songName, {}, owner), { statusCode: 502 });
+  const failed = manager.getJob(job.id).transcriptions[songName];
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error, /HTTP 500/);
+  assert.ok(Number.isFinite(Date.parse(failed.completedAt)));
   responseStatus = 200;
   responseData = audio;
   await manager.transcribeJobFile(job.id, songName, { language: 'ja' }, owner);
@@ -466,6 +478,18 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   await manager.transcribeJobFile(job.id, '[NoVocals]/instrumental.wav', {}, owner);
   await manager.deleteJobFile(job.id, '[NoVocals]/instrumental.wav', owner);
   assert.deepEqual(manager.getJob(job.id).files, [songName]);
+  assert.equal(manager.getJob(job.id).transcriptions['[NoVocals]/instrumental.wav'], undefined);
+  assert.equal(manager.getJob(job.id).transcriptions[songName].status, 'transcribed');
+  const persistedJob = manager.getJob(job.id);
+  persistedJob.status = 'completed';
+  persistedJob.transcriptions[songName] = { status: 'sent', requestedAt: sent.requestedAt };
+  writeJob(openDatabase(), persistedJob);
+  const restarted = await import(`../src/jobManager.js?transcription-restart=${Date.now()}`);
+  const interrupted = restarted.getJob(job.id).transcriptions[songName];
+  assert.equal(interrupted.status, 'interrupted');
+  assert.equal(interrupted.requestedAt, sent.requestedAt);
+  assert.match(interrupted.error, /server restart/);
+  assert.ok(Number.isFinite(Date.parse(interrupted.completedAt)));
 });
 
 test('job history is restored after a manager restart', async (t) => {

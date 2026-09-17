@@ -1,12 +1,36 @@
 import os from 'node:os';
 import si from 'systeminformation';
 
+export async function getTranscriptionHealth() {
+  const endpoint = process.env.TRANSCRIPTION_ENDPOINT?.trim();
+  if (!endpoint) {
+    return { status: 'not_configured', message: 'TRANSCRIPTION_ENDPOINT is not configured' };
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(2000)
+    });
+    await response.body?.cancel();
+    if (response.ok || response.status === 405) {
+      return { status: 'active', message: 'Endpoint reachable; transcription readiness not verified' };
+    }
+    return { status: 'error', message: `Endpoint returned HTTP ${response.status}` };
+  } catch (error) {
+    return {
+      status: 'unreachable',
+      message: error.name === 'TimeoutError' ? 'Endpoint timed out after 2 seconds' : 'Unable to connect to endpoint'
+    };
+  }
+}
+
 export async function getSystemHealth() {
-  const [load, memory, disk, network] = await Promise.all([
+  const [load, memory, disk, network, transcription] = await Promise.all([
     si.currentLoad(),
     si.mem(),
     si.fsSize(),
-    si.networkStats()
+    si.networkStats(),
+    getTranscriptionHealth()
   ]);
 
   const diskTotals = disk.reduce(
@@ -31,6 +55,7 @@ export async function getSystemHealth() {
 
   return {
     hostname: os.hostname(),
+    transcription,
     cpu: {
       usagePercent: load.currentLoad
     },

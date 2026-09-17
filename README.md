@@ -377,7 +377,13 @@ completes.
 
 ## System health
 
-Open `http://localhost:3000/health` to view CPU, memory, network, and disk metrics.
+Open `/health` on your configured HTTPS origin to view CPU, memory, network, disk,
+and transcription-service status. The server probes `TRANSCRIPTION_ENDPOINT` with
+a HEAD request and a two-second timeout on each health refresh; no audio is sent.
+**Active** means the endpoint responded successfully or returned HTTP 405 (a
+POST-only route). It does not verify model readiness or a successful transcription.
+Other responses show **HTTP error** with the status code; connection failures and
+timeouts show **Unreachable**. An unset endpoint shows **Not configured**.
 
 ## Tests
 

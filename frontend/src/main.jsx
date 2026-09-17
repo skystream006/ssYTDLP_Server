@@ -746,6 +746,9 @@ function HealthPage() {
   const memoryPercent = health ? health.memory.usedBytes / health.memory.totalBytes * 100 : 0;
   const diskUsed = health ? health.storage.totalBytes - health.storage.freeBytes : 0;
   const diskPercent = health ? diskUsed / health.storage.totalBytes * 100 : 0;
+  const transcriptionLabels = {
+    active: 'Active', unreachable: 'Unreachable', error: 'HTTP error', not_configured: 'Not configured'
+  };
 
   return <AppShell section="health">
     <section className="page-heading health-heading">
@@ -762,6 +765,7 @@ function HealthPage() {
         <Metric icon={<HardDrive />} label="Storage free" value={formatBytes(health.storage.freeBytes)} detail={`${formatBytes(health.storage.totalBytes)} total`} percent={diskPercent} />
         <Metric icon={<Network />} label="Network in" value={`${formatBytes(health.network.rxSec)}/s`} detail={`${formatBytes(health.network.rxBytes)} received`} />
         <Metric icon={<Network />} label="Network out" value={`${formatBytes(health.network.txSec)}/s`} detail={`${formatBytes(health.network.txBytes)} sent`} />
+        <Metric icon={<Mic />} label="Transcription service" value={transcriptionLabels[health.transcription?.status] || 'Unknown'} detail={health.transcription?.message || 'Status unavailable'} />
       </section>
     </>}
   </AppShell>;

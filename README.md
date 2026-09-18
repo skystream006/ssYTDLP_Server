@@ -161,6 +161,125 @@ It expects yt-dlp at `runtime/yt-dlp/yt-dlp.exe`; override this with
 FFmpeg and ffprobe are loaded from `runtime/ffmpeg/bin`; override this with
 `FFMPEG_PATH=/absolute/path/to/ffmpeg/bin`.
 
+## Android app integration
+
+Android uses browser-based passkey login in a Chrome Custom Tab (or the system
+browser), followed by a single-use authorization code exchange with S256 PKCE.
+It uses the same account and passkey as the web UI, without a PAT, Google Play,
+Digital Asset Links, app ID configuration, or signing-certificate fingerprints.
+The previous native Credential Manager flow (`client: "android"`) is no longer
+supported. `ANDROID_APP_ID` and `ANDROID_SHA256_CERT_FINGERPRINTS` can be removed
+from existing environments; they are no longer read or passed through Compose.
+The generated `/.well-known/assetlinks.json` endpoint has been removed.
+
+Keep `PASSKEY_RP_ID` and `PASSKEY_ORIGIN` identical to your existing web login.
+Open the browser login URL at that exact origin, including any port. Your phone
+must resolve/reach the hostname and trust its HTTPS certificate in both the
+browser and the app. Do not disable TLS validation. This flow does not require
+standard port 443 or public domain-association hosting. Sideloaded/debug APKs
+work with the same protocol; the passkey must be available in the browser's
+credential provider. Use an external browser, not an embedded WebView.
+
+### Login contract
+
+1. Generate independent cryptographically random `codeVerifier` and `state`
+   values for each login (32 random bytes each, base64url without padding).
+   Retain them together with the chosen server origin in private app storage
+   until the login finishes. Never send the verifier to the browser.
+2. Compute `codeChallenge = BASE64URL(SHA256(ASCII(codeVerifier)))`, without
+   padding. Open the following URL with correctly URL-encoded query values:
+
+   ```text
+   <PASSKEY_ORIGIN>/app-login?redirect_uri=com.ssytdlp.app%3A%2Foauth%2Fcallback&code_challenge=<CHALLENGE>&code_challenge_method=S256&state=<STATE>
+   ```
+
+3. The user selects **Authorize with Passkey** and completes a fresh browser
+   passkey confirmation, even if a browser session already exists. The page
+   returns to `com.ssytdlp.app:/oauth/callback?code=<CODE>&state=<STATE>` and
+   offers **Return to app** if automatic navigation is blocked. Cancel leaves
+   the authorization page without issuing a code; closing the tab cancels too.
+4. In the Android callback, require the exact scheme/path and expected `state`;
+   reject unsolicited callbacks, mismatches, duplicate parameters, or an already
+   completed login. Exchange only at the server origin saved in step 1, never
+   an origin supplied by the callback. Send `POST /api/auth/app/token` with JSON:
+
+   ```json
+   {
+     "code": "CODE_FROM_CALLBACK",
+     "codeVerifier": "ORIGINAL_SECRET_VERIFIER",
+     "redirectUri": "com.ssytdlp.app:/oauth/callback"
+   }
+   ```
+
+   The response is `{ "user": { ... }, "session": { "token": "...",
+   "tokenType": "Bearer", "expiresAt": "..." } }`. No cookie or existing
+   login is required for this exchange; a correct code and verifier are required.
+   Delete the temporary verifier/state after completion or cancellation.
+5. Send `Authorization: Bearer <session.token>` on authenticated requests.
+   Store the session using Android Keystore-backed storage, never URLs/logs.
+   Sessions last 30 days without sliding expiry or refresh tokens and survive
+   server restarts. On expiry or `401`, start a new browser login.
+
+Register an exported callback Activity with a browsable `VIEW` intent filter
+for scheme `com.ssytdlp.app`. The callback is a private-use URI with no host;
+validate the complete URI path `/oauth/callback` in the Activity. The server
+only accepts the exact redirect URI above; arbitrary redirects are rejected.
+
+```xml
+<intent-filter>
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+    <data android:scheme="com.ssytdlp.app" />
+</intent-filter>
+```
+
+Private-use schemes do not prove an app's identity: another installed app can
+claim the scheme. PKCE prevents an interceptor redeeming a code without the
+original verifier. Only authorize login requests you initiated from your app.
+
+The browser page calls `POST /api/auth/login/options` with `client: "browser-app"`,
+`redirectUri`, `codeChallenge`, `codeChallengeMethod: "S256"`, and `state`.
+It then calls `/api/auth/login/verify` with `requestId` and the WebAuthn `response`.
+That response contains only `redirectUrl`, never a bearer token. State must be
+43-128 base64url characters; the verifier must be 43-128 RFC 7636 unreserved
+characters. The callback and PKCE challenge are bound to the WebAuthn challenge;
+changing them at verification cannot redirect or replace the authorization.
+
+Passkey challenges expire after five minutes; authorization codes expire after
+60 seconds and are consumed on the first exchange attempt, including invalid
+attempts. Both are in memory, bounded, rate-limited, and cleared on restart.
+An expired/used code or wrong verifier returns `400`; restart the login flow.
+Account changes before exchange return `403` and require a fresh login.
+Pending/revoked accounts cannot authorize; passkey verification returns `403`
+with `ACCESS_PENDING` or `ACCESS_REVOKED`. Rate limiting returns `429`.
+
+Normal web login remains cookie-based. The app flow neither reads nor replaces
+the browser session. `GET /api/auth/me` returns the bearer session's user;
+`POST /api/auth/logout` with that bearer header revokes only that session (`204`).
+Account revocation invalidates all sessions. Send only one auth mechanism:
+invalid Authorization headers do not fall back to cookies, `X-PAT` retains
+precedence on general API routes, and PATs are not bearer sessions.
+Register new accounts in the regular web UI and wait for approval before app login.
+
+### Feature endpoints
+
+Bearer sessions work with all existing `/api/jobs`, `/api/library`,
+`/api/preferences`, `/api/health`, and authorized `/api/admin` routes, as well as
+passkey-session-only PAT management. Existing owner/contributor/admin rules apply.
+Use the library, metadata, transcription, and job API contracts documented below.
+Both clients share server-side library layouts and preferences; on a library `409`
+conflict, fetch the latest version before retrying the user's edit.
+
+File listings and library tracks return relative `streamUrl` and `downloadUrl`
+values. Resolve these against the server base URL and attach the bearer header to
+media/download requests too. Configure the Android Media3/ExoPlayer HTTP data
+source to send this header, including byte-range requests for seeking (`206`
+responses). `/api/jobs/:id/lyrics/:name` supplies lyrics and artwork metadata.
+Do not forward credentials when following redirects to another host. Native HTTP
+clients do not need CORS changes; passkeys run in the external browser and
+authenticated feature requests use native networking.
+
 ## Usage
 
 - Open the HTTPS URL configured by `PASSKEY_ORIGIN` to use **ssMusic Player** at `/`.
@@ -494,8 +613,9 @@ PAT management requires a logged-in passkey session, not a PAT:
 - `GET /api/admin/users/:id`: administrator-only user details and secret-free PAT list.
 - `DELETE /api/admin/users/:id/pats/:tokenId`: administrator-only PAT deletion.
 
-The old `/api/auth/api-token` endpoint and bearer authentication have been removed.
-Existing old tokens are discarded on upgrade; generate new PATs from User settings.
+The old `/api/auth/api-token` endpoint remains removed. Legacy API tokens are not
+accepted; generate new PATs from User settings for automation. Bearer authentication
+is reserved for passkey sessions, including the Android login flow above.
 
 ## Database storage
 

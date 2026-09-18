@@ -32,6 +32,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
 
   const users = {};
   const credentials = {};
+  const mobileHeaders = {};
   for (const name of ['Admin', 'Owner', 'Other']) {
     const user = await store.registerUser(name, name, { id: name, publicKey: Buffer.from(name), counter: 0 });
     if (name !== 'Admin') await store.updateUser(user.id, { status: 'approved' }, users.Admin.id);
@@ -39,6 +40,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     const session = await store.createSession(user.id);
     const pat = await store.createPrivateAccessToken(user.id, 'HTTP test');
     credentials[name] = [{ Cookie: `ssytdlp_session=${session.token}` }, { 'X-PAT': pat.token }];
+    mobileHeaders[name] = { Authorization: `Bearer ${session.token}` };
   }
 
   for (const name of ['Pending', 'Revoked']) {
@@ -120,12 +122,23 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     } while (['queued', 'running'].includes(response.body.status));
     return response;
   }
-  for (const route of ['/', '/job', '/job/music', '/job/music/player']) {
+  for (const route of ['/', '/app-login', '/job', '/job/music', '/job/music/player']) {
     assert.equal((await call(route)).status, 200);
   }
   for (const route of ['/api/library', '/api/library/tracks', '/api/preferences']) {
     assert.equal((await call(route)).status, 401);
   }
+  for (const route of ['/api/jobs', '/api/jobs/music/files', '/api/library', '/api/library/tracks', '/api/preferences']) {
+    assert.equal((await call(route, 'GET', mobileHeaders.Owner)).status, 200);
+  }
+  const mobileStream = await call(`/api/jobs/owned/stream/${encodeURIComponent(songName)}`, 'GET', {
+    ...mobileHeaders.Owner, Range: 'bytes=0-1'
+  });
+  assert.equal(mobileStream.status, 206);
+  assert.equal(mobileStream.text, 'so');
+  assert.equal((await call(`/api/jobs/owned/download/${encodeURIComponent(songName)}`, 'GET', mobileHeaders.Owner)).text, 'song');
+  assert.equal((await call('/api/preferences', 'PUT', mobileHeaders.Owner, { theme: 'light', mode: 'light' })).status, 200);
+  assert.equal((await call('/api/jobs/owned/title', 'PATCH', mobileHeaders.Other, { playlistTitle: 'Denied' })).status, 403);
   assert.equal((await call('/api/library', 'PUT', {}, {})).status, 401);
   assert.equal((await call('/api/library/links', 'POST', {}, { jobId: 'music' })).status, 401);
   assert.equal((await call('/api/library/songs/move', 'POST', {}, {})).status, 401);
@@ -328,11 +341,15 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const single = await call('/api/jobs', 'POST', credentials.Owner[0], { url: 'https://music.youtube.com/watch?v=individual' });
   assert.equal(single.status, 202);
   const singleId = single.body.id;
+  const firstSingleLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+  assert.equal(firstSingleLibrary.playlists.find((playlist) => playlist.id === 'individual-songs').playlistTitle, 'Individual Songs');
+  assert.equal(firstSingleLibrary.entries.some((entry) => entry.id === singleId), false);
   const current = await waitForJob(singleId, credentials.Owner[0]);
   await fs.writeFile(path.join(current.body.outputDir, 'single.mp3'), 'single song');
   writeJob(openDatabase(), { ...current.body, files: ['single.mp3'] });
   closeDatabases();
   const singlesLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+  assert.equal(singlesLibrary.playlists.find((playlist) => playlist.id === 'individual-songs').playlistTitle, 'Individual Songs');
   assert.equal(singlesLibrary.playlists.find((playlist) => playlist.id === 'individual-songs').protected, true);
   assert.equal(singlesLibrary.entries.some((entry) => entry.id === singleId), false);
   const individualTracks = (await call('/api/library/tracks?entryId=individual-songs', 'GET', credentials.Owner[0])).body.files;

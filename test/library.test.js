@@ -99,10 +99,12 @@ test('individual links share one permanent personal playlist, even after every s
   assert.equal(getLibrary('alice', available).entries.some((entry) => entry.id === individualSongsId), false);
   const linked = linkLibraryJob('alice', first, available);
   assert.equal(linked.entries.filter((entry) => entry.id === individualSongsId).length, 1);
+  assert.equal(linked.entries.find((entry) => entry.id === individualSongsId).name, 'Individual Songs');
   assert.equal(linked.entries.find((entry) => entry.id === individualSongsId).protected, true);
   assert.equal(linked.entries.some((entry) => entry.id === first.id), false);
   assert.deepEqual(linkLibraryJob('alice', first, available), linked);
   const both = linkLibraryJob('alice', second, available);
+  assert.equal(both.entries.find((entry) => entry.id === individualSongsId).name, 'Individual Songs');
   const downloaded = available.map((job) => job.id === second.id ? { ...job, files: ['Second.mp3'] } : job);
   assert.deepEqual(getPlaylistTracks(getLibrary('alice', downloaded), downloaded).get(individualSongsId).map((track) => track.name), ['First.mp3', 'Second.mp3']);
   assert.equal(getLibrary('bob', available).entries.some((entry) => entry.id === individualSongsId), false);
@@ -110,6 +112,7 @@ test('individual links share one permanent personal playlist, even after every s
   assert.equal(removed.entries.some((entry) => entry.id === individualSongsId), true);
   closeDatabases();
   const empty = getLibrary('alice', jobs);
+  assert.equal(empty.entries.find((entry) => entry.id === individualSongsId).name, 'Individual Songs');
   assert.equal(empty.entries.find((entry) => entry.id === individualSongsId).protected, true);
   assert.deepEqual(getPlaylistTracks(empty, jobs).get(individualSongsId), []);
 });

@@ -765,23 +765,49 @@ function HealthPage() {
   </AppShell>;
 }
 
-function LoginPage({ onLogin }) {
+function LoginPage({ onLogin, appLogin = false }) {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState(null);
+  const [redirectUrl, setRedirectUrl] = useState('');
+  const [appAuthorization] = useState(() => {
+    if (!appLogin) return null;
+    const params = new URLSearchParams(window.location.search);
+    return {
+      client: 'browser-app',
+      redirectUri: params.get('redirect_uri'),
+      state: params.get('state'),
+      codeChallenge: params.get('code_challenge'),
+      codeChallengeMethod: params.get('code_challenge_method')
+    };
+  });
+
+  useEffect(() => {
+    if (appLogin) {
+      document.title = 'Sign in to Android app - ssMusic Player';
+      window.history.replaceState(null, '', '/app-login');
+    }
+  }, [appLogin]);
 
   async function login() {
     setBusy('login');
     setMessage(null);
     try {
-      const ceremony = await request('/api/auth/login/options', { method: 'POST' });
+      const ceremony = await request('/api/auth/login/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(appAuthorization || {})
+      });
       const response = await startAuthentication({ optionsJSON: ceremony.options });
       const result = await request('/api/auth/login/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ requestId: ceremony.requestId, response })
       });
-      onLogin(result.user);
+      if (appLogin) {
+        setRedirectUrl(result.redirectUrl);
+        window.location.assign(result.redirectUrl);
+      } else onLogin(result.user);
     } catch (error) {
       setMessage({ type: error.code === 'ACCESS_PENDING' ? 'warning' : 'error', text: error.message });
     } finally {
@@ -822,16 +848,16 @@ function LoginPage({ onLogin }) {
     <section className="auth-intro">
       <span className="auth-mark"><Music2 size={28} /></span>
       <p className="eyebrow">Private music workspace</p>
-      <h1>Open your archive.</h1>
-      <p>Your passkey stays with your password manager or device. The server stores only the public credential needed to recognize you.</p>
+      <h1>{appLogin ? 'ssMusic Player' : 'Open your archive.'}</h1>
+      <p>{appLogin ? 'Authorize the Android app to access your account.' : 'Your passkey stays with your password manager or device. The server stores only the public credential needed to recognize you.'}</p>
     </section>
     <section className="auth-panel" aria-labelledby="access-heading">
-      <div className="auth-panel-heading"><Fingerprint size={27} /><div><p>Secure access</p><h2 id="access-heading">Use a passkey</h2></div></div>
-      <button className="primary-button auth-login" disabled={Boolean(busy)} onClick={login} type="button">
+      <div className="auth-panel-heading"><Fingerprint size={27} /><div><p>Secure access</p><h2 id="access-heading">{appLogin ? 'Sign in to Android app' : 'Use a passkey'}</h2></div></div>
+      {redirectUrl ? <a className="primary-button auth-login" href={redirectUrl}><ExternalLink size={18} />Return to app</a> : <button className="primary-button auth-login" disabled={Boolean(busy)} onClick={login} type="button">
         {busy === 'login' ? <RefreshCw className="spin" size={18} /> : <Fingerprint size={18} />}
-        Login with Passkey
-      </button>
-      <div className="auth-divider"><span>or register</span></div>
+        {appLogin ? 'Authorize with Passkey' : 'Login with Passkey'}
+      </button>}
+      {appLogin ? <a className="secondary-button" href="/">Cancel</a> : <><div className="auth-divider"><span>or register</span></div>
       <form onSubmit={register}>
         <label htmlFor="registration-name">Display name</label>
         <input id="registration-name" minLength="2" maxLength="64" required value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name" />
@@ -839,7 +865,7 @@ function LoginPage({ onLogin }) {
           {busy === 'register' ? <RefreshCw className="spin" size={18} /> : <ShieldCheck size={18} />}
           Register with Passkey
         </button>
-      </form>
+      </form></>}
       {message && <div className={`notice ${message.type}`} role="status">{message.text}</div>}
     </section>
   </main>;
@@ -1126,4 +1152,4 @@ function App() {
 }
 
 initializeTouchControls();
-createRoot(document.getElementById('root')).render(<StrictMode><App /></StrictMode>);
+createRoot(document.getElementById('root')).render(<StrictMode>{window.location.pathname === '/app-login' ? <LoginPage appLogin /> : <App />}</StrictMode>);

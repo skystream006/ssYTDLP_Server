@@ -27,8 +27,24 @@ const challengeLifetimeMs = 5 * 60 * 1000;
 const maxChallenges = 5_000;
 const maxChallengesPerClient = 10;
 const sessionCookie = 'ssytdlp_session';
+const appRedirectUri = 'com.ssytdlp.app:/oauth/callback';
+
+function getAppAuthorization(body) {
+  if (body?.client !== 'browser-app') return undefined;
+  if (body.redirectUri !== appRedirectUri || body.codeChallengeMethod !== 'S256'
+    || typeof body.codeChallenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.codeChallenge)
+    || Buffer.from(body.codeChallenge, 'base64url').toString('base64url') !== body.codeChallenge
+    || typeof body.state !== 'string' || !/^[A-Za-z0-9_-]{43,128}$/.test(body.state)) {
+    throw Object.assign(new Error('Invalid app callback, state, or S256 PKCE challenge'), { statusCode: 400 });
+  }
+  return { redirectUri: appRedirectUri, codeChallenge: body.codeChallenge, state: body.state };
+}
 
 function getWebAuthnConfig(req) {
+  const client = req.body?.client ?? 'web';
+  if (!['web', 'browser-app'].includes(client)) {
+    throw Object.assign(new Error('Use web passkey login or the browser-app flow'), { statusCode: 400 });
+  }
   const rpID = process.env.PASSKEY_RP_ID || req.hostname;
   const origin = process.env.PASSKEY_ORIGIN || `${req.protocol}://${req.get('host')}`;
   if (net.isIP(rpID)) {
@@ -46,7 +62,7 @@ function pruneChallenges() {
   }
 }
 
-function rememberChallenge(data, clientId) {
+function rememberChallenge(data, clientId, lifetimeMs = challengeLifetimeMs) {
   pruneChallenges();
   const clientChallenges = [...challenges.values()].filter((challenge) => challenge.clientId === clientId).length;
   if (challenges.size >= maxChallenges || clientChallenges >= maxChallengesPerClient) {
@@ -54,8 +70,8 @@ function rememberChallenge(data, clientId) {
     error.statusCode = 429;
     throw error;
   }
-  const requestId = crypto.randomUUID();
-  challenges.set(requestId, { ...data, clientId, expiresAt: Date.now() + challengeLifetimeMs });
+  const requestId = crypto.randomBytes(32).toString('base64url');
+  challenges.set(requestId, { ...data, clientId, expiresAt: Date.now() + lifetimeMs });
   return requestId;
 }
 
@@ -88,6 +104,13 @@ function sessionCookieOptions(req, expiresAt) {
   };
 }
 
+function getSessionToken(req) {
+  if (req.headers.authorization !== undefined) {
+    return /^Bearer ([A-Za-z0-9_-]{43})$/i.exec(req.headers.authorization)?.[1] || null;
+  }
+  return getCookie(req, sessionCookie);
+}
+
 async function issueSession(req, res, user) {
   const session = await createSession(user.id);
   res.cookie(sessionCookie, session.token, sessionCookieOptions(req, session.expiresAt));
@@ -98,7 +121,7 @@ function sendError(res, error) {
 }
 
 export function attachUser(req, _res, next) {
-  req.sessionUser = getSessionUser(getCookie(req, sessionCookie));
+  req.sessionUser = getSessionUser(getSessionToken(req));
   req.user = req.headers['x-pat'] !== undefined
     ? getPrivateAccessTokenUser(req.headers['x-pat'])
     : req.sessionUser;
@@ -106,7 +129,7 @@ export function attachUser(req, _res, next) {
 }
 
 export function requireAuth(req, res, next) {
-  if (!req.user) return res.status(401).json({ error: 'Passkey login or valid X-PAT required' });
+  if (!req.user) return res.status(401).json({ error: 'Passkey session (cookie or Bearer) or valid X-PAT required' });
   return next();
 }
 
@@ -130,6 +153,32 @@ export function registerAuthRoutes(app, limiters = {}) {
   const registrationVerifyLimiter = limiters.registrationVerify || noLimit;
   const loginOptionsLimiter = limiters.loginOptions || noLimit;
   const loginVerifyLimiter = limiters.loginVerify || noLimit;
+
+  app.use('/api/auth', (_req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    res.set('Referrer-Policy', 'no-referrer');
+    next();
+  });
+
+  app.post('/api/auth/app/token', loginVerifyLimiter, async (req, res) => {
+    try {
+      const authorization = takeChallenge(req.body?.code, 'app-authorization');
+      const verifier = req.body?.codeVerifier;
+      if (req.body?.redirectUri !== authorization.redirectUri
+        || typeof verifier !== 'string' || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)
+        || crypto.createHash('sha256').update(verifier).digest('base64url') !== authorization.codeChallenge) {
+        return res.status(400).json({ error: 'Invalid authorization code or PKCE verifier' });
+      }
+      const user = getUser(authorization.userId);
+      if (!user || user.status !== 'approved' || user.updatedAt !== authorization.userUpdatedAt) {
+        return res.status(403).json({ error: 'Account access changed. Please log in again.' });
+      }
+      const session = await createSession(user.id);
+      return res.json({ user, session: { ...session, tokenType: 'Bearer' } });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
 
   app.get('/api/auth/me', (req, res) => {
     if (!req.user) return res.status(401).json({ error: 'Passkey login required' });
@@ -161,6 +210,9 @@ export function registerAuthRoutes(app, limiters = {}) {
 
   app.post('/api/auth/register/options', registrationOptionsLimiter, async (req, res) => {
     try {
+      if (req.body?.client && req.body.client !== 'web') {
+        return res.status(400).json({ error: 'Register in the web UI before signing in to the app' });
+      }
       const name = String(req.body?.name || '').trim();
       if (name.length < 2 || name.length > 64) {
         return res.status(400).json({ error: 'Name must be between 2 and 64 characters' });
@@ -221,6 +273,7 @@ export function registerAuthRoutes(app, limiters = {}) {
   app.post('/api/auth/login/options', loginOptionsLimiter, async (req, res) => {
     try {
       const { rpID, origin } = getWebAuthnConfig(req);
+      const appAuthorization = getAppAuthorization(req.body);
       const options = await generateAuthenticationOptions({
         rpID,
         userVerification: 'required'
@@ -229,7 +282,8 @@ export function registerAuthRoutes(app, limiters = {}) {
         type: 'authentication',
         challenge: options.challenge,
         rpID,
-        origin
+        origin,
+        appAuthorization
       }, req.ip);
       return res.json({ requestId, options });
     } catch (error) {
@@ -264,17 +318,30 @@ export function registerAuthRoutes(app, limiters = {}) {
       if (match.user.status !== 'approved') {
         return res.status(403).json({ error: 'Your access has been revoked', code: 'ACCESS_REVOKED' });
       }
-      await issueSession(req, res, match.user);
-      return res.json({ user: match.user });
+      const user = getUser(match.user.id);
+      if (challenge.appAuthorization) {
+        const code = rememberChallenge({
+          type: 'app-authorization',
+          ...challenge.appAuthorization,
+          userId: user.id,
+          userUpdatedAt: user.updatedAt
+        }, req.ip, 60_000);
+        const redirect = new URL(challenge.appAuthorization.redirectUri);
+        redirect.searchParams.set('code', code);
+        redirect.searchParams.set('state', challenge.appAuthorization.state);
+        return res.json({ redirectUrl: redirect.href });
+      }
+      await issueSession(req, res, user);
+      return res.json({ user });
     } catch (error) {
       return sendError(res, error);
     }
   });
 
   app.post('/api/auth/logout', async (req, res) => {
-    const token = getCookie(req, sessionCookie);
+    const token = getSessionToken(req);
     await deleteSession(token);
-    res.clearCookie(sessionCookie, { path: '/' });
+    if (req.headers.authorization === undefined) res.clearCookie(sessionCookie, { path: '/' });
     return res.status(204).end();
   });
 

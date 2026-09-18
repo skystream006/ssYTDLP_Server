@@ -191,6 +191,16 @@ h1 { margin: 0; max-width: 780px; font: 600 48px/1.05 'Newsreader', serif; overf
 .jobs-filters label { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
 .jobs-filters select { width: 220px; max-width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line); color: var(--ink); background: var(--field); font-size: 12px; }
 .jobs-filters select:focus-visible { outline: 2px solid var(--royal); outline-offset: 2px; }
+.job-filter-control, .job-sort-controls { display: flex; align-items: center; gap: 10px; max-width: 100%; }
+.job-filter-control { flex-wrap: wrap; }
+.job-sort-controls { margin-left: auto; }
+.job-sort-controls label { flex: none; }
+.job-sort-controls select { width: 150px; min-width: 0; }
+.job-sort-direction { display: grid; place-items: center; flex: none; width: 36px; height: 36px; padding: 0; border: 1px solid var(--line); color: var(--ink); background: var(--field); cursor: pointer; }
+.job-sort-button { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 0; border: 0; color: inherit; background: transparent; font: inherit; text-transform: inherit; text-align: left; cursor: pointer; }
+.job-sort-button svg { flex: none; }
+th[aria-sort="ascending"], th[aria-sort="descending"], .job-sort-button:hover, .job-sort-direction:hover { color: var(--royal); }
+.job-sort-button:focus-visible, .job-sort-direction:focus-visible { outline: 2px solid var(--royal); outline-offset: 3px; }
 .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .section-title > div { display: flex; align-items: baseline; gap: 15px; }
 .refresh-note { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; text-transform: uppercase; }

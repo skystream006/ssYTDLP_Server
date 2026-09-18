@@ -12,7 +12,7 @@ import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata } from './music.js';
 import { findNoVocals, getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey } from './library.js';
-import { getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, setLibrary, setTheme } from './libraryStore.js';
+import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, setLibrary, setTheme } from './libraryStore.js';
 import { exportOptions, prepareLibraryExport, streamLibraryExport } from './libraryExport.js';
 import { handleLibraryImport, listLocalImportFiles } from './libraryImport.js';
 import { getSystemHealth } from './health.js';
@@ -168,6 +168,19 @@ app.post('/api/library/links', (req, res) => {
   }
 });
 
+app.post('/api/library/jobs/add', (req, res) => {
+  try {
+    if (typeof req.body?.jobId !== 'string') return res.status(400).json({ error: 'A job ID is required' });
+    const job = getJob(req.body.jobId);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    const jobs = getLibraryJobs(req.user);
+    if (!jobs.some((item) => item.id === job.id)) return res.status(403).json({ error: 'Only job owners and contributors can add these files' });
+    return res.json(addLibraryJobFiles(req.user.id, req.body, jobs));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
 app.post('/api/library/songs/move', (req, res) => {
   try {
     return res.json(moveLibrarySong(req.user.id, req.body, getLibraryJobs(req.user)));
@@ -187,7 +200,13 @@ app.get('/api/library/tracks', async (req, res) => {
     }
     const jobMap = new Map(jobs.map((job) => [job.id, job]));
     const playlistTracks = getPlaylistTracks(library, jobs);
-    const tracks = getPlaylistIds(library.entries, selectedId).flatMap((id) => playlistTracks.get(id)).filter((track) => isPlayableFile(track.name));
+    const seen = new Set();
+    const tracks = getPlaylistIds(library.entries, selectedId).flatMap((id) => playlistTracks.get(id)).filter((track) => {
+      const key = songKey(track);
+      if (!isPlayableFile(track.name) || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     const sourceFiles = await Promise.all([...new Set(tracks.map((track) => track.jobId))].map(async (id) => {
       const files = await listJobFiles(jobMap.get(id));
       return files.filter((file) => file.isPlayable).map((file) => [songKey({ jobId: id, name: file.name }), file]);

@@ -5,7 +5,7 @@ import path from 'node:path';
 import test, { beforeEach } from 'node:test';
 import { closeDatabases, openDatabase, writeUser } from '../src/database.js';
 import { getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey, themes } from '../src/library.js';
-import { getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, setLibrary, setTheme } from '../src/libraryStore.js';
+import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, setLibrary, setTheme } from '../src/libraryStore.js';
 import { submitJobUrl } from '../frontend/src/jobSubmission.js';
 
 const jobs = [
@@ -178,6 +178,62 @@ test('song moves reject folders, unavailable songs and stale versions', () => {
   assert.throws(() => setLibrary('alice', { ...library, songMoves: [{ ...move, playlistId: 'folder-target' }] }, jobs), { statusCode: 400 });
   assert.throws(() => setLibrary('alice', { ...library, playlistSongOrder: { soul: [songKey(move)] } }, jobs), { statusCode: 400 });
   assert.deepEqual(getLibrary('alice', jobs), library);
+});
+
+test('all job media can be added atomically without removing source tracks or duplicating destination tracks', () => {
+  const available = [{ ...jobs[0], files: [...jobs[0].files, 'Movie.mp4'] }, ...jobs.slice(1)];
+  const initial = setLibrary('alice', { ...getLibrary('alice', available), songOrder: { jazz: ['Third.mp3', 'First.mp3'] } }, available);
+  const result = addLibraryJobFiles('alice', { version: initial.version, jobId: 'jazz', playlistId: 'soul' }, available);
+  assert.equal(result.addedCount, 4);
+  assert.equal(result.version, initial.version + 1);
+  const tracks = getPlaylistTracks(result, available);
+  assert.equal(tracks.get('jazz').length, 5);
+  assert.deepEqual(tracks.get('soul').map((track) => track.name), ['Soul.mp3', 'Third.mp3', 'First.mp3', 'Second.mp3', 'Movie.mp4']);
+  assert.deepEqual(getPlaylistTracks(getLibrary('bob', available), available).get('soul').map((track) => track.name), ['Soul.mp3']);
+  const repeat = addLibraryJobFiles('alice', { version: result.version, jobId: 'jazz', playlistId: 'soul' }, available);
+  assert.equal(repeat.addedCount, 0);
+  assert.equal(repeat.version, result.version);
+  const saved = setLibrary('alice', { version: result.version, entries: result.entries, songOrder: result.songOrder }, available);
+  closeDatabases();
+  assert.deepEqual(getLibrary('alice', available), saved);
+  assert.equal(getLibrary('alice', available.map((job) => job.id === 'jazz' ? { ...job, files: ['Movie.mp4'] } : job)).songAdds.length, 1);
+  assert.equal(getLibrary('alice', available.filter((job) => job.id !== 'soul')).songAdds.length, 0);
+});
+
+test('moving an added entry preserves other memberships and never duplicates a destination entry', () => {
+  let library = addLibraryJobFiles('alice', { version: 0, jobId: 'jazz', playlistId: 'soul' }, jobs);
+  const move = { jobId: 'jazz', name: 'First.mp3', sourcePlaylistId: 'soul', playlistId: 'live' };
+  library = moveLibrarySong('alice', { ...move, version: library.version }, jobs);
+  const contains = (id) => getPlaylistTracks(library, jobs).get(id).filter((track) => track.jobId === 'jazz' && track.name === 'First.mp3').length;
+  assert.equal(contains('jazz'), 1);
+  assert.equal(contains('soul'), 0);
+  assert.equal(contains('live'), 1);
+  assert.throws(() => moveLibrarySong('alice', { ...move, version: library.version }, jobs), { statusCode: 400 });
+  library = moveLibrarySong('alice', { ...move, version: library.version, sourcePlaylistId: 'jazz' }, jobs);
+  assert.equal(contains('jazz'), 0);
+  assert.equal(contains('live'), 1);
+  assert.equal(library.songAdds.some((track) => track.name === 'First.mp3'), false);
+  library = addLibraryJobFiles('alice', { version: library.version, jobId: 'jazz', playlistId: 'soul' }, jobs);
+  library = moveLibrarySong('alice', { ...move, version: library.version }, jobs);
+  assert.equal(contains('soul'), 0);
+  assert.equal(contains('live'), 1);
+});
+
+test('bulk additions reject stale versions, folders, unavailable jobs and empty jobs without partial writes', () => {
+  const available = [...jobs, { id: 'empty', files: ['notes.txt'] }];
+  const initial = setLibrary('alice', { ...getLibrary('alice', available), entries: [
+    ...getLibrary('alice', available).entries, { id: 'folder-target', type: 'folder', name: 'Folder', parentId: null }
+  ] }, available);
+  const value = { version: initial.version, jobId: 'jazz', playlistId: 'soul' };
+  for (const changes of [{ playlistId: 'folder-target' }, { playlistId: 'missing' }, { jobId: 'empty' }, { version: null }]) {
+    assert.throws(() => addLibraryJobFiles('alice', { ...value, ...changes }, available), { statusCode: 400 });
+  }
+  assert.throws(() => addLibraryJobFiles('alice', { ...value, jobId: 'missing' }, available), { statusCode: 404 });
+  assert.throws(() => addLibraryJobFiles('alice', { ...value, version: 0 }, available), { statusCode: 409 });
+  for (const songAdds of [null, [{ jobId: 'jazz', name: 'notes.txt', playlistId: 'soul' }], [{ jobId: 'jazz', name: 'First.mp3', playlistId: 'folder-target' }]]) {
+    assert.throws(() => setLibrary('alice', { ...initial, songAdds }, available), { statusCode: 400 });
+  }
+  assert.deepEqual(getLibrary('alice', available), initial);
 });
 
 test('invalid library trees and song orders cannot overwrite saved data', () => {

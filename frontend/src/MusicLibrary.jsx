@@ -418,7 +418,7 @@ export default function MusicLibrary({ user, request, confirm }) {
   function moveSong(track, playlistId) {
     if (!playlistId) { setMovingSong(track); return; }
     return persistLibrary('/api/library/songs/move', 'POST', {
-      version: library.version, jobId: track.jobId, name: track.name, playlistId
+      version: library.version, jobId: track.jobId, name: track.name, sourcePlaylistId: track.playlistId, playlistId
     });
   }
 

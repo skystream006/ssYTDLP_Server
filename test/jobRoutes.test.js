@@ -431,6 +431,34 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   await stopped;
   await startServer();
 
+  const addFilesRoute = '/api/library/jobs/add';
+  assert.equal((await call(addFilesRoute, 'POST', {}, {})).status, 401);
+  assert.equal((await call(addFilesRoute, 'POST', credentials.Other[0], { jobId: 'music' })).status, 403);
+  assert.equal((await call(addFilesRoute, 'POST', credentials.Admin[1], { jobId: 'music' })).status, 403);
+  const beforeAdd = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+  const addFiles = { version: beforeAdd.version, jobId: 'music', playlistId: 'individual-songs' };
+  assert.equal((await call(addFilesRoute, 'POST', credentials.Owner[0], { ...addFiles, playlistId: 'folder-mixes' })).status, 400);
+  assert.equal((await call(addFilesRoute, 'POST', credentials.Owner[0], { ...addFiles, jobId: 'missing' })).status, 404);
+  const addedFiles = await call(addFilesRoute, 'POST', credentials.Owner[1], addFiles);
+  assert.equal(addedFiles.status, 200);
+  assert.equal(addedFiles.body.addedCount, 3);
+  assert.equal((await call(addFilesRoute, 'POST', credentials.Owner[0], addFiles)).status, 409);
+  const repeatAdd = await call(addFilesRoute, 'POST', credentials.Owner[0], { ...addFiles, version: addedFiles.body.version });
+  assert.equal(repeatAdd.body.addedCount, 0);
+  const sourceAfterAdd = (await call('/api/library/tracks?entryId=music', 'GET', credentials.Owner[0])).body.files;
+  const destinationAfterAdd = (await call('/api/library/tracks?entryId=individual-songs', 'GET', credentials.Owner[0])).body.files;
+  assert.deepEqual(destinationAfterAdd.map((track) => [track.jobId, track.name]), sourceAfterAdd.map((track) => [track.jobId, track.name]));
+  assert.ok(destinationAfterAdd.every((track) => track.playlistId === 'individual-songs'));
+  const allAfterAdd = (await call('/api/library/tracks', 'GET', credentials.Owner[0])).body.files;
+  assert.equal(new Set(allAfterAdd.map((track) => JSON.stringify([track.jobId, track.name]))).size, allAfterAdd.length);
+  assert.equal((await call('/api/jobs/music/contributors', 'PUT', credentials.Owner[0], { userIds: [users.Other.id] })).status, 200);
+  const contributorLibrary = (await call('/api/library', 'GET', credentials.Other[0])).body;
+  const contributorAdd = await call(addFilesRoute, 'POST', credentials.Other[1], { ...addFiles, version: contributorLibrary.version });
+  assert.equal(contributorAdd.status, 200);
+  assert.equal(contributorAdd.body.addedCount, 3);
+  assert.equal((await call('/api/jobs/music/contributors', 'PUT', credentials.Owner[0], { userIds: [] })).status, 200);
+  assert.deepEqual((await call('/api/library/tracks?entryId=individual-songs', 'GET', credentials.Other[0])).body.files, []);
+
   const metadataUrl = 'https://music.youtube.com/playlist?list=metadata-only';
   for (const metadataOnly of ['true', 1, null]) {
     const invalid = await call('/api/jobs', 'POST', credentials.Owner[0], { url: metadataUrl, metadataOnly });

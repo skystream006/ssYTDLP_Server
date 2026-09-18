@@ -3,8 +3,11 @@ import { createRoot } from 'react-dom/client';
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
 import {
   Activity,
+  ArrowDown,
   ArrowDownToLine,
   ArrowLeft,
+  ArrowUp,
+  ArrowUpDown,
   Check,
   CircleAlert,
   Clock3,
@@ -15,6 +18,7 @@ import {
   Fingerprint,
   HardDrive,
   KeyRound,
+  ListPlus,
   ListMusic,
   LogOut,
   MemoryStick,
@@ -43,10 +47,13 @@ import './styles.css';
 import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
 import MusicLibrary from './MusicLibrary.jsx';
 import ImportMusic from './ImportMusic.jsx';
+import JobPlaylistDialog from './JobPlaylistDialog.jsx';
 import { submitJobUrl } from './jobSubmission.js';
+import { jobSortColumns, sortJobs } from './jobSorting.js';
 import { navigate, useNavigation } from './navigation.js';
 import { initializeTouchControls } from './touchControls.js';
 import { countDownloadedFiles, themes } from '../../src/library.js';
+import { isPlayableFile } from '../../src/media.js';
 import { canManageJob, canModifyJob, isContributor, formatBytes, formatDate, MetadataDialog, SongActions, TranscriptionDialog, TranscriptionStatus } from './SongActions.jsx';
 
 const POLL_INTERVAL = 5000;
@@ -259,7 +266,17 @@ function JobsPage() {
   const [jobAction, setJobAction] = useState(null);
   const [actionError, setActionError] = useState('');
   const [userFilter, setUserFilter] = useState('mine');
+  const [jobSort, setJobSort] = useState({ key: 'created', direction: 'desc' });
   const [importing, setImporting] = useState(false);
+  const [addingJob, setAddingJob] = useState(null);
+  const [playlistMessage, setPlaylistMessage] = useState('');
+
+  function changeSort(key) {
+    setJobSort((current) => ({
+      key,
+      direction: current.key === key ? (current.direction === 'asc' ? 'desc' : 'asc') : (key === 'created' ? 'desc' : 'asc')
+    }));
+  }
 
   async function runJobAction(job, action) {
     if (!canModifyJob(user, job) || jobAction || job.status === 'queued' || job.status === 'running') return;
@@ -321,6 +338,7 @@ function JobsPage() {
       ? job.initiatedBy?.id === user.id || isContributor(user, job)
       : (job.initiatedBy?.id || 'unknown') === userFilter)
   ));
+  const sortedJobs = sortJobs(filteredJobs, jobSort.key, jobSort.direction);
   const counts = filteredJobs.reduce((result, job) => {
     result[job.status] = (result[job.status] || 0) + 1;
     return result;
@@ -330,6 +348,10 @@ function JobsPage() {
     <AppShell>
       {dialog}
       {importing && <ImportMusic request={request} onClose={() => setImporting(false)} onImported={() => setRevision((current) => current + 1)} />}
+      {addingJob && <JobPlaylistDialog job={addingJob} request={request} onClose={() => setAddingJob(null)} onAdded={(count, title) => {
+        setAddingJob(null);
+        setPlaylistMessage(count ? `Added ${count} ${count === 1 ? 'file' : 'files'} to "${title}".` : `All files are already in "${title}".`);
+      }} />}
       <section className="page-heading">
         <div>
           <p className="eyebrow">Download queue</p>
@@ -382,6 +404,7 @@ function JobsPage() {
           <span className="refresh-note"><RefreshCw size={13} /> Refreshes every 5 seconds</span>
         </div>
         <div className="jobs-filters">
+          <div className="job-filter-control">
           <label htmlFor="job-user-filter"><Users size={16} />Jobs</label>
           <select id="job-user-filter" value={userFilter} onChange={(event) => setUserFilter(event.target.value)}>
             <option value="mine">My jobs (owned and contributing)</option>
@@ -389,9 +412,22 @@ function JobsPage() {
             {userOptions.map(([id, name]) => <option key={id} value={id}>Initiated by {name}</option>)}
             {!['all', 'mine'].includes(userFilter) && !initiators.has(userFilter) && <option value={userFilter}>Selected user (no jobs)</option>}
           </select>
+          </div>
+          <div className="job-sort-controls">
+            <label htmlFor="job-sort">Sort by</label>
+            <select id="job-sort" value={jobSort.key} onChange={(event) => changeSort(event.target.value)}>
+              {jobSortColumns.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+            </select>
+            <button className="job-sort-direction" type="button" onClick={() => changeSort(jobSort.key)}
+              aria-label={`Sort ${jobSort.direction === 'asc' ? 'descending' : 'ascending'}`}
+              title={`${jobSort.direction === 'asc' ? 'Ascending' : 'Descending'}; switch to ${jobSort.direction === 'asc' ? 'descending' : 'ascending'}`}>
+              {jobSort.direction === 'asc' ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
+            </button>
+          </div>
         </div>
         {loadError && <div className="notice error"><CircleAlert size={16} />{loadError}</div>}
         {actionError && <div className="notice error" role="alert"><CircleAlert size={16} />{actionError}</div>}
+        {playlistMessage && <div className="notice success" role="status"><Check size={16} />{playlistMessage}</div>}
         {jobs?.length === 0 && (
           <div className="empty-state"><Disc3 size={34} /><h3>No downloads yet</h3><p>Your first job will appear here.</p></div>
         )}
@@ -401,8 +437,15 @@ function JobsPage() {
         {filteredJobs.length > 0 && (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Playlist Title</th><th>Format</th><th>Status</th><th>Created</th><th>Songs</th><th>Files</th><th>Initiated by</th><th>Actions</th></tr></thead>
-              <tbody>{filteredJobs.map((job) => (
+              <thead><tr>
+                {jobSortColumns.map(({ key, label }) => <th key={key} scope="col" aria-sort={jobSort.key === key ? (jobSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button className="job-sort-button" type="button" onClick={() => changeSort(key)} title={`Sort by ${label}`}>
+                    <span>{label}</span>{jobSort.key !== key ? <ArrowUpDown size={13} /> : jobSort.direction === 'asc' ? <ArrowUp size={13} /> : <ArrowDown size={13} />}
+                  </button>
+                </th>)}
+                <th scope="col">Actions</th>
+              </tr></thead>
+              <tbody>{sortedJobs.map((job) => (
                 <tr key={job.id}>
                   <td><a className="job-name" href={`/job/${job.id}`}><span>{job.isPlaylist ? <ListMusic size={18} /> : <Music2 size={18} />}</span><div><strong>{job.playlistTitle || 'Preparing playlist'}</strong><small>{job.id}</small></div></a></td>
                   <td>{job.isPlaylist ? 'Playlist' : 'Track'}</td>
@@ -413,6 +456,10 @@ function JobsPage() {
                   <td><span className="job-initiator">{job.initiatedBy?.name || 'Unknown'}</span></td>
                   <td><div className="job-row-actions">
                     <a className="icon-link" href={`/job/${job.id}`} aria-label={`Open job ${job.id}`} title="Open job"><ExternalLink size={17} /></a>
+                    {(job.initiatedBy?.id === user.id || isContributor(user, job)) && <button className="icon-link" type="button"
+                      title="Add all files to playlist" aria-label={`Add all files from ${job.playlistTitle || job.id} to playlist`}
+                      disabled={Boolean(jobAction) || !(job.files || []).some(isPlayableFile)}
+                      onClick={() => { setPlaylistMessage(''); setAddingJob(job); }}><ListPlus size={17} /></button>}
                     {canModifyJob(user, job) && <>
                     {!job.source && <button className="icon-link" type="button" title="Rerun job" aria-label={`Rerun job ${job.id}`} disabled={Boolean(jobAction) || job.status === 'queued' || job.status === 'running'} onClick={() => runJobAction(job, 'rerun')}>
                       {jobAction?.id === job.id && jobAction.action === 'rerun' ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}

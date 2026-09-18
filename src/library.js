@@ -41,11 +41,20 @@ export function getPlaylistTracks(library, jobs) {
   const playlists = new Map(library.entries.filter((entry) => entry.type === 'playlist').map((entry) => [entry.id, []]));
   const singles = new Set(library.singleJobIds || []);
   const moves = new Map((library.songMoves || []).map((track) => [songKey(track), track.playlistId]));
+  const additions = new Map();
+  for (const track of library.songAdds || []) {
+    const key = songKey(track);
+    if (!additions.has(key)) additions.set(key, new Set());
+    additions.get(key).add(track.playlistId);
+  }
   for (const job of jobs) {
     for (const name of orderFiles(job.files || [], library.songOrder[job.id])) {
       const track = { jobId: job.id, name };
       const playlistId = moves.get(songKey(track)) || (singles.has(job.id) ? individualSongsId : job.id);
       playlists.get(playlistId)?.push({ ...track, playlistId });
+      for (const addedId of additions.get(songKey(track)) || []) {
+        if (addedId !== playlistId) playlists.get(addedId)?.push({ ...track, playlistId: addedId });
+      }
     }
   }
   for (const [id, tracks] of playlists) {
@@ -94,7 +103,8 @@ export function reconcileLibrary(library, jobs) {
   const files = new Map(jobs.map((job) => [job.id, new Set(job.files || [])]));
   const playlistIds = new Set(entries.filter((entry) => entry.type === 'playlist').map((entry) => entry.id));
   const songMoves = (library.songMoves || []).filter((track) => files.get(track.jobId)?.has(track.name) && playlistIds.has(track.playlistId));
-  const result = { entries, songOrder, singleJobIds, songMoves, playlistSongOrder: {} };
+  const songAdds = (library.songAdds || []).filter((track) => files.get(track.jobId)?.has(track.name) && playlistIds.has(track.playlistId));
+  const result = { entries, songOrder, singleJobIds, songMoves, songAdds, playlistSongOrder: {} };
   const playlistTracks = getPlaylistTracks(result, jobs);
   result.playlistSongOrder = Object.fromEntries(Object.entries(library.playlistSongOrder || {}).filter(([id]) => playlistIds.has(id)).map(([id, order]) => {
     const keys = new Set(playlistTracks.get(id).map(songKey));

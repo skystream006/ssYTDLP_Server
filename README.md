@@ -18,6 +18,23 @@ still offers a normal media-downloading rerun, even with the checkbox selected.
 The API accepts the optional boolean `metadataOnly` on `POST /api/jobs`; it defaults
 to `false`.
 
+## Add job files to a playlist
+
+On **Jobs**, use a job row's **Add all files to playlist** action, choose a
+destination from your personal playlists, then select **Add all files**.
+The action is available for jobs you own or contribute to that have downloaded
+audio or movies. Only files currently available are added; metadata and other
+non-media files are excluded.
+
+Files remain in their source job and original playlist. Existing destination
+entries are skipped, and new entries are appended in the job's saved order.
+Membership is personal, so other users' playlists are unchanged. Deleting a
+source file or losing access to its job also removes it from these playlists.
+
+`POST /api/library/jobs/add` accepts `{version, jobId, playlistId}` and returns
+the updated library and `addedCount`. Changes are atomic; stale versions return
+409 without adding any files.
+
 ## Import media
 
 On **Jobs**, choose **Import media**, or use the **Import media** upload button

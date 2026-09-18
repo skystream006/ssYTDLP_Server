@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, Copy, Disc3, Folder, GripVertical, ListMusic, Mic, Mic2, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Search, Shuffle, SkipBack, SkipForward, Trash2, Volume2, VolumeX, X } from 'lucide-react';
-import { TranscriptionStatus } from './SongActions.jsx';
+import { SongActions, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 
 function timeLabel(seconds) {
@@ -316,13 +316,13 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                 <span><strong>{track.title || track.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</strong><small>{track.artist || (track.name.startsWith('[NoVocals]/') ? 'Instrumental' : track.playlistTitle || 'Original')}</small><TranscriptionStatus transcription={action.transcription} /></span>
               </button>
               <button className="song-playlist" type="button" title={track.playlistTitle} onClick={() => libraryView.onSelect(track.playlistId)}>{track.playlistTitle}</button>
-              <div className="song-order-actions">
+              <SongActions name={track.name} className="song-order-actions">
                 {action.canModify && /\.mp3$/i.test(track.name) && <button className="music-icon-button" type="button" title="Edit song metadata" aria-label={`Edit metadata ${track.name}`} disabled={action.disabled || action.metadataBusy} onClick={() => libraryView.onEditMetadata(track)}><Pencil size={16} /></button>}
                 {!track.name.toLowerCase().startsWith('[novocals]/') && <button className="music-icon-button" type="button" title="Transcribe song" aria-label={`Transcribe ${track.name}`} disabled={action.disabled} onClick={() => libraryView.onTranscribe(track)}><Mic size={16} /></button>}
                 {action.canModify && <button className="music-icon-button" type="button" title="Delete song" aria-label={`Delete song ${track.name}`} disabled={action.disabled} onClick={() => libraryView.onDelete(track)}>{action.deleting ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}</button>}
                 <button className="music-icon-button" type="button" title="Move to playlist" aria-label={`Move ${track.name} to playlist`} disabled={libraryView.saving} onClick={() => libraryView.onMove(track)}><ArrowRightLeft size={15} /></button>
                 <a className="music-icon-button" href={track.downloadUrl} title="Download song" aria-label={`Download ${track.name}`}><ArrowDownToLine size={15} /></a>
-              </div>
+              </SongActions>
             </li>;
           })}</ol>}
           {!libraryView.loading && !visibleTracks.length && <div className="library-empty"><Music2 size={32} /><h3>{search ? 'No matching songs' : 'No songs yet'}</h3>

@@ -7,13 +7,53 @@ import { createServer } from 'vite';
 let server;
 let SongActions;
 let TranscriptionDialog;
+let SongGroups;
+let findNoVocals;
+let queueSongNext;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, TranscriptionDialog } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ SongGroups, findNoVocals, queueSongNext } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+test('karaoke groups NoVocals songs in a collapsed section', () => {
+  const tracks = [{ name: 'Song.mp3' }, { name: '[NoVocals]/Song.mp3' }];
+  const html = renderToStaticMarkup(createElement(SongGroups, { tracks },
+    (group) => createElement('ol', null, group.map((track) => createElement('li', { key: track.name }, track.name)))));
+  assert.match(html, /<ol><li>Song.mp3<\/li><\/ol><details class="no-vocals-section">/);
+  assert.match(html, /<summary>\[NoVocals\]/);
+  assert.ok(!html.includes(' open=""'));
+  assert.match(html, /<li>\[NoVocals\]\/Song.mp3<\/li>/);
+});
+
+test('karaoke matches only an unambiguous version from the same job', () => {
+  const original = { jobId: 'one', name: 'Song.mp3' };
+  const version = { jobId: 'one', name: '[NoVocals]/Song [NoVocals].mp3' };
+  const other = { ...version, jobId: 'two' };
+  assert.equal(findNoVocals(original, [other, version]), version);
+  assert.equal(findNoVocals(original, [other]), null);
+  assert.equal(findNoVocals(version, [version]), null);
+  assert.equal(findNoVocals(original, [version, { ...version, name: '[NoVocals]/Song.wav' }]), null);
+  const named = { jobId: 'one', name: '[NoVocals]/instrumental.wav' };
+  assert.equal(findNoVocals({ ...original, noVocalsName: named.name }, [named, version]), named);
+});
+
+test('karaoke inserts next without duplicates and preserves the rest of the queue', () => {
+  const original = { jobId: 'one', name: 'Song.mp3' };
+  const version = { jobId: 'one', name: '[NoVocals]/Song.mp3' };
+  const other = { jobId: 'two', name: 'Other.mp3' };
+  const queue = [version, original, other];
+  const selected = JSON.stringify([original.jobId, original.name]);
+  assert.deepEqual(queueSongNext(queue, selected, version), [original, version, other]);
+  assert.deepEqual(queue, [version, original, other]);
+  assert.deepEqual(queueSongNext(null, null, version), [version]);
+  assert.deepEqual(queueSongNext([original, other], selected, version), [original, version, other]);
+  const activeQueue = [original, version, other];
+  assert.deepEqual(queueSongNext(activeQueue, JSON.stringify([version.jobId, version.name]), version), activeQueue);
+});
 
 test('transcription dialog exposes upstream options with unchecked defaults', () => {
   const html = renderToStaticMarkup(createElement(TranscriptionDialog, {

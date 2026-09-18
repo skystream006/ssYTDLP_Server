@@ -177,6 +177,11 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal((await call('/api/library', 'PUT', credentials.Owner[0], organized)).status, 409);
   assert.deepEqual((await call('/api/preferences', 'GET', credentials.Owner[0])).body, { theme: 'royal-purple', mode: 'dark' });
   const folderTracks = await call('/api/library/tracks?entryId=folder-mixes', 'GET', credentials.Owner[0]);
+  const karaokeVersion = folderTracks.body.files.find((file) => file.jobId === 'music' && file.name === songName).noVocalsVersion;
+  assert.equal(karaokeVersion.name, `[NoVocals]/${songName}`);
+  assert.equal(karaokeVersion.jobId, 'music');
+  assert.ok(karaokeVersion.streamUrl);
+  assert.equal(folderTracks.body.files.find((file) => file.jobId === 'shared' && file.name === songName).noVocalsVersion, undefined);
   assert.deepEqual(folderTracks.body.files.map((file) => [file.jobId, file.name]), [
     ['shared', songName], ['shared', 'keep.mp3'],
     ['music', 'keep.mp3'], ['music', songName], ['music', `[NoVocals]/${songName}`]

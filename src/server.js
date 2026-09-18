@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setSongMetadata, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { readSongMetadata } from './music.js';
-import { getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey } from './library.js';
+import { findNoVocals, getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey } from './library.js';
 import { getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, setLibrary, setTheme } from './libraryStore.js';
 import { getSystemHealth } from './health.js';
 import { isYouTubeMusicUrl } from './utils.js';
@@ -237,6 +237,7 @@ async function listJobFiles(job, order) {
       files.push({
         ...job.songMetadata?.[fileName],
         name: fileName,
+        noVocalsName: job.transcriptions?.[fileName]?.noVocalsName,
         sizeBytes: stat.size,
         downloadUrl: `/api/jobs/${job.id}/download/${encodeURIComponent(fileName)}`,
         isSong: isSongFile(fileName),
@@ -245,7 +246,10 @@ async function listJobFiles(job, order) {
     }
   }
 
-  return files;
+  return files.map((file) => {
+    const version = findNoVocals(file, files);
+    return version ? { ...file, noVocalsVersion: { ...version, jobId: job.id, playlistTitle: job.playlistTitle } } : file;
+  });
 }
 
 async function resolveRequestedFile(req, songOnly = false) {

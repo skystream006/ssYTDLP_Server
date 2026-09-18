@@ -783,6 +783,7 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   assert.deepEqual(await fs.readFile(path.join(outputDir, songName)), updated);
   assert.deepEqual(await fs.readFile(path.join(outputDir, '[NoVocals]', 'instrumental.wav')), audio);
   assert.deepEqual(manager.getJob(job.id).files, [songName, '[NoVocals]/instrumental.wav']);
+  assert.equal(manager.getJob(job.id).transcriptions[songName].noVocalsName, '[NoVocals]/instrumental.wav');
   const missingSong = new AdmZip();
   missingSong.addFile('other.wav', audio);
   const duplicateSong = new AdmZip();

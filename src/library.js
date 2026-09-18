@@ -20,6 +20,19 @@ export function songKey(track) {
   return JSON.stringify([track.jobId, track.name]);
 }
 
+export function isNoVocals(track) {
+  return track.name.toLowerCase().startsWith('[novocals]/');
+}
+
+export function findNoVocals(track, tracks) {
+  if (!track || isNoVocals(track)) return null;
+  const candidates = tracks.filter((candidate) => candidate.jobId === track.jobId && isNoVocals(candidate));
+  if (track.noVocalsName) return candidates.find((candidate) => candidate.name === track.noVocalsName) || null;
+  const stem = (name) => name.split('/').at(-1).replace(/\.[^.]+$/, '').replace(/(?:\[no[ _-]?vocals\]|[ _-]+no[ _-]?vocals)/gi, '').trim().toLowerCase();
+  const matches = candidates.filter((candidate) => stem(candidate.name) === stem(track.name));
+  return matches.length === 1 ? matches[0] : null;
+}
+
 export function getPlaylistTracks(library, jobs) {
   const playlists = new Map(library.entries.filter((entry) => entry.type === 'playlist').map((entry) => [entry.id, []]));
   const singles = new Set(library.singleJobIds || []);

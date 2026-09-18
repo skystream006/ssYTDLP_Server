@@ -450,6 +450,13 @@ code { font: 400 11px 'DM Mono', monospace; }
 .songs-toolbar h3 { margin: 0; font-size: 12px; }
 .songs-toolbar .queue-search { width: 240px; max-width: 70%; height: 34px; background: transparent; }
 .library-song-list { list-style: none; margin: 0; padding: 0; }
+.no-vocals-section { margin-top: 16px; border-top: 1px solid var(--line); }
+.no-vocals-section > summary { padding: 14px 4px; color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer; }
+.no-vocals-section > summary span { margin-left: 8px; font-weight: 400; }
+.no-vocals-section > summary:focus-visible { outline: 2px solid var(--royal); outline-offset: -2px; }
+.song-title-actions { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.song-title-actions .song-select { flex: 1; }
+.karaoke-button { flex: none; color: var(--green); }
 .library-song-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) minmax(70px, .38fr) 160px; align-items: center; gap: 8px; min-height: 65px; border-bottom: 1px solid var(--line); }
 .library-song-row:hover { background: color-mix(in srgb, var(--royal) 5%, transparent); }
 .library-song-row.is-current { background: color-mix(in srgb, var(--royal) 10%, transparent); }
@@ -643,6 +650,8 @@ code { font: 400 11px 'DM Mono', monospace; }
 .queue-tracks { max-height: 460px; overflow-y: auto; margin-top: 12px; scrollbar-width: thin; }
 .queue-tracks h3 { margin: 18px 0 8px; color: var(--muted); font: 11px 'DM Mono', monospace; }
 .queue-tracks ol, .lyric-timeline ol { list-style: none; margin: 0; padding: 0; }
+.queue-tracks li { display: flex; align-items: center; }
+.queue-tracks .karaoke-button { width: 44px; flex: none; justify-content: center; }
 .queue-tracks button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; padding: 10px; text-align: left; border: 0; border-bottom: 1px solid var(--line); color: var(--ink); background: transparent; cursor: pointer; }
 .queue-tracks button > svg { flex: none; color: var(--muted); }
 .queue-tracks button > span:not(.queue-indicator) { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }

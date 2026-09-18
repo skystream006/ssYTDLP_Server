@@ -1,7 +1,9 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, Copy, Disc3, Folder, GripVertical, ListMusic, Mic, Mic2, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Search, Shuffle, SkipBack, SkipForward, Trash2, Volume2, VolumeX, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, Copy, Disc3, Folder, GripVertical, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Search, Shuffle, SkipBack, SkipForward, Trash2, Volume2, VolumeX, X } from 'lucide-react';
 import { SongActions, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
+import { findNoVocals, isNoVocals } from '../../src/library.js';
+export { findNoVocals, isNoVocals } from '../../src/library.js';
 
 function timeLabel(seconds) {
   const total = Math.max(0, Math.floor(seconds || 0));
@@ -9,6 +11,33 @@ function timeLabel(seconds) {
 }
 
 const PlaybackContext = createContext(null);
+
+export function queueSongNext(songs, selected, track) {
+  const key = (item) => JSON.stringify([item.jobId, item.name]);
+  if (selected === key(track)) return songs || [track];
+  const queue = (songs || []).filter((item) => key(item) !== key(track));
+  const index = queue.findIndex((item) => key(item) === selected);
+  queue.splice(index + 1, 0, track);
+  return queue;
+}
+
+export function SongGroups({ tracks, children }) {
+  const originals = tracks.filter((track) => !isNoVocals(track));
+  const noVocals = tracks.filter(isNoVocals);
+  return <>
+    {children(originals)}
+    {noVocals.length > 0 && <details className="no-vocals-section">
+      <summary>[NoVocals] <span>{noVocals.length}</span></summary>
+      {children(noVocals)}
+    </details>}
+  </>;
+}
+
+function KaraokeButton({ track, tracks, onPlay }) {
+  const version = track && !isNoVocals(track) && (track.noVocalsVersion || findNoVocals(track, tracks || []));
+  return version ? <button className="music-icon-button karaoke-button" type="button" title="Play karaoke (NoVocals)"
+    aria-label={`Play karaoke version of ${track.title || track.name}`} onClick={() => onPlay(version)}><MicVocal size={18} /></button> : null;
+}
 
 export function usePlayback() { return useContext(PlaybackContext); }
 
@@ -94,6 +123,11 @@ export function PlaybackProvider({ children, request }) {
     } else if (ended) setPlaying(false);
   }
 
+  function playKaraoke(track) {
+    if (selected === songKey(track) && audioRef.current) audioRef.current.currentTime = 0;
+    selectSong(track, queueSongNext(songs, selected, track), Symbol('karaoke'));
+  }
+
   function previousSong() {
     if (audioRef.current?.currentTime > 3 || index === 0) audioRef.current.currentTime = 0;
     else if (index > 0) selectSong(songs[index - 1]);
@@ -145,7 +179,7 @@ export function PlaybackProvider({ children, request }) {
   return <PlaybackContext.Provider value={{ songs, setSongs, selected, setSelected, metadata, lyricError, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeat, setRepeat, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
-    selectSong, nextSong, previousSong, togglePlayback, removeSong, removeJob, updateMetadata }}>
+    selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, removeJob, updateMetadata }}>
     {children}{audio}<MusicPlayer request={request} dockOnly />
   </PlaybackContext.Provider>;
 }
@@ -154,7 +188,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const { songs, setSongs, selected, setSelected, metadata, lyricError, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeat, setRepeat, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
-    selectSong, nextSong, previousSong, togglePlayback, removeSong } = usePlayback();
+    selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong } = usePlayback();
   const [job, setJob] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
@@ -285,7 +319,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
             <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search songs" placeholder="Search songs" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
           </div>
           {libraryView.loading && <div className="loading" role="status"><RefreshCw className="spin" size={20} />Loading songs</div>}
-          {!libraryView.loading && <ol className="library-song-list" aria-label="Songs">{visibleTracks.map((track) => {
+          {!libraryView.loading && <SongGroups key={libraryView.selectedId || 'all'} tracks={visibleTracks}>{(group) => <ol className="library-song-list" aria-label={group.length && isNoVocals(group[0]) ? 'NoVocals songs' : 'Songs'}>{group.map((track) => {
             const playlistTracks = tracks.filter((item) => item.playlistId === track.playlistId);
             const trackIndex = playlistTracks.findIndex((item) => songKey(item) === songKey(track));
             const current = songKey(track) === selected;
@@ -310,11 +344,11 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                   event.dataTransfer.effectAllowed = 'move';
                   event.dataTransfer.setDragImage(row, 24, 24);
                 }}><GripVertical size={16} /></button>
-              <button className="song-select" type="button" title={track.name} aria-label={`Play ${track.name}`} aria-current={current ? 'true' : undefined}
+              <div className="song-title-actions"><button className="song-select" type="button" title={track.name} aria-label={`Play ${track.name}`} aria-current={current ? 'true' : undefined}
                 onClick={() => selectSong(track, tracks, libraryView.selectedId)}>
                 <span className="song-number">{current && playing ? <Music2 size={15} /> : trackIndex + 1}</span>
                 <span><strong>{track.title || track.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</strong><small>{track.artist || (track.name.startsWith('[NoVocals]/') ? 'Instrumental' : track.playlistTitle || 'Original')}</small><TranscriptionStatus transcription={action.transcription} /></span>
-              </button>
+              </button><KaraokeButton track={track} tracks={tracks} onPlay={playKaraoke} /></div>
               <button className="song-playlist" type="button" title={track.playlistTitle} onClick={() => libraryView.onSelect(track.playlistId)}>{track.playlistTitle}</button>
               <SongActions name={track.name} className="song-order-actions">
                 {action.canModify && /\.mp3$/i.test(track.name) && <button className="music-icon-button" type="button" title="Edit song metadata" aria-label={`Edit metadata ${track.name}`} disabled={action.disabled || action.metadataBusy} onClick={() => libraryView.onEditMetadata(track)}><Pencil size={16} /></button>}
@@ -324,7 +358,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                 <a className="music-icon-button" href={track.downloadUrl} title="Download song" aria-label={`Download ${track.name}`}><ArrowDownToLine size={15} /></a>
               </SongActions>
             </li>;
-          })}</ol>}
+          })}</ol>}</SongGroups>}
           {!libraryView.loading && !visibleTracks.length && <div className="library-empty"><Music2 size={32} /><h3>{search ? 'No matching songs' : 'No songs yet'}</h3>
             {!search && <button className="secondary-button compact-button" type="button" onClick={libraryView.onAdd}><Plus size={16} />Add Playlist</button>}</div>}
         </section>
@@ -341,7 +375,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
       </div>}
       <footer className="player-dock" aria-label="Music playback" ref={dockRef}>
         <div className="dock-track"><div className={`dock-artwork ${playing ? 'is-playing' : ''}`}>{metadata?.artwork ? <img src={metadata.artwork} alt="Album cover" /> : <Disc3 size={30} />}</div>
-          <div><strong>{metadata?.title || song?.name.split('/').at(-1).replace(/\.[^.]+$/, '') || 'Nothing playing'}</strong><small>{metadata?.artist || song?.playlistTitle || 'ssMusic Player'}</small></div></div>
+          <div><strong>{metadata?.title || song?.name.split('/').at(-1).replace(/\.[^.]+$/, '') || 'Nothing playing'}</strong><small>{metadata?.artist || song?.playlistTitle || 'ssMusic Player'}</small></div><KaraokeButton track={song} tracks={songs} onPlay={playKaraoke} /></div>
         <div className="dock-controls"><div className="dock-transport">
           <button className="music-icon-button" type="button" title="Shuffle" aria-label="Shuffle" aria-pressed={shuffle} onClick={() => setShuffle(!shuffle)}><Shuffle size={17} /></button>
           <button className="music-icon-button" type="button" title="Previous song" aria-label="Previous song" disabled={!song} onClick={previousSong}><SkipBack size={20} /></button>
@@ -381,6 +415,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
             {metadata?.artist && <p>{metadata.artist}{metadata.album ? ` / ${metadata.album}` : ''}</p>}
           </div><span className="track-position">{index + 1} / {songs.length}</span></div>
           <div className="transport-actions">
+            <KaraokeButton track={song} tracks={songs} onPlay={playKaraoke} />
             <button type="button" title="Previous song" aria-label="Previous song" onClick={previousSong}><SkipBack size={19} /></button>
             <button type="button" title="Next song" aria-label="Next song" disabled={!repeat && !shuffle && index === songs.length - 1} onClick={() => nextSong()}><SkipForward size={19} /></button>
             <button type="button" title="Shuffle" aria-label="Shuffle" aria-pressed={shuffle} onClick={() => setShuffle(!shuffle)}><Shuffle size={18} /></button>
@@ -394,10 +429,10 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <div className="section-title"><div><ListMusic size={18} /><h2>Queue</h2></div></div>
           <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search songs" placeholder="Search songs" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
           <div className="queue-tracks">
-            <ol>{songs.filter((track) => track.name.toLowerCase().includes(search.toLowerCase())).map((track) => <li key={track.name}><button type="button" aria-current={songKey(track) === selected ? 'true' : undefined} onClick={() => selectSong(track)}>
+            <SongGroups key={id} tracks={songs.filter((track) => track.name.toLowerCase().includes(search.toLowerCase()))}>{(group) => <ol>{group.map((track) => <li key={songKey(track)}><button type="button" aria-current={songKey(track) === selected ? 'true' : undefined} onClick={() => selectSong(track)}>
                   <Music2 size={17} /><span>{track.name.split('/').at(-1)}</span>
                   {songKey(track) === selected && <span className="queue-indicator" aria-label={playing ? 'Playing' : 'Selected'} />}
-                </button></li>)}</ol>
+                </button><KaraokeButton track={track} tracks={songs} onPlay={playKaraoke} /></li>)}</ol>}</SongGroups>
             {!songs.some((track) => track.name.toLowerCase().includes(search.toLowerCase())) && <p className="music-empty">No matching songs.</p>}
           </div>
         </section>

@@ -574,7 +574,7 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
   validateTranscriptionOptions(options);
   const queue = existingQueue || { job, files: new Set(), tail: Promise.resolve() };
   const requestedAt = new Date().toISOString();
-  job.transcriptions = { ...job.transcriptions, [fileName]: { status: 'sent', requestedAt } };
+  job.transcriptions = { ...job.transcriptions, [fileName]: { ...job.transcriptions?.[fileName], status: 'sent', requestedAt } };
   job.updatedAt = requestedAt;
   writeJob(database, { ...getJob(id), transcriptions: job.transcriptions, updatedAt: requestedAt });
   queue.files.add(fileName);
@@ -602,8 +602,10 @@ async function executeTranscription(job, fileName, options, requestedAt) {
     }
     const results = await requestTranscription(filePath, options);
     await mutateJobFiles(job.id, () => replaceTranscribedFiles(job, fileName, results, async (updatedJob) => {
+      const noVocals = results.find((result) => !result.original);
       updatedJob.transcriptions[fileName] = {
-        status: 'transcribed', requestedAt, completedAt: new Date().toISOString()
+        status: 'transcribed', requestedAt, completedAt: new Date().toISOString(),
+        noVocalsName: noVocals ? `[NoVocals]/${noVocals.name}` : updatedJob.transcriptions[fileName]?.noVocalsName
       };
       await persistJob(updatedJob);
     }));
@@ -611,7 +613,8 @@ async function executeTranscription(job, fileName, options, requestedAt) {
   } catch (error) {
     job.updatedAt = new Date().toISOString();
     job.transcriptions[fileName] = {
-      status: 'failed', requestedAt, completedAt: job.updatedAt, error: error.message
+      status: 'failed', requestedAt, completedAt: job.updatedAt, error: error.message,
+      noVocalsName: job.transcriptions[fileName]?.noVocalsName
     };
     await persistJob(job);
     throw error;

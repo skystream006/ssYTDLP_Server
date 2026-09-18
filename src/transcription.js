@@ -43,12 +43,20 @@ async function checkAudio(data, name) {
 
 export function validateTranscriptionOptions(options = {}) {
   const fields = validateLyrics(options);
+  for (const key of ['NoVocals', 'VietLyricsFallback']) {
+    if (options[key] === undefined) continue;
+    if (typeof options[key] !== 'boolean') {
+      throw failure(`${key} must be a boolean`, 400);
+    }
+    fields[key] = options[key];
+  }
   if (options.language !== undefined) {
     if (!transcriptionLanguages.some(([code]) => code === options.language)) {
       throw failure('Select a valid transcription language code', 400);
     }
     fields.language = options.language;
   }
+  if (fields.VietLyricsFallback) fields.language = 'vi';
   return fields;
 }
 

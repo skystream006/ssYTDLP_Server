@@ -639,6 +639,60 @@ test('legacy folders shared with another owner require an administrator to modif
   await assert.rejects(fs.access(path.join(folder, 'song.mp3')));
 });
 
+test('transcription options validate output flags and force Vietnamese for fallback', async () => {
+  const { validateTranscriptionOptions } = await import('../src/transcription.js');
+  assert.deepEqual(validateTranscriptionOptions(), {});
+  assert.deepEqual(validateTranscriptionOptions({ NoVocals: false, VietLyricsFallback: false }), {
+    NoVocals: false, VietLyricsFallback: false
+  });
+  assert.deepEqual(validateTranscriptionOptions({ NoVocals: true, VietLyricsFallback: true, language: 'en' }), {
+    NoVocals: true, VietLyricsFallback: true, language: 'vi'
+  });
+  assert.deepEqual(validateTranscriptionOptions({ VietLyricsFallback: true }), { VietLyricsFallback: true, language: 'vi' });
+  assert.deepEqual(validateTranscriptionOptions({ VietLyricsFallback: false, language: 'ja' }), {
+    VietLyricsFallback: false, language: 'ja'
+  });
+  for (const key of ['NoVocals', 'VietLyricsFallback']) {
+    for (const value of ['true', 'false', 0, 1, null, {}, []]) {
+      assert.throws(() => validateTranscriptionOptions({ [key]: value }), { statusCode: 400 });
+    }
+  }
+});
+
+test('transcription options are forwarded as multipart fields without losing false values', async (testContext) => {
+  const { requestTranscription } = await import('../src/transcription.js');
+  const filePath = path.join(path.dirname(process.env.DATABASE_PATH), 'options.wav');
+  await fs.writeFile(filePath, 'test upload');
+  const previousEndpoint = process.env.TRANSCRIPTION_ENDPOINT;
+  process.env.TRANSCRIPTION_ENDPOINT = 'http://transcriber.test/api/transcribe';
+  testContext.after(() => {
+    if (previousEndpoint === undefined) delete process.env.TRANSCRIPTION_ENDPOINT;
+    else process.env.TRANSCRIPTION_ENDPOINT = previousEndpoint;
+  });
+  let payload;
+  testContext.mock.method(globalThis, 'fetch', async (endpoint, request) => {
+    assert.equal(endpoint, process.env.TRANSCRIPTION_ENDPOINT);
+    assert.equal(request.method, 'POST');
+    payload = await new Response(request.body).formData();
+    return new Response(null, { status: 503 });
+  });
+  for (const enabled of [true, false]) {
+    await assert.rejects(requestTranscription(filePath, {
+      NoVocals: enabled, VietLyricsFallback: enabled, language: 'en', lyrics: ' Words ', lyrics_mode: 'align'
+    }), /HTTP 503/);
+    assert.equal(payload.get('NoVocals'), String(enabled));
+    assert.equal(payload.get('VietLyricsFallback'), String(enabled));
+    assert.equal(payload.get('language'), enabled ? 'vi' : 'en');
+    assert.equal(payload.get('lyrics'), 'Words');
+    assert.equal(payload.get('lyrics_mode'), 'align');
+    assert.equal(payload.get('file').name, 'options.wav');
+  }
+  await assert.rejects(requestTranscription(filePath), /HTTP 503/);
+  assert.equal(payload.has('NoVocals'), false);
+  assert.equal(payload.has('VietLyricsFallback'), false);
+  assert.equal(payload.has('language'), false);
+});
+
 test('transcription sends multipart lyrics, replaces audio and persists NoVocals safely', async (testContext) => {
   const directory = path.dirname(process.env.DATABASE_PATH);
   const outputDir = path.join(directory, 'songs');

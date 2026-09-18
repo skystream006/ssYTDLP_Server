@@ -458,6 +458,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     const siblings = entries.filter((entry) => entry.parentId === parentId);
     return <ul className="library-tree">{siblings.filter((entry) => reordering || !search || matches(entry)).map((entry) => {
       const folder = entry.type === 'folder';
+      const playlist = jobMap.get(entry.id);
       const open = !collapsed.has(entry.id) || Boolean(search);
       const count = folder ? getPlaylistIds(entries, entry.id).length : jobMap.get(entry.id)?.songCount || 0;
       const dropPosition = (event) => {
@@ -497,6 +498,9 @@ export default function MusicLibrary({ user, request, confirm }) {
           <button className="library-entry-select" type="button" aria-current={selectedId === entry.id ? 'true' : undefined} title={entryTitle(entry)} onClick={() => { if (!reordering) selectEntry(entry.id); }}>
             {folder ? open ? <FolderOpen size={18} /> : <Folder size={18} /> : <ListMusic size={18} />}<span>{entryTitle(entry)}</span>{entry.protected && <LockKeyhole size={12} aria-label="Permanent playlist" />}<small>{count}</small>
           </button>
+          {!reordering && !folder && !entry.protected && canManageJob(user, playlist) && <button
+            className="music-icon-button library-entry-rename" type="button" title={`Rename ${entryTitle(entry)}`} aria-label={`Rename playlist ${entryTitle(entry)}`}
+            disabled={saving || ['queued', 'running'].includes(playlist.status)} onClick={() => setRenamingPlaylist(playlist)}><Pencil size={16} /></button>}
           {reordering && <button className="music-icon-button library-entry-drag" type="button" title={`Drag to reorder ${entryTitle(entry)}`}
             aria-label={`Reorder ${entryTitle(entry)}`} aria-keyshortcuts="ArrowUp ArrowDown" draggable={!saving} disabled={saving}
             onKeyDown={(event) => {

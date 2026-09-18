@@ -333,8 +333,10 @@ The job list, details, music library, and ZIP name use this title.
 Existing jobs receive readable titles derived from their folder or song names;
 their output folders and download archives are not renamed or moved.
 Owners and administrators can use the pencil beside **Playlist Title** in job
-details to rename an idle job, or select a playlist on the music page and use
-**Rename playlist** (the pencil in the sidebar). Save the new name or cancel
+details to rename an idle job, or use the pencil beside a playlist in the Music
+sidebar without selecting it. Row pencils are available outside reorder mode;
+the selected playlist's details also retain **Rename playlist**. On mobile,
+renaming keeps the Playlists view open. Save the new name or cancel
 to leave it unchanged. Contributors cannot rename playlists, and the permanent
 **Individual Songs** playlist cannot be renamed. Custom titles
 survive reruns and never rename output directories. The API is
@@ -512,6 +514,11 @@ Optionally choose a **Language** from the dropdown. **Auto-detect** leaves the
 language unspecified. A selection sends its short code as `language`, for example
 `"language": "vi"` for Vietnamese. Language selection works with or without lyrics;
 actual language support depends on the transcription service's selected backend.
+Enable **No Vocals** to request the transcribed song plus a no-vocals MP3; the
+service enables vocal separation for this request. **Viet Lyrics Fallback** enables
+the fallback pass when the service's opening retry triggers and automatically
+selects Vietnamese, locking the language dropdown while enabled. Both options
+start unchecked and explicitly send their enabled or disabled state.
 Optionally enable **Add lyrics**, enter the lyrics, and select exactly one mode:
 
 - **Prompt**: biases recognition toward known words.
@@ -545,8 +552,12 @@ song's latest status; songs without a tracked request have no status indicator.
 `POST /api/jobs/:id/files/:name/transcribe` accepts JSON `{}` without lyrics or
 `{ "lyrics": "Known lyric lines", "lyrics_mode": "align" }` with lyrics. URL-encode
 the complete filename, including `[NoVocals]/` for accompaniment tracks. The server
-forwards a multipart POST containing `file`, plus `lyrics`, `lyrics_mode`, and
-`language` only when provided. Language codes must match an option in the dropdown.
+forwards a multipart POST containing `file`, plus `lyrics`, `lyrics_mode`,
+`language`, `NoVocals`, and `VietLyricsFallback` when provided. The two flags must
+be JSON booleans and are forwarded as `true` or `false`. Omitting `NoVocals` uses
+the service's default (`false`); omitting `VietLyricsFallback` retains its saved
+endpoint setting. Enabling `VietLyricsFallback` forces `language` to `vi`.
+Language codes must match an option in the dropdown.
 Lyrics must be nonempty and at most 100,000 characters; the existing
 128 KB JSON request limit also applies.
 

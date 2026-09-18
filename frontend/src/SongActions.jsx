@@ -181,11 +181,19 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
   </dialog>;
 }
 
+function TranscriptionHelp({ id, label, children }) {
+  return <span className="info-helper"><button type="button" aria-label={`About ${label}`} aria-describedby={id}><Info size={16} /></button>
+    <span role="tooltip" id={id}>{children}</span>
+  </span>;
+}
+
 export function TranscriptionDialog({ file, onClose, onSubmit }) {
   const dialogRef = useRef(null);
   const titleId = useId();
   const [addLyrics, setAddLyrics] = useState(false);
   const [language, setLanguage] = useState('');
+  const [noVocals, setNoVocals] = useState(false);
+  const [vietLyricsFallback, setVietLyricsFallback] = useState(false);
   const [lyrics, setLyrics] = useState('');
   const [mode, setMode] = useState('prompt');
   const [submitting, setSubmitting] = useState(false);
@@ -210,6 +218,8 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
     if (submitting) return;
     setSubmitting(true);
     onSubmit(file, {
+      NoVocals: noVocals,
+      VietLyricsFallback: vietLyricsFallback,
       ...(addLyrics ? { lyrics: lyrics.trim(), lyrics_mode: mode } : {}),
       ...(language ? { language } : {})
     });
@@ -221,20 +231,35 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
       <h2 id={titleId}>Transcribe song</h2>
       <p className="transcription-file"><FileAudio size={22} /><span>{file.name}<small>{formatBytes(file.sizeBytes)}</small></span></p>
       <fieldset disabled={submitting} className="transcription-fields">
-        <label className="transcription-language" htmlFor={`${titleId}-language`}>Language (optional)
-          <select id={`${titleId}-language`} value={language} onChange={(event) => setLanguage(event.target.value)}>
+        <div className="transcription-language">
+          <div className="transcription-option"><label htmlFor={`${titleId}-language`}>Language (optional)</label>
+            <TranscriptionHelp id={`${titleId}-language-help`} label="Language">Choose the song's language or use Auto-detect. Viet Lyrics Fallback selects Vietnamese and locks this setting while enabled.</TranscriptionHelp>
+          </div>
+          <select id={`${titleId}-language`} aria-describedby={`${titleId}-language-help`} value={language} disabled={vietLyricsFallback} onChange={(event) => setLanguage(event.target.value)}>
             <option value="">Auto-detect</option>
             {transcriptionLanguages.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
           </select>
-        </label>
-        <label className="lyrics-toggle"><input type="checkbox" checked={addLyrics} onChange={(event) => setAddLyrics(event.target.checked)} />Add lyrics</label>
+        </div>
+        <div className="transcription-option">
+          <label className="lyrics-toggle"><input type="checkbox" aria-describedby={`${titleId}-no-vocals-help`} checked={noVocals} onChange={(event) => setNoVocals(event.target.checked)} />No Vocals</label>
+          <TranscriptionHelp id={`${titleId}-no-vocals-help`} label="No Vocals">Enable vocal separation and save a no-vocals MP3 alongside the transcribed song in the [NoVocals] folder.</TranscriptionHelp>
+        </div>
+        <div className="transcription-option">
+          <label className="lyrics-toggle"><input type="checkbox" aria-describedby={`${titleId}-fallback-help`} checked={vietLyricsFallback} onChange={(event) => {
+            setVietLyricsFallback(event.target.checked);
+            if (event.target.checked) setLanguage('vi');
+          }} />Viet Lyrics Fallback</label>
+          <TranscriptionHelp id={`${titleId}-fallback-help`} label="Viet Lyrics Fallback">Enable the Viet Lyrics fallback pass when the service's opening retry triggers. Automatically selects Vietnamese. Unchecking disables fallback for this request.</TranscriptionHelp>
+        </div>
+        <div className="transcription-option">
+          <label className="lyrics-toggle"><input type="checkbox" aria-describedby={`${titleId}-lyrics-help`} checked={addLyrics} onChange={(event) => setAddLyrics(event.target.checked)} />Add lyrics</label>
+          <TranscriptionHelp id={`${titleId}-lyrics-help`} label="Add lyrics">Provide known lyrics to guide recognition, align lyric lines, or correct recognized text using the selected lyrics mode.</TranscriptionHelp>
+        </div>
         {addLyrics && <>
           <fieldset className="lyrics-mode-options"><legend>Lyrics mode</legend>
             {modes.map(([value, label, description]) => <div className="lyrics-mode-option" key={value}>
               <label><input type="radio" name="lyrics-mode" value={value} checked={mode === value} required onChange={() => setMode(value)} />{label}</label>
-              <span className="info-helper"><button type="button" aria-label={`About ${label}`} aria-describedby={`${titleId}-${value}`}><Info size={16} /></button>
-                <span role="tooltip" id={`${titleId}-${value}`}>{description}</span>
-              </span>
+              <TranscriptionHelp id={`${titleId}-${value}`} label={label}>{description}</TranscriptionHelp>
             </div>)}
           </fieldset>
           <label className="lyrics-input-label" htmlFor={`${titleId}-lyrics`}>Lyrics</label>

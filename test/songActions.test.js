@@ -6,13 +6,42 @@ import { createServer } from 'vite';
 
 let server;
 let SongActions;
+let TranscriptionDialog;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ SongActions } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ SongActions, TranscriptionDialog } = await server.ssrLoadModule('/src/SongActions.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+test('transcription dialog exposes upstream options with unchecked defaults', () => {
+  const html = renderToStaticMarkup(createElement(TranscriptionDialog, {
+    file: { name: 'Song.mp3', sizeBytes: 1024 }, onClose() {}, onSubmit() {}
+  }));
+  for (const label of ['No Vocals', 'Viet Lyrics Fallback', 'Add lyrics']) {
+    assert.ok(html.includes(`/>${label}</label>`));
+  }
+  assert.equal((html.match(/type="checkbox"/g) || []).length, 3);
+  assert.ok(!html.includes('checked=""'));
+  assert.ok(html.includes('<option value="" selected="">Auto-detect</option>'));
+  assert.ok(html.includes('<option value="vi">Vietnamese</option>'));
+});
+
+test('transcription options have linked help buttons and descriptions', () => {
+  const html = renderToStaticMarkup(createElement(TranscriptionDialog, {
+    file: { name: 'Song.mp3', sizeBytes: 1024 }, onClose() {}, onSubmit() {}
+  }));
+  for (const label of ['Language', 'No Vocals', 'Viet Lyrics Fallback', 'Add lyrics']) {
+    const descriptionId = html.match(new RegExp(`type="button" aria-label="About ${label}" aria-describedby="([^"]+)"`))?.[1];
+    assert.ok(descriptionId, `Missing help button for ${label}`);
+    assert.ok(html.includes(`role="tooltip" id="${descriptionId}">`));
+    assert.equal(html.split(`aria-describedby="${descriptionId}"`).length - 1, 2);
+  }
+  assert.match(html, /opening retry triggers/);
+  assert.match(html, /Automatically selects Vietnamese/);
+  assert.match(html, /\[NoVocals\] folder/);
+});
 
 function renderActions(canModify = true) {
   return renderToStaticMarkup(createElement(SongActions, { name: 'Song.mp3', className: 'song-order-actions' },

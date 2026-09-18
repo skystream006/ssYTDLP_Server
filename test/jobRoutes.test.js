@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import NodeID3 from 'node-id3';
+import AdmZip from 'adm-zip';
 import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
 
 test('job HTTP mutations enforce owner, contributor and admin access for sessions and PATs', { timeout: 30_000 }, async (context) => {
@@ -104,11 +105,14 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const call = (route, method = 'GET', headers = {}, body) => new Promise((resolve, reject) => {
     const request = https.request({ hostname: '127.0.0.1', port: httpsPort, path: route,
       method, headers: { ...headers, 'Content-Type': 'application/json' }, rejectUnauthorized: false }, (response) => {
-      let text = '';
-      response.setEncoding('utf8');
-      response.on('data', (chunk) => { text += chunk; });
-      response.on('end', () => resolve({ status: response.statusCode, text,
-        body: response.headers['content-type']?.includes('application/json') ? JSON.parse(text) : null }));
+      const chunks = [];
+      response.on('data', (chunk) => { chunks.push(chunk); });
+      response.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        const text = buffer.toString('utf8');
+        resolve({ status: response.statusCode, text, buffer, headers: response.headers,
+          body: response.headers['content-type']?.includes('application/json') ? JSON.parse(text) : null });
+      });
     });
     request.on('error', reject);
     request.end(body === undefined ? undefined : JSON.stringify(body));
@@ -125,7 +129,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   for (const route of ['/', '/app-login', '/job', '/job/music', '/job/music/player']) {
     assert.equal((await call(route)).status, 200);
   }
-  for (const route of ['/api/library', '/api/library/tracks', '/api/preferences']) {
+  for (const route of ['/api/library', '/api/library/tracks', '/api/library/export?format=android', '/api/preferences']) {
     assert.equal((await call(route)).status, 401);
   }
   for (const route of ['/api/jobs', '/api/jobs/music/files', '/api/library', '/api/library/tracks', '/api/preferences']) {
@@ -173,6 +177,36 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   };
   const savedLibrary = await call('/api/library', 'PUT', credentials.Owner[1], organized);
   assert.equal(savedLibrary.status, 200);
+  assert.equal((await call('/api/library/export?format=invalid', 'GET', credentials.Owner[0])).status, 400);
+  assert.equal((await call('/api/library/export?format=itunes', 'GET', credentials.Owner[0])).status, 400);
+  for (const headers of credentials.Owner) {
+    const exported = await call('/api/library/export?format=android', 'GET', headers);
+    assert.equal(exported.status, 200);
+    assert.match(exported.headers['content-type'], /application\/zip/);
+    assert.match(exported.headers['content-disposition'], /ssMusic-android\.zip/);
+    assert.equal(exported.headers['cache-control'], 'no-store');
+    const zip = new AdmZip(exported.buffer);
+    assert.equal(zip.getEntries().filter((entry) => entry.entryName.startsWith('Music/')).length, 7);
+    const playlist = zip.readAsText('2-music.m3u8');
+    const paths = playlist.split('\n').filter((line) => line && !line.startsWith('#'));
+    assert.equal(paths.length, 3);
+    assert.equal(zip.readAsText(paths[0]), 'keep');
+    assert.equal(zip.readAsText(paths[1]), 'song');
+    assert.deepEqual(zip.readFile(paths[2]), taggedAudio);
+    assert.ok(zip.getEntry('IMPORT.txt'));
+  }
+  for (const name of ['Other', 'Admin']) {
+    const exported = await call('/api/library/export?format=android', 'GET', credentials[name][0]);
+    assert.equal(exported.status, 200);
+    assert.deepEqual(new AdmZip(exported.buffer).getEntries().map((entry) => entry.entryName), ['IMPORT.txt']);
+  }
+  const itunes = await call('/api/library/export?' + new URLSearchParams({
+    format: 'itunes', destination: 'C:\\Music\\My Library'
+  }), 'GET', credentials.Owner[1]);
+  assert.equal(itunes.status, 200);
+  const itunesZip = new AdmZip(itunes.buffer);
+  assert.match(itunesZip.readAsText('Library.xml'), /file:\/\/\/C:\/Music\/My%20Library\/Music\//);
+  assert.match(itunesZip.readAsText('Library.xml'), /<key>Parent Persistent ID<\/key>/);
   assert.deepEqual((await call('/api/library', 'GET', credentials.Owner[0])).body.entries, organized.entries);
   assert.equal((await call('/api/library', 'PUT', credentials.Owner[0], organized)).status, 409);
   assert.deepEqual((await call('/api/preferences', 'GET', credentials.Owner[0])).body, { theme: 'royal-purple', mode: 'dark' });

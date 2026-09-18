@@ -10,14 +10,76 @@ let TranscriptionDialog;
 let SongGroups;
 let findNoVocals;
 let queueSongNext;
+let ExportLibraryDialog;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, TranscriptionDialog } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ SongGroups, findNoVocals, queueSongNext } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+function renderExportDialog() {
+  return renderToStaticMarkup(createElement(ExportLibraryDialog, { onClose() {} }));
+}
+
+test('library export uses a native GET download in a separate tab', () => {
+  const html = renderExportDialog();
+  const form = html.match(/<form[^>]*>/)[0];
+  for (const attribute of ['action="/api/library/export"', 'method="get"', 'target="_blank"', 'rel="noopener"']) {
+    assert.ok(form.includes(attribute));
+  }
+  assert.match(html, /<select [^>]*name="format"/);
+  assert.match(html, /<option value="itunes" selected="">iTunes XML<\/option>/);
+  assert.match(html, /<option value="android">Android M3U8 \(compatible players\)<\/option>/);
+  assert.match(html, /type="submit"[^>]*>.*Download ZIP<\/button>/);
+  assert.match(html, /Export errors open in a separate tab/);
+});
+
+test('library export dialog labels its controls and download instructions', () => {
+  const html = renderExportDialog();
+  const heading = html.match(/<dialog[^>]*aria-labelledby="([^"]+)"/)?.[1];
+  assert.ok(heading);
+  assert.ok(html.includes(`<h2 id="${heading}">Export library</h2>`));
+  for (const name of ['format', 'destination']) {
+    const control = html.match(new RegExp(`<(?:input|select)[^>]*name="${name}"[^>]*>`))?.[0];
+    assert.ok(control);
+    const id = control.match(/id="([^"]+)"/)[1];
+    const description = control.match(/aria-describedby="([^"]+)"/)[1];
+    assert.ok(html.includes(`<label for="${id}">`));
+    assert.ok(html.includes(`id="${description}"`));
+  }
+  assert.match(html, /aria-label="Close export library"/);
+  assert.match(html, /type="button">Cancel<\/button>/);
+});
+
+test('iTunes destination requires an absolute local path rather than a URL or UNC path', () => {
+  const html = renderExportDialog();
+  const input = html.match(/<input[^>]*name="destination"[^>]*>/)[0];
+  assert.match(input, /required=""/);
+  assert.doesNotMatch(input, /disabled=/);
+  const pattern = new RegExp(`^(?:${input.match(/pattern="([^"]+)"/)[1]})$`, 'v');
+  for (const path of ['C:\\Users\\Name\\Music\\Export', 'D:/Music/Export', '/Users/Name/Music/Export', '/Users/Nguyễn/Music & more']) {
+    assert.ok(pattern.test(path), path);
+  }
+  for (const path of ['', 'Music/Export', 'C:Music', 'file:///Users/Name/Music', '\\\\server\\share', '//server/share', '/Users/Name\nMusic']) {
+    assert.ok(!pattern.test(path), path);
+  }
+});
+
+test('library export explains extraction layout and format compatibility honestly', () => {
+  const html = renderExportDialog();
+  assert.match(html, /Song order within each playlist is retained/);
+  assert.match(html, /Music\/<\/strong> and <strong>Library.xml<\/strong> are at its root/);
+  assert.match(html, /add the Music folder to your app library first/);
+  assert.match(html, /File &gt; Library &gt; Import Playlist/);
+  assert.match(html, /correct file URLs in Library.xml/);
+  assert.match(html, /root <strong>.m3u8<\/strong> playlists beside the <strong>Music\/<\/strong> folder/);
+  assert.match(html, /UTF-8 M3U8 with relative paths/);
+  assert.match(html, /does not import into a universal Android system music database/);
+});
 
 test('karaoke groups NoVocals songs in a collapsed section', () => {
   const tracks = [{ name: 'Song.mp3' }, { name: '[NoVocals]/Song.mp3' }];

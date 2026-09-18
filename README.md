@@ -3,6 +3,40 @@
 ssMusic Player is a personal music library backed by ssYTDLP download jobs from
 `music.youtube.com` URLs.
 
+## Export your library
+
+Choose **Export library** on the music page, then **iTunes** or **Android (M3U8)**.
+The server downloads a ZIP containing your own and contributed library songs,
+your personal playlists, and their saved song order (including moved songs and
+Individual Songs). Export includes downloaded audio only, not pending downloads.
+Original audio, embedded tags, lyrics and artwork are kept without transcoding.
+The ZIP includes `IMPORT.txt` with import instructions. The download uses a
+separate tab so large libraries do not need to be buffered in browser memory;
+validation errors appear in that tab.
+
+- **iTunes / Music:** enter the absolute local folder where you will extract the
+  ZIP, such as `C:\Users\You\Music\ssMusic` or `/Users/you/Music/ssMusic`.
+  Extract `Library.xml` and `Music/` directly into that folder. Add the extracted
+  `Music/` folder to iTunes (Windows) or Music (macOS), then choose **File >
+  Library > Import Playlist** and select `Library.xml`. The XML includes ordered
+  playlists and folder relationships, with file URLs pointing to that extraction
+  folder. If you move the files, export again with the new destination. Unsupported
+  audio formats are rejected rather than creating unplayable iTunes entries.
+- **Android:** extract the entire ZIP to one folder on the device, keeping the
+  `.m3u8` playlists beside `Music/`. In a music player supporting UTF-8 M3U8
+  playlists with relative paths, grant access to the folder, scan the audio and
+  import the playlists. Playlist entries preserve song order; use playlist order
+  rather than title/artist sorting and turn off shuffle. Android has **no universal
+  library import format**: playlist import, empty playlists, names and codec
+  support depend on the player. Playlist folder hierarchy is not imported.
+
+The authenticated `GET /api/library/export?format=android` endpoint returns the
+ZIP. For iTunes use `format=itunes` and a URL-encoded `destination` parameter.
+Session cookies and the existing API token authentication are supported. The
+destination is only written into the XML, never used as a server output path.
+Missing or unsafe audio files fail the export instead of leaving broken playlist
+references; refresh the library and retry.
+
 ## Requirements
 
 - Node.js 20+

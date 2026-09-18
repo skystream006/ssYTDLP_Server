@@ -12,6 +12,7 @@ import { isSongFile } from './transcription.js';
 import { readSongMetadata } from './music.js';
 import { findNoVocals, getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey } from './library.js';
 import { getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, setLibrary, setTheme } from './libraryStore.js';
+import { exportOptions, prepareLibraryExport, streamLibraryExport } from './libraryExport.js';
 import { getSystemHealth } from './health.js';
 import { isYouTubeMusicUrl } from './utils.js';
 import { scheduleDailyMaintenance } from './scheduler.js';
@@ -136,6 +137,18 @@ app.put('/api/library', (req, res) => {
     return res.json(setLibrary(req.user.id, req.body, getLibraryJobs(req.user)));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.get('/api/library/export', async (req, res) => {
+  try {
+    const options = exportOptions(req.query.format, req.query.destination);
+    const jobs = getLibraryJobs(req.user);
+    const library = getLibrary(req.user.id, jobs);
+    const prepared = await prepareLibraryExport(library, jobs, options);
+    if (!res.destroyed) streamLibraryExport(res, prepared, options.format);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Unable to export library.' });
   }
 });
 

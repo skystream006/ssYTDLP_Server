@@ -7,9 +7,19 @@ test('validates YouTube Music URL host', () => {
   assert.equal(isYouTubeMusicUrl('https://youtube.com/watch?v=abc'), false);
 });
 
-test('detects playlist URLs by path and list query parameter', () => {
+test('detects playlist URLs by list query parameter regardless of path', () => {
   assert.equal(isPlaylistUrl('https://music.youtube.com/playlist?list=PL12345'), true);
-  assert.equal(isPlaylistUrl('https://music.youtube.com/watch?v=abc&list=PL12345'), false);
+  assert.equal(isPlaylistUrl('https://music.youtube.com/watch?v=RTcsY6aIoEc&list=PLbMbcPGUE7ak'), true);
+  assert.equal(isPlaylistUrl('https://music.youtube.com/watch?list=PL12345&v=abc'), true);
+  assert.equal(isPlaylistUrl('https://music.youtube.com/?list=PL12345'), true);
+});
+
+test('does not detect playlists without a list query parameter or a valid YouTube Music host', () => {
+  assert.equal(isPlaylistUrl('https://music.youtube.com/watch?v=abc'), false);
+  assert.equal(isPlaylistUrl('https://music.youtube.com/playlist'), false);
+  assert.equal(isPlaylistUrl('https://music.youtube.com/watch?v=abc#list=PL12345'), false);
+  assert.equal(isPlaylistUrl('https://youtube.com/watch?v=abc&list=PL12345'), false);
+  assert.equal(isPlaylistUrl('not a URL'), false);
 });
 
 test('sanitizes folder names for output directories', () => {

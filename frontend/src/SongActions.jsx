@@ -242,7 +242,7 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
         </div>
         <div className="transcription-option">
           <label className="lyrics-toggle"><input type="checkbox" aria-describedby={`${titleId}-no-vocals-help`} checked={noVocals} onChange={(event) => setNoVocals(event.target.checked)} />No Vocals</label>
-          <TranscriptionHelp id={`${titleId}-no-vocals-help`} label="No Vocals">Enable vocal separation and save a no-vocals MP3 alongside the transcribed song in the [NoVocals] folder.</TranscriptionHelp>
+          <TranscriptionHelp id={`${titleId}-no-vocals-help`} label="Create no-vocals version [Karaoke version]">Enable vocal separation and save a no-vocals MP3 alongside the transcribed song in the [NoVocals] folder.</TranscriptionHelp>
         </div>
         <div className="transcription-option">
           <label className="lyrics-toggle"><input type="checkbox" aria-describedby={`${titleId}-fallback-help`} checked={vietLyricsFallback} onChange={(event) => {

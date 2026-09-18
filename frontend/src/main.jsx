@@ -45,7 +45,7 @@ import { submitJobUrl } from './jobSubmission.js';
 import { navigate, useNavigation } from './navigation.js';
 import { initializeTouchControls } from './touchControls.js';
 import { themes } from '../../src/library.js';
-import { canManageJob, canModifyJob, isContributor, formatBytes, formatDate, MetadataDialog, TranscriptionDialog, TranscriptionStatus } from './SongActions.jsx';
+import { canManageJob, canModifyJob, isContributor, formatBytes, formatDate, MetadataDialog, SongActions, TranscriptionDialog, TranscriptionStatus } from './SongActions.jsx';
 
 const POLL_INTERVAL = 5000;
 const AuthContext = createContext(null);
@@ -707,14 +707,14 @@ function JobPage({ id }) {
                     <span className="file-icon"><FileAudio size={19} /></span>
                     <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div>
                   </>}
-                  <div className="file-row-actions">
+                  <SongActions name={file.name} className="file-row-actions">
                     {canModify && /\.mp3$/i.test(file.name) && <button className="icon-link" type="button" title="Edit song metadata" aria-label={`Edit metadata ${file.name}`} disabled={mutationDisabled} onClick={() => setEditingMetadata(file)}><Pencil size={18} /></button>}
                     {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" title="Transcribe song" aria-label={`Transcribe ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
                     <a href={file.downloadUrl} aria-label={`Download ${file.name}`} title="Download song"><ArrowDownToLine size={18} /></a>
                     {canModify && <button className="icon-link" type="button" title="Delete song" aria-label={`Delete song ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => removeFile(file)}>
                       {deletingFiles[file.name] ? <RefreshCw className="spin" size={18} /> : <Trash2 size={18} />}
                     </button>}
-                  </div>
+                  </SongActions>
                 </li>
               ))}</ul>
             )}

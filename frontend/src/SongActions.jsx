@@ -1,6 +1,59 @@
-import { useEffect, useId, useRef, useState } from 'react';
-import { Check, CircleAlert, Clock3, FileAudio, ImagePlus, Info, Mic, Music2, RefreshCw, Save, Trash2, X } from 'lucide-react';
+import { Children, cloneElement, useEffect, useId, useRef, useState } from 'react';
+import { Check, CircleAlert, Clock3, FileAudio, ImagePlus, Info, Mic, MoreVertical, Music2, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { transcriptionLanguages } from '../../src/transcriptionLanguages.js';
+
+export function SongActions({ name, className, children }) {
+  const menuId = useId();
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const menu = menuRef.current;
+    const close = (event) => {
+      if (event?.target && menu.contains(event.target)) return;
+      if (menu.matches(':popover-open')) menu.hidePopover();
+    };
+    const observer = new ResizeObserver(close);
+    observer.observe(triggerRef.current.closest('li').parentElement);
+    window.addEventListener('resize', close);
+    document.addEventListener('scroll', close, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', close);
+      document.removeEventListener('scroll', close, true);
+    };
+  }, []);
+
+  function positionMenu(event) {
+    if (event.newState !== 'open') return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const menu = menuRef.current;
+    const height = Math.min(320, window.innerHeight - 16);
+    menu.style.left = `${Math.max(8, Math.min(rect.right - 240, window.innerWidth - 248))}px`;
+    menu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - height - 8))}px`;
+  }
+
+  return <div className={`${className} song-actions`}>
+    <div className="song-actions-inline">{children}</div>
+    <button ref={triggerRef} className="music-icon-button song-actions-trigger" type="button"
+      title="Song actions" aria-label={`Actions for ${name}`} aria-expanded={open} aria-controls={menuId}
+      popoverTarget={menuId}><MoreVertical size={20} /></button>
+    <div ref={menuRef} id={menuId} className={`${className} song-actions-popover`} popover="auto"
+      role="group" aria-label={`Actions for ${name}`} onBeforeToggle={positionMenu}
+      onToggle={(event) => setOpen(event.newState === 'open')}
+      onClickCapture={(event) => {
+        const action = event.target.closest('button, a');
+        if (!action || action.disabled) return;
+        menuRef.current.hidePopover();
+        triggerRef.current.focus();
+      }}>
+      {Children.toArray(children).map((child) => cloneElement(child, {}, <>
+        {child.props.children}<span>{child.props.title}</span>
+      </>))}
+    </div>
+  </div>;
+}
 
 export function canManageJob(user, job) {
   return Boolean(user && job && (user.role === 'admin' || user.id === job.initiatedBy?.id));

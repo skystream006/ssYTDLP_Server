@@ -210,7 +210,10 @@ punctuation. The job list, details, music library, and ZIP name use this title.
 Existing jobs receive readable titles derived from their folder or song names;
 their output folders and download archives are not renamed or moved.
 Owners and administrators can use the pencil beside **Playlist Title** in job
-details to rename an idle job. Contributors cannot rename it. Custom titles
+details to rename an idle job, or select a playlist on the music page and use
+**Rename playlist** (the pencil in the sidebar). Save the new name or cancel
+to leave it unchanged. Contributors cannot rename playlists, and the permanent
+**Individual Songs** playlist cannot be renamed. Custom titles
 survive reruns and never rename output directories. The API is
 `PATCH /api/jobs/:id/title` with `{ "playlistTitle": "My favorites" }`;
 titles must contain 1-200 characters without control characters.

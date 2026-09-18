@@ -3,7 +3,7 @@ import { ArrowDown, ArrowRightLeft, ArrowUp, Check, ChevronDown, ChevronRight, E
 import MusicPlayer, { usePlayback } from './MusicPlayer.jsx';
 import { getPlaylistIds, songKey } from '../../src/library.js';
 import { submitJobUrl } from './jobSubmission.js';
-import { canModifyJob, MetadataDialog, TranscriptionDialog } from './SongActions.jsx';
+import { canManageJob, canModifyJob, MetadataDialog, TranscriptionDialog } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 
 function AddPlaylistDialog({ user, request, confirm, onAdded, onClose }) {
@@ -83,6 +83,40 @@ function MoveSongDialog({ track, playlists, onSave, onClose }) {
   </dialog>;
 }
 
+function RenamePlaylistDialog({ playlist, saving, onSave, onClose }) {
+  const dialogRef = useRef(null);
+  const headingId = useId();
+  const nameId = useId();
+  const [name, setName] = useState(playlist.playlistTitle || '');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    dialog.querySelector('input').select();
+    return () => { dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, []);
+
+  return <dialog ref={dialogRef} className="confirmation-dialog folder-dialog" aria-labelledby={headingId}
+    onCancel={(event) => { event.preventDefault(); if (!saving) onClose(); }}>
+    <form onSubmit={async (event) => {
+      event.preventDefault();
+      if (saving || !name.trim()) return;
+      setError('');
+      const result = await onSave(playlist.id, name.trim());
+      if (result === true) onClose(); else setError(result || 'Unable to rename playlist.');
+    }}>
+      <div className="folder-dialog-heading"><h2 id={headingId}>Rename playlist</h2>
+        <button className="music-icon-button" type="button" title="Close" aria-label="Close rename playlist" disabled={saving} onClick={onClose}><X size={18} /></button></div>
+      <label htmlFor={nameId}>Playlist name</label><input id={nameId} autoFocus required maxLength={200} value={name} disabled={saving} onChange={(event) => setName(event.target.value)} />
+      {error && <p className="notice error" role="alert">{error}</p>}
+      <div className="dialog-actions"><button className="secondary-button" type="button" disabled={saving} onClick={onClose}>Cancel</button>
+        <button className="primary-button" type="submit" disabled={saving || !name.trim()}>{saving ? <RefreshCw className="spin" size={16} /> : <Check size={16} />}{saving ? 'Saving...' : 'Save name'}</button></div>
+    </form>
+  </dialog>;
+}
+
 function FolderDialog({ folder, parentId, folders, saving, onSave, onClose }) {
   const dialogRef = useRef(null);
   const headingId = useId();
@@ -135,6 +169,7 @@ export default function MusicLibrary({ user, request, confirm }) {
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState(new Set());
   const [folderDialog, setFolderDialog] = useState(null);
+  const [renamingPlaylist, setRenamingPlaylist] = useState(null);
   const [addingPlaylist, setAddingPlaylist] = useState(false);
   const [movingSong, setMovingSong] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -153,6 +188,7 @@ export default function MusicLibrary({ user, request, confirm }) {
   const jobMap = new Map(jobs.map((job) => [job.id, job]));
   const sourceJobMap = new Map((library?.jobs || []).map((job) => [job.id, job]));
   const selected = entryMap.get(selectedId);
+  const selectedJob = sourceJobMap.get(selectedId);
   const title = selected?.type === 'folder' ? selected.name : selectedId ? jobMap.get(selectedId)?.playlistTitle || 'Preparing playlist' : 'All music';
   const tracks = trackResult?.selectedId === selectedId ? trackResult.files : null;
   const jobsRevision = JSON.stringify((library?.jobs || []).map((job) => [job.id, job.updatedAt, job.songCount]));
@@ -279,6 +315,32 @@ export default function MusicLibrary({ user, request, confirm }) {
     return persistLibrary('/api/library', 'PUT', {
       version: library.version, entries: library.entries, songOrder: library.songOrder, ...changes
     });
+  }
+
+  async function renamePlaylist(id, playlistTitle) {
+    if (savingRef.current) return 'A library change is already being saved.';
+    savingRef.current = true;
+    mutationRef.current += 1;
+    setSaving(true);
+    setSaved(false);
+    try {
+      const result = await request(`/api/jobs/${encodeURIComponent(id)}/title`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ playlistTitle })
+      });
+      const updateTitle = (items) => items?.map((item) => item.id === id
+        ? { ...item, playlistTitle: result.playlistTitle, updatedAt: result.updatedAt } : item);
+      setLibrary((current) => ({ ...current, jobs: updateTitle(current.jobs), playlists: updateTitle(current.playlists) }));
+      setTrackResult((current) => current ? { ...current, files: current.files.map((track) => track.playlistId === id
+        ? { ...track, playlistTitle: result.playlistTitle } : track) } : current);
+      setSaved(true);
+      return true;
+    } catch (saveError) {
+      return saveError.message;
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+      setRefresh((value) => value + 1);
+    }
   }
 
   async function playlistAdded(job) {
@@ -441,7 +503,11 @@ export default function MusicLibrary({ user, request, confirm }) {
         {selected.type === 'folder' ? <>
           <button className="music-icon-button" type="button" title="Edit folder" aria-label="Edit folder" disabled={saving} onClick={() => setFolderDialog({ folder: selected, parentId: selected.parentId })}><Pencil size={16} /></button>
           <button className="music-icon-button" type="button" title="Delete folder" aria-label="Delete folder" disabled={saving} onClick={removeFolder}><Trash2 size={16} /></button>
-        </> : !selected.protected && <a className="music-icon-button" href={`/job/${encodeURIComponent(selected.id)}`} title="Job details" aria-label="Open job details"><ExternalLink size={16} /></a>}
+        </> : !selected.protected && <>
+          {canManageJob(user, selectedJob) && <button className="music-icon-button" type="button" title="Rename playlist" aria-label="Rename playlist"
+            disabled={saving || ['queued', 'running'].includes(selectedJob.status)} onClick={() => setRenamingPlaylist(selectedJob)}><Pencil size={16} /></button>}
+          <a className="music-icon-button" href={`/job/${encodeURIComponent(selected.id)}`} title="Job details" aria-label="Open job details"><ExternalLink size={16} /></a>
+        </>}
       </div></div>
       <label className="library-location">Location<select aria-label="Move selection to folder" value={selected.parentId || ''} disabled={saving}
         onChange={(event) => moveEntry(selected.id, event.target.value || null)}><option value="">Library</option>{possibleFolders(selected.id).map((folder) => <option key={folder.id} value={folder.id}>{folder.path}</option>)}</select></label>
@@ -468,6 +534,7 @@ export default function MusicLibrary({ user, request, confirm }) {
       setRefresh((value) => value + 1);
     }} />}
     {folderDialog && <FolderDialog folder={folderDialog.folder} parentId={folderDialog.parentId} folders={possibleFolders(folderDialog.folder?.id)} saving={saving} onSave={saveFolder} onClose={() => setFolderDialog(null)} />}
+    {renamingPlaylist && <RenamePlaylistDialog playlist={renamingPlaylist} saving={saving} onSave={renamePlaylist} onClose={() => setRenamingPlaylist(null)} />}
     {addingPlaylist && <AddPlaylistDialog user={user} request={request} confirm={confirm} onAdded={playlistAdded} onClose={() => setAddingPlaylist(false)} />}
     {movingSong && <MoveSongDialog track={movingSong} playlists={entries.filter((entry) => entry.type === 'playlist' && entry.id !== movingSong.playlistId).map((entry) => ({
       id: entry.id, title: `${entry.parentId ? `${folderPath(entryMap.get(entry.parentId))} / ` : ''}${entryTitle(entry)}`

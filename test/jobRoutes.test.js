@@ -255,6 +255,16 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(renamed.status, 200);
   assert.equal(renamed.body.playlistTitle, 'Shared favorites');
   assert.equal(renamed.body.folderName, 'shared');
+  for (const headers of [credentials.Owner[0], credentials.Other[0]]) {
+    const renamedLibrary = await call('/api/library', 'GET', headers);
+    assert.equal(renamedLibrary.status, 200);
+    assert.equal(renamedLibrary.body.playlists.find((playlist) => playlist.id === 'shared').playlistTitle, 'Shared favorites');
+    assert.equal(renamedLibrary.body.jobs.find((job) => job.id === 'shared').playlistTitle, 'Shared favorites');
+    const renamedTracks = await call('/api/library/tracks?entryId=shared', 'GET', headers);
+    assert.equal(renamedTracks.status, 200);
+    assert.ok(renamedTracks.body.files.length > 0);
+    assert.ok(renamedTracks.body.files.every((track) => track.playlistTitle === 'Shared favorites'));
+  }
   assert.equal((await call('/api/jobs/missing/title', 'PATCH', credentials.Owner[0], { playlistTitle: 'Missing' })).status, 404);
   assert.deepEqual((await call('/api/jobs/shared', 'GET', credentials.Other[0])).body.contributors, shared.body.contributors);
   assert.deepEqual((await call('/api/jobs', 'GET', credentials.Other[0])).body.find((job) => job.id === 'shared').contributors, shared.body.contributors);

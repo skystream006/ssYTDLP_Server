@@ -10,9 +10,10 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import NodeID3 from 'node-id3';
 import AdmZip from 'adm-zip';
+import { build as buildPlist } from 'plist';
 import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
 
-test('job HTTP mutations enforce owner, contributor and admin access for sessions and PATs', { timeout: 30_000 }, async (context) => {
+test('job HTTP mutations enforce owner, contributor and admin access for sessions and PATs', { timeout: 60_000 }, async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-job-http-'));
   process.env.DATABASE_PATH = path.join(directory, 'test.sqlite');
   process.env.AUTH_STORE_PATH = path.join(directory, 'auth.json');
@@ -83,28 +84,31 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   })));
   const [httpPort, httpsPort] = listeners.map((listener) => listener.address().port);
   await Promise.all(listeners.map((listener) => new Promise((resolve) => listener.close(resolve))));
-  server = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url)),
-    '--http-port', String(httpPort), '--https-port', String(httpsPort)], {
-    cwd: directory,
-    env: { ...process.env, YTDLP_OUTPUT_ROOT: outputRoot, YTDLP_PATH: process.execPath,
-      HTTPS_KEY_PATH: '', HTTPS_CERT_PATH: '', PASSKEY_RP_ID: 'localhost',
-      PASSKEY_ORIGIN: `https://localhost:${httpsPort}`, TRUST_PROXY: '', TRANSCRIPTION_ENDPOINT: '' },
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-  await new Promise((resolve, reject) => {
-    let output = '';
-    server.once('error', reject);
-    server.once('exit', (code) => reject(new Error(`Test server exited with ${code}: ${output}`)));
-    server.stderr.on('data', (chunk) => { output += chunk; });
-    server.stdout.on('data', (chunk) => {
-      output += chunk;
-      if (output.includes('ssYTDLP HTTPS server listening')) resolve();
+  async function startServer() {
+    server = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url)),
+      '--http-port', String(httpPort), '--https-port', String(httpsPort)], {
+      cwd: directory,
+      env: { ...process.env, YTDLP_OUTPUT_ROOT: outputRoot, YTDLP_PATH: process.execPath,
+        HTTPS_KEY_PATH: '', HTTPS_CERT_PATH: '', PASSKEY_RP_ID: 'localhost',
+        PASSKEY_ORIGIN: `https://localhost:${httpsPort}`, TRUST_PROXY: '', TRANSCRIPTION_ENDPOINT: '' },
+      stdio: ['ignore', 'pipe', 'pipe']
     });
-  });
+    await new Promise((resolve, reject) => {
+      let output = '';
+      server.once('error', reject);
+      server.once('exit', (code) => reject(new Error(`Test server exited with ${code}: ${output}`)));
+      server.stderr.on('data', (chunk) => { output += chunk; });
+      server.stdout.on('data', (chunk) => {
+        output += chunk;
+        if (output.includes('ssYTDLP HTTPS server listening')) resolve();
+      });
+    });
+  }
+  await startServer();
 
   const call = (route, method = 'GET', headers = {}, body) => new Promise((resolve, reject) => {
     const request = https.request({ hostname: '127.0.0.1', port: httpsPort, path: route,
-      method, headers: { ...headers, 'Content-Type': 'application/json' }, rejectUnauthorized: false }, (response) => {
+      method, headers: { 'Content-Type': 'application/json', ...headers }, rejectUnauthorized: false }, (response) => {
       const chunks = [];
       response.on('data', (chunk) => { chunks.push(chunk); });
       response.on('end', () => {
@@ -115,7 +119,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       });
     });
     request.on('error', reject);
-    request.end(body === undefined ? undefined : JSON.stringify(body));
+    request.end(body === undefined ? undefined : Buffer.isBuffer(body) ? body : JSON.stringify(body));
   });
   async function waitForJob(id, headers) {
     let response;
@@ -419,4 +423,52 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal((await call('/api/library/links', 'POST', credentials.Owner[0], { jobId: 'missing' })).status, 404);
   assert.equal((await call(`/api/jobs/${singleId}`, 'DELETE', credentials.Owner[0])).status, 204);
   assert.equal((await call('/api/library', 'GET', credentials.Owner[0])).body.entries.some((entry) => entry.id === 'individual-songs'), true);
+
+  const stopped = once(server, 'exit');
+  server.kill();
+  await stopped;
+  await startServer();
+
+  const upload = async (fields, files, headers = credentials.Owner[0]) => {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) form.set(key, value);
+    for (const file of files) form.append(file.field, new Blob([file.data]), file.name);
+    const multipart = new Request('http://localhost/api/jobs/import', { method: 'POST', body: form });
+    return call('/api/jobs/import', 'POST', { ...headers, 'Content-Type': multipart.headers.get('content-type') }, Buffer.from(await multipart.arrayBuffer()));
+  };
+  const audio = Buffer.from('524946462800000057415645666d74201000000001000100401f0000803e000002001000646174610400000000000000', 'hex');
+  const uploadFile = { field: 'files', name: 'Uploaded.wav', data: audio };
+  const importOptions = { mode: 'files', createNew: 'true', playlistTitle: 'Uploaded playlist' };
+  assert.equal((await upload(importOptions, [uploadFile], {})).status, 401);
+  assert.equal((await upload(importOptions, [])).status, 400);
+  const imported = await upload(importOptions, [uploadFile]);
+  assert.equal(imported.status, 201, imported.text);
+  const importedId = imported.body.jobs[0].id;
+  assert.equal(imported.body.jobs[0].initiatedBy.id, users.Owner.id);
+  assert.equal(imported.body.jobs[0].source, 'files');
+  assert.equal((await call('/api/library', 'GET', credentials.Owner[0])).body.playlists.some((playlist) => playlist.id === importedId), true);
+  assert.deepEqual((await call(`/api/jobs/${importedId}/stream/Uploaded.wav`, 'GET', credentials.Owner[0])).buffer, audio);
+  const existingOptions = { mode: 'files', createNew: 'false', playlistId: importedId };
+  assert.equal((await upload(existingOptions, [uploadFile], credentials.Other[0])).status, 400);
+  const appended = await upload(existingOptions, [uploadFile], credentials.Owner[1]);
+  assert.equal(appended.status, 201, appended.text);
+  assert.deepEqual(appended.body.jobs[0].files, ['Uploaded.wav', 'Uploaded (2).wav']);
+  const unicodeName = 'Caf\u00e9 \u97f3\u697d.wav';
+  const unicodeImport = await upload(existingOptions, [{ ...uploadFile, name: unicodeName }]);
+  assert.equal(unicodeImport.status, 201, unicodeImport.text);
+  assert.equal(unicodeImport.body.jobs[0].files.at(-1), unicodeName);
+  assert.equal((await call(`/api/jobs/${importedId}/rerun`, 'POST', credentials.Owner[0])).status, 400);
+  assert.equal((await upload(importOptions, [{ ...uploadFile, data: Buffer.from('invalid') }])).status, 400);
+  const xml = buildPlist({ Tracks: { 1: { 'Track ID': 1, Location: 'file:///Users/me/Music/Uploaded.wav' } },
+    Playlists: [{ Name: 'iTunes favorites', 'Playlist Items': [{ 'Track ID': 1 }] }] });
+  const mediaZip = new AdmZip();
+  mediaZip.addFile('Music/Uploaded.wav', audio);
+  const itunesFiles = [{ field: 'xml', name: 'Library.xml', data: xml }, { field: 'media', name: 'Media.zip', data: mediaZip.toBuffer() }];
+  assert.equal((await upload({ mode: 'itunes' }, itunesFiles.slice(0, 1))).status, 400);
+  const importedItunes = await upload({ mode: 'itunes' }, itunesFiles, mobileHeaders.Owner);
+  assert.equal(importedItunes.status, 201, importedItunes.text);
+  assert.equal(importedItunes.body.jobs[0].playlistTitle, 'iTunes favorites');
+  assert.equal(importedItunes.body.jobs[0].source, 'itunes');
+  const itunesTracks = await call(`/api/library/tracks?entryId=${importedItunes.body.jobs[0].id}`, 'GET', credentials.Owner[0]);
+  assert.equal(itunesTracks.body.files[0].name, 'Uploaded.wav');
 });

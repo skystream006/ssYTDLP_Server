@@ -36,11 +36,13 @@ import {
   UserCheck,
   Users,
   UserX,
+  Upload,
   X
 } from 'lucide-react';
 import './styles.css';
 import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
 import MusicLibrary from './MusicLibrary.jsx';
+import ImportMusic from './ImportMusic.jsx';
 import { submitJobUrl } from './jobSubmission.js';
 import { navigate, useNavigation } from './navigation.js';
 import { initializeTouchControls } from './touchControls.js';
@@ -256,6 +258,7 @@ function JobsPage() {
   const [jobAction, setJobAction] = useState(null);
   const [actionError, setActionError] = useState('');
   const [userFilter, setUserFilter] = useState('mine');
+  const [importing, setImporting] = useState(false);
 
   async function runJobAction(job, action) {
     if (!canModifyJob(user, job) || jobAction || job.status === 'queued' || job.status === 'running') return;
@@ -324,16 +327,20 @@ function JobsPage() {
   return (
     <AppShell>
       {dialog}
+      {importing && <ImportMusic request={request} onClose={() => setImporting(false)} onImported={() => setRevision((current) => current + 1)} />}
       <section className="page-heading">
         <div>
           <p className="eyebrow">Download queue</p>
           <h1>Music, ready when you are.</h1>
           <p>Send a YouTube Music track or playlist to your local archive.</p>
         </div>
-        <div className="queue-summary" aria-label="Queue summary">
+        <div className="jobs-heading-actions">
+          <button className="secondary-button" type="button" onClick={() => setImporting(true)}><Upload size={17} />Import music</button>
+          <div className="queue-summary" aria-label="Queue summary">
           <div><strong>{jobs ? filteredJobs.length : '-'}</strong><span>Total</span></div>
           <div><strong>{counts.running || 0}</strong><span>Active</span></div>
           <div><strong>{(counts.completed || 0) + (counts.partially_completed || 0)}</strong><span>Ready</span></div>
+          </div>
         </div>
       </section>
 
@@ -401,9 +408,9 @@ function JobsPage() {
                   <td><div className="job-row-actions">
                     <a className="icon-link" href={`/job/${job.id}`} aria-label={`Open job ${job.id}`} title="Open job"><ExternalLink size={17} /></a>
                     {canModifyJob(user, job) && <>
-                    <button className="icon-link" type="button" title="Rerun job" aria-label={`Rerun job ${job.id}`} disabled={Boolean(jobAction) || job.status === 'queued' || job.status === 'running'} onClick={() => runJobAction(job, 'rerun')}>
+                    {!job.source && <button className="icon-link" type="button" title="Rerun job" aria-label={`Rerun job ${job.id}`} disabled={Boolean(jobAction) || job.status === 'queued' || job.status === 'running'} onClick={() => runJobAction(job, 'rerun')}>
                       {jobAction?.id === job.id && jobAction.action === 'rerun' ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
-                    </button>
+                    </button>}
                     {canManageJob(user, job) && <button className="icon-link row-delete" type="button" title="Delete job" aria-label={`Delete job ${job.id}`} disabled={Boolean(jobAction) || job.status === 'queued' || job.status === 'running'} onClick={() => runJobAction(job, 'delete')}>
                       {jobAction?.id === job.id && jobAction.action === 'delete' ? <RefreshCw className="spin" size={17} /> : <Trash2 size={17} />}
                     </button>}
@@ -637,17 +644,17 @@ function JobPage({ id }) {
       {job && <>
         <section className="detail-heading">
           <div>
-            <p className="eyebrow">{job.isPlaylist ? 'Playlist download' : 'Track download'}</p>
+            <p className="eyebrow">{job.source ? 'Music import' : job.isPlaylist ? 'Playlist download' : 'Track download'}</p>
             <h1>{job.playlistTitle || 'Preparing playlist'}</h1>
             <div className="detail-meta"><StatusBadge status={job.status} /><span>Created {formatDate(job.createdAt)}</span></div>
           </div>
           <div className="detail-actions">
             <div className="record-art"><Disc3 size={70} strokeWidth={1.2} /></div>
             {canModify && <>
-            <button className="primary-button job-action-button" disabled={mutationDisabled} onClick={rerun} type="button">
+            {!job.source && <button className="primary-button job-action-button" disabled={mutationDisabled} onClick={rerun} type="button">
               {rerunning ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
               {rerunning ? 'Starting' : 'Rerun job'}
-            </button>
+            </button>}
             {canManage && <button className="danger-button job-action-button" disabled={mutationDisabled} onClick={remove} type="button">
               {deleting ? <RefreshCw className="spin" size={17} /> : <Trash2 size={17} />}
               {deleting ? 'Deleting' : 'Delete job'}
@@ -661,7 +668,7 @@ function JobPage({ id }) {
           <section className="info-panel">
             <div className="section-title"><div><span>01</span><h2>Job details</h2></div></div>
             <dl>
-              <dt>Source URL</dt><dd><a href={job.url} target="_blank" rel="noreferrer">{job.url}<ExternalLink size={14} /></a></dd>
+              <dt>{job.source ? 'Source' : 'Source URL'}</dt><dd>{job.source ? (job.source === 'itunes' ? 'iTunes library' : 'Uploaded files') : <a href={job.url} target="_blank" rel="noreferrer">{job.url}<ExternalLink size={14} /></a>}</dd>
               <dt>Job ID</dt><dd><code>{job.id}</code></dd>
               <dt>Initiated by</dt><dd>{job.initiatedBy?.name || 'Unknown'}</dd>
               <dt>Contributors</dt><dd className="job-contributors">
@@ -680,7 +687,7 @@ function JobPage({ id }) {
                 </div>}
               </dd>
               <dt>Last updated</dt><dd>{formatDate(job.updatedAt)}</dd>
-              <dt>Command</dt><dd><code className="command-code">{job.command || 'Pending'}</code></dd>
+              {!job.source && <><dt>Command</dt><dd><code className="command-code">{job.command || 'Pending'}</code></dd></>}
             </dl>
             {job.warning && <div className="notice warning"><CircleAlert size={16} />{job.warning}</div>}
             {job.error && <div className="notice error"><CircleAlert size={16} />{job.error}</div>}

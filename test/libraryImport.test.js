@@ -1,0 +1,103 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import AdmZip from 'adm-zip';
+import * as plist from 'plist';
+
+test('music imports validate media, preserve playlists and enforce ownership', async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-import-test-'));
+  process.env.DATABASE_PATH = path.join(directory, 'test.sqlite');
+  process.env.JOB_STORE_PATH = path.join(directory, 'jobs.json');
+  process.env.AUTH_STORE_PATH = path.join(directory, 'auth.json');
+  process.env.YTDLP_OUTPUT_ROOT = path.join(directory, 'output');
+  const imports = await import('../src/libraryImport.js');
+  const manager = await import('../src/jobManager.js');
+  const { getLibrary, linkLibraryJob } = await import('../src/libraryStore.js');
+  const { closeDatabases } = await import('../src/database.js');
+  context.after(async () => { closeDatabases(); await fs.rm(directory, { recursive: true, force: true }); });
+  const { registerUser } = await import('../src/authStore.js');
+  const owner = await registerUser('Owner', 'Owner', { id: 'owner', publicKey: Buffer.from('owner'), counter: 0 });
+  const audio = Buffer.alloc(48);
+  audio.write('RIFF');
+  audio.writeUInt32LE(40, 4);
+  audio.write('WAVEfmt ', 8);
+  audio.writeUInt32LE(16, 16);
+  audio.writeUInt16LE(1, 20);
+  audio.writeUInt16LE(1, 22);
+  audio.writeUInt32LE(8000, 24);
+  audio.writeUInt32LE(16000, 28);
+  audio.writeUInt16LE(2, 32);
+  audio.writeUInt16LE(16, 34);
+  audio.write('data', 36);
+  audio.writeUInt32LE(4, 40);
+  const file = { name: 'Song.wav', path: path.join(directory, 'audio'), size: audio.length };
+  await fs.writeFile(file.path, audio);
+
+  const result = await imports.importUploadedFiles([file], { createNew: 'true', playlistTitle: 'Local music' }, owner);
+  const job = result.jobs[0];
+  assert.equal(job.status, 'completed');
+  assert.equal(job.source, 'files');
+  assert.equal(getLibrary(owner.id, manager.getJobs()).entries[0].id, job.id);
+  assert.deepEqual(await fs.readFile(path.join(job.outputDir, job.files[0])), audio);
+  await assert.rejects(imports.importUploadedFiles([file], { createNew: 'false', playlistId: job.id }, { id: 'other' }), /existing playlists/);
+  await assert.rejects(manager.importJobFiles({ files: [file], playlistId: job.id }, { id: 'other' }), { statusCode: 403 });
+  const appended = await imports.importUploadedFiles([file], { createNew: 'false', playlistId: job.id }, owner);
+  assert.deepEqual(appended.jobs[0].files, ['Song.wav', 'Song (2).wav']);
+  await assert.rejects(manager.rerunJob(job.id, owner), /cannot be rerun/);
+  await assert.rejects(imports.importUploadedFiles([file], { createNew: 'true', playlistTitle: ' ' }, owner), /Playlist name/);
+  await assert.rejects(imports.importUploadedFiles([{ ...file, name: 'wrong.mp3' }], { createNew: 'true', playlistTitle: 'Invalid' }, owner), /mismatched audio/);
+  await assert.rejects(imports.importUploadedFiles([], { createNew: 'true', playlistTitle: 'Empty' }, owner), /Select audio/);
+  await assert.rejects(manager.importJobFiles({ files: [file, { name: 'Missing.wav', path: path.join(directory, 'missing') }], playlistId: job.id }, owner));
+  assert.deepEqual((await fs.readdir(job.outputDir)).sort(), ['Song (2).wav', 'Song.wav']);
+  const single = await manager.importJobFiles({ files: [file], playlistTitle: 'Single', individual: true }, owner);
+  linkLibraryJob(owner.id, single, manager.getJobs());
+  const singles = await imports.importUploadedFiles([file], { createNew: 'false', playlistId: 'individual-songs' }, owner);
+  assert.ok(getLibrary(owner.id, manager.getJobs()).singleJobIds.includes(singles.jobs[0].id));
+
+  const zip = new AdmZip();
+  zip.addFile('Media/Artist/Album/Song.wav', audio);
+  zip.addFile('Media/Artist/Album/Second.wav', audio);
+  zip.addFile('Library.xml', Buffer.from('ignored'));
+  const zipPath = path.join(directory, 'media.zip');
+  await fs.writeFile(zipPath, zip.toBuffer());
+  const media = await imports.extractImportMedia(zipPath, directory);
+  assert.equal(media.length, 2);
+  const document = { Tracks: {
+    1: { 'Track ID': 1, Name: 'Song', Location: 'file://localhost/C:/Music/Artist/Album/Song.wav' },
+    2: { 'Track ID': 2, Name: 'Second', Location: 'file:///Users/me/Music/Artist/Album/Second.wav' }
+  }, Playlists: [
+    { Name: 'Library', Master: true, 'Playlist Items': [{ 'Track ID': 1 }, { 'Track ID': 2 }] },
+    { Name: 'Favorites', 'Playlist Items': [{ 'Track ID': 2 }, { 'Track ID': 1 }] },
+    { Name: 'Shared song', 'Playlist Items': [{ 'Track ID': 1 }] }
+  ] };
+  const xml = plist.build(document);
+  const plans = imports.parseItunesImport(xml, media);
+  assert.deepEqual(plans.map((plan) => plan.playlistTitle), ['Favorites', 'Shared song']);
+  assert.deepEqual(plans[0].files.map((track) => track.name), ['Second.wav', 'Song.wav']);
+  const imported = await imports.importItunesLibrary(xml, media, owner);
+  assert.equal(imported.importedFiles, 3);
+  assert.equal(imported.jobs[0].source, 'itunes');
+  assert.deepEqual(getLibrary(owner.id, manager.getJobs()).songOrder[imported.jobs[0].id], ['Second.wav', 'Song.wav']);
+  assert.throws(() => imports.parseItunesImport(xml, media.slice(1)), /Missing or ambiguous/);
+  assert.throws(() => imports.parseItunesImport('<not-plist/>', media), /Invalid iTunes/);
+  assert.throws(() => imports.parseItunesImport('<!DOCTYPE plist [<!ENTITY name "bad">]><plist/>', media), /entity declarations/);
+  const ambiguous = [...media, { ...media[0], name: 'Other/Artist/Album/Song.wav' }];
+  assert.throws(() => imports.parseItunesImport(xml, ambiguous), /Missing or ambiguous/);
+  const ungrouped = imports.parseItunesImport(plist.build({ Tracks: document.Tracks }), media);
+  assert.equal(ungrouped[0].playlistTitle, 'iTunes Library');
+  const encoded = plist.build({ Tracks: { 1: { 'Track ID': 1, Location: 'file:///Music/A%20song%20%231.wav' } } });
+  assert.equal(imports.parseItunesImport(encoded, [{ ...file, name: 'A song #1.wav' }])[0].files[0].name, 'A song #1.wav');
+  const deepZip = new AdmZip();
+  deepZip.addFile(`${'folder/'.repeat(33)}Song.wav`, audio);
+  await fs.writeFile(zipPath, deepZip.toBuffer());
+  await assert.rejects(imports.extractImportMedia(zipPath, directory), /unsafe/);
+  const linkedZip = new AdmZip();
+  linkedZip.addFile('Link.wav', audio);
+  linkedZip.getEntry('Link.wav').attr = 0xa1ff0000;
+  await fs.writeFile(zipPath, linkedZip.toBuffer());
+  await assert.rejects(imports.extractImportMedia(zipPath, directory), /unsafe/);
+  await fs.writeFile(zipPath, 'not a zip');
+  await assert.rejects(imports.extractImportMedia(zipPath, directory), /Invalid media ZIP/);
+});

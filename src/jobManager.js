@@ -507,6 +507,61 @@ export async function setJobTitle(id, title, user = null) {
   return job;
 }
 
+export async function importJobFiles({ files, playlistId, playlistTitle, source = 'files', individual = false }, user) {
+  if (!user?.id) throw Object.assign(new Error('Authentication required'), { statusCode: 401 });
+  if (!Array.isArray(files) || !files.length || files.some((file) => !isSongFile(file.name) || !file.path)) {
+    throw Object.assign(new Error('Select supported audio files'), { statusCode: 400 });
+  }
+  const job = playlistId ? getJob(playlistId) : newJob(`import:${source}`, { id: user.id, name: user.name });
+  if (!job) throw Object.assign(new Error('Playlist not found'), { statusCode: 404 });
+  if (playlistId) {
+    assertCanModifyJob(job, user, true);
+    assertJobIsIdle(job, 'import into');
+    if (job.isPlaylist === false) throw Object.assign(new Error('Select a playlist'), { statusCode: 400 });
+  } else {
+    if (typeof playlistTitle !== 'string' || !playlistTitle.trim() || playlistTitle.trim().length > 200 || /[\x00-\x1f\x7f]/.test(playlistTitle)) {
+      throw Object.assign(new Error('Playlist name must be between 1 and 200 characters'), { statusCode: 400 });
+    }
+    job.source = source;
+    job.isPlaylist = !individual;
+    job.playlistTitle = playlistTitle.trim();
+    job.status = 'completed';
+  }
+  job.folderName ||= job.id;
+  job.outputDir ||= path.join(outputRoot, job.folderName);
+  jobMutations.add(job.id);
+  const added = [];
+  try {
+    await fs.mkdir(job.outputDir, { recursive: true });
+    const names = new Set((await fs.readdir(job.outputDir)).map((name) => name.toLowerCase()));
+    const metadata = { ...job.songMetadata };
+    for (const file of files) {
+      const extension = path.extname(file.name).toLowerCase();
+      const base = path.basename(file.name.replaceAll('\\', '/'), path.extname(file.name));
+      const stem = base.replace(/[<>:"/\\|?*\x00-\x1f\x7f]/g, '_').replace(/[. ]+$/g, '').slice(0, 160) || 'Track';
+      let name = `${stem}${extension}`;
+      let suffix = 2;
+      while (names.has(name.toLowerCase())) name = `${stem} (${suffix++})${extension}`;
+      await fs.copyFile(file.path, path.join(job.outputDir, name), fs.constants.COPYFILE_EXCL);
+      added.push(name);
+      names.add(name.toLowerCase());
+      if (file.metadata) metadata[name] = file.metadata;
+    }
+    job.files = [...(job.files || []), ...added];
+    job.songMetadata = metadata;
+    job.playlistSongCount = job.files.filter(isSongFile).length;
+    job.updatedAt = new Date().toISOString();
+    await persistJob(job);
+    return job;
+  } catch (error) {
+    await Promise.all(added.map((name) => fs.rm(path.join(job.outputDir, name), { force: true })));
+    if (!playlistId) await removeJobOutput(job);
+    throw error;
+  } finally {
+    jobMutations.delete(job.id);
+  }
+}
+
 export async function rerunJob(id, user = null) {
   const job = getJob(id);
   if (!job) {
@@ -515,6 +570,7 @@ export async function rerunJob(id, user = null) {
 
   assertCanModifyJob(job, user, true);
   assertJobIsIdle(job, 'rerun');
+  if (job.source) throw Object.assign(new Error('Imported jobs cannot be rerun'), { statusCode: 400 });
 
   job.playlistSongCount = null;
   job.status = 'queued';

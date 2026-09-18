@@ -3,6 +3,40 @@
 ssMusic Player is a personal music library backed by ssYTDLP download jobs from
 `music.youtube.com` URLs.
 
+## Import music
+
+On **Jobs**, choose **Import music**.
+
+- **Files:** select an existing playlist from your personal library, or check
+    **Create New Playlist** and enter its name. Select audio files and choose
+    **Import**. MP3, WAV, FLAC, M4A, AAC, OGG, Opus and WMA are accepted; playback
+    depends on your browser's codec support. Existing files are never overwritten.
+- **iTunes library:** upload an exported iTunes/Music library **XML** and a
+    separate **ZIP** containing its local audio files. Both uploads are required.
+    Keep artist/album folders in the ZIP so tracks with identical filenames can
+    be matched. XML locations are matched against ZIP path suffixes, never read
+    from the server or fetched from the network. Missing or ambiguous media fails
+    the import. Nonempty playlists and their track order are recreated; folders
+    and empty playlists are not imported. Unassigned tracks go into **iTunes Library**.
+    Tracks in several playlists are copied into each playlist. Internet-only
+    tracks are skipped; unsupported local formats must be converted first.
+
+Original audio and embedded tags are preserved without transcoding. New imports
+appear as completed jobs and in your music library; imported jobs cannot be
+rerun. Imports into existing playlists require owner or contributor access.
+
+Limits: 2 GB total upload, 512 MB per audio file, 20 MB XML, 1,000 directly
+uploaded files, 2,000 ZIP audio files, 500 iTunes playlists, and 4 GB expanded
+media (including playlist copies). Uploads use temporary disk storage, cleaned
+after each request. Allow enough server disk space for temporary and final audio.
+At most two imports run concurrently, with one per user.
+
+The authenticated `POST /api/jobs/import` endpoint accepts multipart form data:
+`mode=files`, `createNew=true`, `playlistTitle`, and repeated `files` fields;
+or `createNew=false` with `playlistId` instead of `playlistTitle`.
+For iTunes, send `mode=itunes`, `xml`, and `media`. Session cookies, PATs and
+bearer tokens use the same authentication as the existing jobs API.
+
 ## Export your library
 
 Choose **Export library** on the music page, then **iTunes** or **Android (M3U8)**.

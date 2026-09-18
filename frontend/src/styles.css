@@ -157,6 +157,30 @@ h1 { margin: 0; max-width: 780px; font: 600 48px/1.05 'Newsreader', serif; overf
 .notice.warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
 .notice.error { color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, transparent); }
 .jobs-section { margin-top: 54px; }
+.jobs-heading-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 14px; max-width: 100%; }
+.import-dialog { width: min(580px, calc(100% - 32px)); }
+.import-fields { min-width: 0; margin: 22px 0; padding: 0; border: 0; }
+.import-modes { display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 24px; border: 1px solid var(--line); }
+.import-modes button { min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px; border: 0; color: var(--muted); background: var(--field); font-size: 12px; cursor: pointer; }
+.import-modes button + button { border-left: 1px solid var(--line); }
+.import-modes button[aria-pressed="true"] { color: var(--on-accent); background: var(--royal); }
+.import-file-options, .import-itunes-options { display: grid; gap: 20px; }
+.import-field { display: grid; min-width: 0; gap: 10px; color: var(--ink); font-size: 12px; }
+.import-field > span { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.import-field input, .import-field select { min-width: 0; width: 100%; min-height: 42px; padding: 10px; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 0; }
+.import-field input[type="file"] { font-size: 12px; overflow: hidden; }
+.import-field input::file-selector-button { margin-right: 10px; padding: 7px 10px; border: 1px solid var(--line); background: var(--surface-raised); color: var(--ink); font: inherit; cursor: pointer; }
+.import-upload { padding-top: 18px; border-top: 1px solid var(--line); }
+.import-field small { color: var(--muted); overflow-wrap: anywhere; }
+.import-checkbox { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.import-checkbox input { width: 18px; height: 18px; margin: 0; accent-color: var(--royal); }
+.import-dialog button:focus-visible, .import-field input:focus-visible, .import-field select:focus-visible { outline: 2px solid var(--royal); outline-offset: 3px; }
+.import-dialog button:disabled, .import-fields:disabled { opacity: .65; }
+.import-dialog .notice { color: var(--danger); }
+.import-dialog .notice.success { color: var(--green); }
+.import-progress { display: flex; align-items: center; gap: 8px; }
+.import-results { max-height: 30dvh; overflow-y: auto; padding-left: 20px; font-size: 13px; overflow-wrap: anywhere; }
+.import-results li { padding: 6px 0; }
 .jobs-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
 .jobs-filters label { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
 .jobs-filters select { width: 220px; max-width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line); color: var(--ink); background: var(--field); font-size: 12px; }

@@ -13,6 +13,7 @@ import { readSongMetadata } from './music.js';
 import { findNoVocals, getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey } from './library.js';
 import { getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, setLibrary, setTheme } from './libraryStore.js';
 import { exportOptions, prepareLibraryExport, streamLibraryExport } from './libraryExport.js';
+import { handleLibraryImport } from './libraryImport.js';
 import { getSystemHealth } from './health.js';
 import { isYouTubeMusicUrl } from './utils.js';
 import { scheduleDailyMaintenance } from './scheduler.js';
@@ -199,6 +200,8 @@ app.get('/api/library/tracks', async (req, res) => {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
+
+app.post('/api/jobs/import', handleLibraryImport);
 
 app.get('/api/jobs', (req, res) => {
   const jobs = getJobs();

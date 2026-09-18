@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { Readable, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import AdmZip from 'adm-zip';
 import * as plist from 'plist';
 
@@ -19,6 +21,22 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   context.after(async () => { closeDatabases(); await fs.rm(directory, { recursive: true, force: true }); });
   const { registerUser } = await import('../src/authStore.js');
   const owner = await registerUser('Owner', 'Owner', { id: 'owner', publicKey: Buffer.from('owner'), counter: 0 });
+  async function countUpload(fieldname, megabytes, extraBytes = 0, request = { importBytes: 0 }) {
+    const chunk = Buffer.alloc(1024 ** 2);
+    function* chunks() {
+      for (let index = 0; index < megabytes; index++) yield chunk;
+      if (extraBytes) yield Buffer.alloc(extraBytes);
+    }
+    await pipeline(Readable.from(chunks()), imports.createImportUploadCounter(request, fieldname),
+      new Writable({ write(_chunk, _encoding, done) { done(); } }));
+  }
+  for (const [fieldname, megabytes] of [['xml', 20], ['files', 512], ['media', 2048]]) {
+    await countUpload(fieldname, megabytes);
+    await assert.rejects(countUpload(fieldname, megabytes, 1), { statusCode: 413 });
+  }
+  const aggregate = { importBytes: 2 * 1024 ** 3 - 1 };
+  await countUpload('files', 0, 1, aggregate);
+  await assert.rejects(countUpload('media', 0, 1, aggregate), { statusCode: 413 });
   const audio = Buffer.alloc(48);
   audio.write('RIFF');
   audio.writeUInt32LE(40, 4);
@@ -73,17 +91,50 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     { Name: 'Shared song', 'Playlist Items': [{ 'Track ID': 1 }] }
   ] };
   const xml = plist.build(document);
+  const storage = path.join(directory, 'import-storage');
+  process.env.IMPORT_STORAGE_ROOT = storage;
+  assert.deepEqual(await imports.listLocalImportFiles(), { xmlFiles: [], zipFiles: [] });
+  await fs.mkdir(storage);
+  await fs.writeFile(path.join(storage, 'Library.XML'), xml);
+  await fs.copyFile(zipPath, path.join(storage, 'Media.zip'));
+  await fs.writeFile(path.join(storage, 'ignored.txt'), 'ignored');
+  await fs.mkdir(path.join(storage, 'folder.zip'));
+  const localFiles = await imports.listLocalImportFiles();
+  assert.deepEqual(localFiles.xmlFiles.map((item) => item.name), ['Library.XML']);
+  assert.deepEqual(localFiles.zipFiles.map((item) => item.name), ['Media.zip']);
+  assert.equal(localFiles.xmlFiles[0].size, Buffer.byteLength(xml));
+  assert.equal((await imports.resolveLocalImportFile('Media.zip', '.zip')).path, path.join(await fs.realpath(storage), 'Media.zip'));
+  for (const name of ['../media.zip', '..\\media.zip', '/media.zip', 'C:\\media.zip', 'Media.zip:stream', 'Library.XML', 'folder.zip']) {
+    await assert.rejects(imports.resolveLocalImportFile(name, '.zip'), { statusCode: 400 });
+  }
+  await assert.rejects(imports.resolveLocalImportFile('missing.zip', '.zip'), { statusCode: 404 });
+  const originalLstat = fs.lstat;
+  const symlinkMock = context.mock.method(fs, 'lstat', async (...args) => {
+    const stat = await originalLstat(...args);
+    stat.isSymbolicLink = () => true;
+    return stat;
+  });
+  try { await assert.rejects(imports.resolveLocalImportFile('Media.zip', '.zip'), { statusCode: 400 }); }
+  finally { symlinkMock.mock.restore(); }
   const plans = imports.parseItunesImport(xml, media);
   assert.deepEqual(plans.map((plan) => plan.playlistTitle), ['Favorites', 'Shared song']);
   assert.deepEqual(plans[0].files.map((track) => track.name), ['Second.wav', 'Song.wav']);
   const largeXml = xml.replace('</plist>', `${' '.repeat(21 * 1024 ** 2)}</plist>`);
-  assert.deepEqual(imports.parseItunesImport(largeXml, media), plans);
+  assert.throws(() => imports.parseItunesImport(largeXml, media), { statusCode: 413 });
+  assert.deepEqual(imports.parseItunesImport(largeXml, media, { local: true }), plans);
   const largeMedia = media.map((track) => ({ ...track, size: 5 * 1024 ** 3 }));
-  assert.equal(imports.parseItunesImport(xml, largeMedia).length, 2);
+  assert.throws(() => imports.parseItunesImport(xml, largeMedia), { statusCode: 413 });
+  assert.equal(imports.parseItunesImport(xml, largeMedia, { local: true }).length, 2);
   const manyTracks = Object.fromEntries(Array.from({ length: 2001 }, (_, index) => [index + 1,
     { 'Track ID': index + 1, Location: document.Tracks[1].Location }]));
   const manyPlaylists = Array.from({ length: 501 }, (_, index) => ({ Name: `Playlist ${index}`, 'Playlist Items': [{ 'Track ID': index + 1 }] }));
-  const largePlans = imports.parseItunesImport(plist.build({ Tracks: manyTracks, Playlists: manyPlaylists }), media);
+  const manyTracksXml = plist.build({ Tracks: manyTracks, Playlists: manyPlaylists });
+  assert.throws(() => imports.parseItunesImport(manyTracksXml, media), { statusCode: 413 });
+  const repeatedPlaylistsXml = plist.build({ Tracks: document.Tracks,
+    Playlists: Array.from({ length: 501 }, () => document.Playlists[1]) });
+  assert.throws(() => imports.parseItunesImport(repeatedPlaylistsXml, media), { statusCode: 413 });
+  assert.equal(imports.parseItunesImport(repeatedPlaylistsXml, media, { local: true }).length, 501);
+  const largePlans = imports.parseItunesImport(manyTracksXml, media, { local: true });
   assert.equal(largePlans.length, 502);
   assert.equal(largePlans.reduce((total, plan) => total + plan.files.length, 0), 2001);
   const originalStat = fs.stat;
@@ -92,7 +143,10 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     if (args[0] === file.path) stat.size = 3 * 1024 ** 3;
     return stat;
   });
-  try { assert.equal((await imports.validateImportAudio(file)).size, 3 * 1024 ** 3); }
+  try {
+    await assert.rejects(imports.validateImportAudio(file), { statusCode: 413 });
+    assert.equal((await imports.validateImportAudio(file, { local: true })).size, 3 * 1024 ** 3);
+  }
   finally { statMock.mock.restore(); }
   const imported = await imports.importItunesLibrary(xml, media, owner);
   assert.equal(imported.importedFiles, 3);
@@ -122,6 +176,7 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   for (let index = 0; index < 2001; index++) largeZip.addFile(`Music/Track ${index}.wav`, audio);
   for (let index = 0; index < 8000; index++) largeZip.addFile(`Ignored/${index}/`, Buffer.alloc(0));
   await fs.writeFile(zipPath, largeZip.toBuffer());
-  const extracted = await imports.extractImportMedia(zipPath, directory);
+  await assert.rejects(imports.extractImportMedia(zipPath, directory), { statusCode: 413 });
+  const extracted = await imports.extractImportMedia(zipPath, directory, { local: true });
   assert.equal(extracted.length, 2001);
 });

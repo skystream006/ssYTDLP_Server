@@ -11,8 +11,9 @@ On **Jobs**, choose **Import music**.
     **Create New Playlist** and enter its name. Select audio files and choose
     **Import**. MP3, WAV, FLAC, M4A, AAC, OGG, Opus and WMA are accepted; playback
     depends on your browser's codec support. Existing files are never overwritten.
-- **iTunes library:** upload an exported iTunes/Music library **XML** and a
-    separate **ZIP** containing its local audio files. Both uploads are required.
+- **iTunes library:** choose **Upload files** for an exported iTunes/Music library
+    **XML** and a separate **ZIP**, or **Import from local** to select those files
+    from the server's storage folder. Both files are required.
     Keep artist/album folders in the ZIP so tracks with identical filenames can
     be matched. XML locations are matched against ZIP path suffixes, never read
     from the server or fetched from the network. Missing or ambiguous media fails
@@ -25,13 +26,18 @@ Original audio and embedded tags are preserved without transcoding. New imports
 appear as completed jobs and in your music library; imported jobs cannot be
 rerun. Imports into existing playlists require owner or contributor access.
 
-Imports have no application-enforced upload-size, audio-size, XML-size,
-file-count, or expanded-ZIP-size caps. Uploads stream to temporary disk storage,
-cleaned after each request; XML parsing still uses memory. Allow enough server
-disk space and memory for the import, including expanded media and playlist
-copies. Browser/runtime limits and server or reverse-proxy timeouts and upload
-limits may still apply. Removing size caps also means a highly compressed ZIP
-can exhaust server disk space.
+Browser uploads are limited to 2 GB total, 512 MB per audio file, 20 MB XML,
+and 1,000 directly uploaded files. Uploaded iTunes libraries are limited to
+10,000 ZIP entries, 2,000 audio tracks, 500 playlists, and 4 GB expanded media
+(including playlist copies). Limits are enforced by the server as well as the
+upload form where applicable.
+
+**Import from local** bypasses these upload and processing caps, allowing large
+archives such as an 18 GB ZIP. File validation and path protections still apply.
+Uploads and extraction use temporary disk storage, cleaned after each request;
+XML parsing uses memory. Allow enough server disk space and memory for extracted
+media and playlist copies. Browser/runtime limits and reverse-proxy timeouts may
+still apply. Uncapped local ZIP extraction can exhaust server disk space.
 
 File validation, unsafe archive-path checks, and the existing 5,000-entry
 library constraint remain. At most two imports run concurrently, one per user.
@@ -41,6 +47,49 @@ The authenticated `POST /api/jobs/import` endpoint accepts multipart form data:
 or `createNew=false` with `playlistId` instead of `playlistTitle`.
 For iTunes, send `mode=itunes`, `xml`, and `media`. Session cookies, PATs and
 bearer tokens use the same authentication as the existing jobs API.
+
+### Import from a Windows folder
+
+Docker Compose mounts `./import-storage` beside this project into the container
+at `/app/import-storage`, read-only. For a checkout at `C:\DATA\ssYTDLP_Server`,
+copy your ZIP and XML from USB directly into
+`C:\DATA\ssYTDLP_Server\import-storage`. No access to Docker volumes is needed.
+The folder is excluded from Git and from the Docker build context.
+
+To use a different existing Windows folder, set this in `.env` (forward slashes
+work with Docker Compose):
+
+```dotenv
+IMPORT_STORAGE_PATH=C:/MusicImports
+```
+
+Rebuild/recreate the app after updating the code or mount:
+
+```powershell
+docker compose up -d --build
+```
+
+In **Jobs > Import music > iTunes library > Import from local**, refresh the
+file list, select the XML and ZIP, then choose **Import**. Only regular files
+directly in the folder are listed; subfolders and symbolic links are excluded.
+Finish copying both files before importing, and do not replace them while an
+import is running. The original ZIP and XML are never modified or removed.
+
+Local import sends only filenames to the server, so an 18 GB ZIP does not pass
+through the browser or incur an extra uploaded ZIP copy. Extraction and playlist
+copies still need server disk space and processing time; keep the page open
+until completion. Reverse proxies may need longer response timeouts. All approved
+users can list and import from this shared folder, so place only intended music
+imports there. The container user must have read access to the host folder.
+
+For native Node execution, `IMPORT_STORAGE_ROOT` chooses the folder; its default
+is `./import-storage`. In Compose, `IMPORT_STORAGE_ROOT` stays at the container
+path and `IMPORT_STORAGE_PATH` selects the host folder.
+
+`GET /api/jobs/import/local` returns `xmlFiles` and `zipFiles` with names and
+sizes. For local imports, `POST /api/jobs/import` accepts JSON:
+`{"mode":"itunes","source":"local","xmlName":"Library.xml","zipName":"itunes.zip"}`.
+Both endpoints require the same authentication as uploaded imports.
 
 ## Export your library
 

@@ -12,6 +12,7 @@ services:
       PASSKEY_RP_ID: ${PASSKEY_RP_ID:-192-168-6-66.sslip.io}
       PASSKEY_ORIGIN: ${PASSKEY_ORIGIN:-https://192-168-6-66.sslip.io:4123}
       MAX_CONNECTIONS: ${MAX_CONNECTIONS:-500}
+      IMPORT_STORAGE_ROOT: /app/import-storage
       TRUST_PROXY: ${TRUST_PROXY:-}
       TRANSCRIPTION_ENDPOINT: ${TRANSCRIPTION_ENDPOINT:-}
       HTTPS_KEY_PATH: ${HTTPS_KEY_PATH:-}
@@ -21,6 +22,10 @@ services:
     volumes:
       - data:/app/data
       - output:/app/output
+      - type: bind
+        source: ${IMPORT_STORAGE_PATH:-./import-storage}
+        target: /app/import-storage
+        read_only: true
 
 volumes:
   data:

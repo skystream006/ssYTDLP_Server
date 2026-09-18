@@ -8,4 +8,6 @@ runtime/deno/
 runtime/ffmpeg/
 runtime/yt-dlp/
 output/
+import-storage/*
+!import-storage/.gitkeep
 public/assets/

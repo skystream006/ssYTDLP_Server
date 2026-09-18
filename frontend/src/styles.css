@@ -165,6 +165,10 @@ h1 { margin: 0; max-width: 780px; font: 600 48px/1.05 'Newsreader', serif; overf
 .import-modes button + button { border-left: 1px solid var(--line); }
 .import-modes button[aria-pressed="true"] { color: var(--on-accent); background: var(--royal); }
 .import-file-options, .import-itunes-options { display: grid; gap: 20px; }
+.import-itunes-options > .import-modes { margin-bottom: 0; }
+.import-modes button svg { flex: none; }
+.import-storage-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; font-weight: 700; }
+.import-storage-status { color: var(--muted); font-size: 12px; }
 .import-field { display: grid; min-width: 0; gap: 10px; color: var(--ink); font-size: 12px; }
 .import-field > span { display: flex; align-items: center; gap: 8px; font-weight: 700; }
 .import-field input, .import-field select { min-width: 0; width: 100%; min-height: 42px; padding: 10px; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 0; }

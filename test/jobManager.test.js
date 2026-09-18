@@ -202,6 +202,61 @@ test('private video errors are classified as warnings', async () => {
   await fs.rm(process.env.JOB_STORE_PATH, { force: true });
 });
 
+test('unavailable video errors are warnings in either output stream without hiding other errors', async () => {
+  const { classifyCommandOutput } = await import(`../src/jobManager.js?unavailable=${Date.now()}`);
+  for (const stream of ['stdout', 'stderr']) {
+    const output = 'ERROR: [youtube] abc: vIdEo UnAvAiLaBlE. This video has been removed';
+    const unavailable = classifyCommandOutput({ [stream]: output });
+    assert.equal(unavailable.hasPrivateVideoWarning, true);
+    assert.equal(unavailable.hasNonPrivateError, false);
+    assert.equal(unavailable[stream], output.replace('ERROR:', 'WARNING:'));
+
+    const mixed = classifyCommandOutput({
+      [stream]: `${output}\nERROR: [youtube] def: Private video\nERROR: Unable to download webpage`
+    });
+    assert.equal(mixed.hasPrivateVideoWarning, true);
+    assert.equal(mixed.hasNonPrivateError, true);
+    assert.match(mixed[stream], /ERROR: Unable to download webpage/);
+    assert.match(mixed[stream], /WARNING: \[youtube\] def: Private video/);
+  }
+});
+
+for (const { label, output, exitCode, status } of [
+  { label: 'successful exit', output: 'ERROR: [youtube] abc: Video unavailable', exitCode: 0, status: 'partially_completed' },
+  { label: 'failed exit', output: 'ERROR: [youtube] abc: Video unavailable', exitCode: 1, status: 'partially_completed' },
+  { label: 'private and unavailable', output: 'ERROR: [youtube] abc: Video unavailable\nERROR: [youtube] def: Private video', exitCode: 1, status: 'partially_completed' },
+  { label: 'unrelated error', output: 'ERROR: [youtube] abc: Video unavailable\nERROR: Unable to download webpage', exitCode: 1, status: 'failed' }
+]) {
+  test(`unavailable video job status: ${label}`, {
+    skip: process.platform === 'win32' && 'requires POSIX executable test fixtures'
+  }, async (t) => {
+    const { manager, file } = await makeMetadataFixture(t, {
+      output: JSON.stringify({ title: 'Unavailable playlist' })
+    });
+    await fs.writeFile(file('yt-dlp.cjs'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+if (args.includes('--dump-single-json')) {
+  process.stdout.write('{"title":"Unavailable playlist"}');
+} else {
+  const output = args[args.indexOf('--output') + 1];
+  fs.writeFileSync(path.join(path.dirname(output), 'Downloaded song.mp3'), '');
+  process.stderr.write(${JSON.stringify(output)});
+  process.exitCode = ${exitCode};
+}
+`);
+    const job = await manager.createJob('https://music.youtube.com/playlist?list=unavailable');
+    await waitForJobToFinish(job);
+    assert.equal(job.status, status);
+    assert.equal(job.error, status === 'failed' ? 'Command failed with exit code 1' : null);
+    assert.equal(job.warning, status === 'failed' ? null : 'One or more private or unavailable videos were skipped.');
+    assert.deepEqual(job.files, ['Downloaded song.mp3']);
+    assert.match(job.output, /WARNING: \[youtube\] abc: Video unavailable/);
+    assert.equal(manager.getJob(job.id).status, status);
+  });
+}
+
 test('playlist metadata counts all songs independently of downloaded files', async () => {
   process.env.JOB_STORE_PATH = path.join(os.tmpdir(), `ssytdlp-metadata-${Date.now()}.json`);
   const { parsePlaylistMetadata } = await import(`../src/jobManager.js?metadata=${Date.now()}`);
@@ -297,12 +352,38 @@ test('persisted private video failures become partially completed', async (t) =>
 
   assert.equal(job.status, 'partially_completed');
   assert.equal(job.error, null);
-  assert.equal(job.warning, 'One or more private videos were skipped.');
+  assert.equal(job.warning, 'One or more private or unavailable videos were skipped.');
   assert.equal(job.playlistSongCount, 12);
 
   t.after(async () => {
     await fs.rm(storeRoot, { recursive: true, force: true });
   });
+});
+
+test('persisted unavailable video failures are recovered unless unrelated errors are present', async () => {
+  const records = [
+    { id: 'error', status: 'failed', output: 'ERROR: [youtube] abc: Video unavailable' },
+    { id: 'warning', status: 'warning', output: 'WARNING: [youtube] abc: Video unavailable' },
+    { id: 'private-and-unavailable', status: 'failed', output: 'ERROR: [youtube] abc: Video unavailable\nERROR: [youtube] def: Private video' },
+    { id: 'mixed', status: 'failed', output: 'WARNING: [youtube] abc: Video unavailable\nERROR: Unable to download webpage' }
+  ];
+  for (const record of records) {
+    writeJob(openDatabase(), {
+      ...record, url: `https://music.youtube.com/watch?v=${record.id}`,
+      error: 'Command failed with exit code 1', files: [], createdAt: new Date().toISOString()
+    });
+  }
+  const manager = await import(`../src/jobManager.js?persisted-unavailable=${Date.now()}`);
+  for (const record of records) {
+    const job = manager.getJob(record.id);
+    assert.equal(job.status, record.id === 'mixed' ? 'failed' : 'partially_completed');
+    assert.equal(job.error, record.id === 'mixed' ? 'Command failed with exit code 1' : null);
+    if (record.id !== 'mixed') {
+      assert.equal(job.warning, 'One or more private or unavailable videos were skipped.');
+    }
+    const stored = JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get(record.id).data);
+    assert.equal(stored.status, job.status);
+  }
 });
 
 test('duplicate source URLs return the previous job without creating another record', async (testContext) => {

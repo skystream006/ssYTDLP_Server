@@ -485,6 +485,41 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(unicodeImport.body.jobs[0].files.at(-1), unicodeName);
   assert.equal((await call(`/api/jobs/${importedId}/rerun`, 'POST', credentials.Owner[0])).status, 400);
   assert.equal((await upload(importOptions, [{ ...uploadFile, data: Buffer.from('invalid') }])).status, 400);
+  const movie = { field: 'files', name: 'Movie 100% #1.mp4', data: Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex') };
+  const movieImport = await upload({ ...importOptions, playlistTitle: 'Movies' }, [movie]);
+  assert.equal(movieImport.status, 201, movieImport.text);
+  const movieId = movieImport.body.jobs[0].id;
+  assert.equal((await upload(existingOptions, [movie])).status, 201);
+  const movieFiles = await call(`/api/jobs/${importedId}/files`, 'GET', credentials.Owner[0]);
+  const movieFile = movieFiles.body.files.find((file) => file.name === movie.name);
+  assert.equal(movieFile.isSong, false);
+  assert.equal(movieFile.isPlayable, true);
+  assert.equal(movieFile.mediaType, 'video');
+  assert.equal((await call(movieFile.streamUrl)).status, 401);
+  const movieStream = await call(movieFile.streamUrl, 'GET', { ...credentials.Owner[0], Range: 'bytes=4-11' });
+  assert.equal(movieStream.status, 206);
+  assert.equal(movieStream.headers['content-type'], 'video/mp4');
+  assert.equal(movieStream.headers['content-range'], `bytes 4-11/${movie.data.length}`);
+  assert.deepEqual(movieStream.buffer, movie.data.subarray(4, 12));
+  assert.equal((await call(movieFile.streamUrl, 'GET', { ...credentials.Owner[0], Range: 'bytes=999-' })).status, 416);
+  assert.equal((await call(`/api/jobs/${importedId}/lyrics/${encodeURIComponent(movie.name)}`, 'GET', credentials.Owner[0])).status, 400);
+  assert.equal((await call(`/api/jobs/${importedId}/stream/..%2Foutside.mp4`, 'GET', credentials.Owner[0])).status, 400);
+  assert.equal((await upload(existingOptions, [{ ...movie, data: audio }])).status, 400);
+  const movieLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+  assert.equal(movieLibrary.playlists.find((playlist) => playlist.id === importedId).songCount, 4);
+  const movieKey = JSON.stringify([importedId, movie.name]);
+  const movieOrder = await call('/api/library', 'PUT', credentials.Owner[0], { ...movieLibrary,
+    songOrder: { ...movieLibrary.songOrder, [importedId]: [movie.name] },
+    playlistSongOrder: { ...movieLibrary.playlistSongOrder, [importedId]: [movieKey] } });
+  assert.equal(movieOrder.status, 200, movieOrder.text);
+  const movieTracks = await call(`/api/library/tracks?entryId=${importedId}`, 'GET', credentials.Owner[0]);
+  assert.equal(movieTracks.body.files[0].name, movie.name);
+  assert.equal(movieTracks.body.files[0].mediaType, 'video');
+  const movieMove = await call('/api/library/songs/move', 'POST', credentials.Owner[0], {
+    version: movieOrder.body.version, jobId: importedId, name: movie.name, playlistId: movieId
+  });
+  assert.equal(movieMove.status, 200, movieMove.text);
+  assert.equal((await call(`/api/library/tracks?entryId=${movieId}`, 'GET', credentials.Owner[0])).body.files.length, 2);
   const xml = buildPlist({ Tracks: { 1: { 'Track ID': 1, Location: 'file:///Users/me/Music/Uploaded.wav' } },
     Playlists: [{ Name: 'iTunes favorites', 'Playlist Items': [{ 'Track ID': 1 }] }] });
   const mediaZip = new AdmZip();

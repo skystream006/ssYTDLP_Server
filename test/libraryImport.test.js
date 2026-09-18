@@ -7,6 +7,18 @@ import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import AdmZip from 'adm-zip';
 import * as plist from 'plist';
+import { isPlayableFile, mediaType, videoExtensions } from '../src/media.js';
+
+test('playable media distinguishes movies from audio and non-media filenames', () => {
+  for (const extension of videoExtensions) {
+    assert.equal(mediaType(`Movies/Clip${extension.toUpperCase()}`), 'video');
+    assert.equal(isPlayableFile(`Clip${extension}`), true);
+  }
+  assert.equal(mediaType('Music/Song.mp3'), 'audio');
+  for (const name of ['mp4', '.mp4', 'movie.mp4.txt', 'playlist.xml', 'movie.avi', undefined]) {
+    assert.equal(isPlayableFile(name), false);
+  }
+});
 
 test('music imports validate media, preserve playlists and enforce ownership', async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-import-test-'));
@@ -87,7 +99,7 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   await assert.rejects(imports.validateImportMedia({ ...file, name: 'fake.mp4' }), /mismatched video/);
   await assert.rejects(imports.validateImportMedia({ ...movie, name: 'fake.webm' }), /mismatched video/);
   await assert.rejects(imports.validateImportAudio(movie), /Unsupported audio/);
-  await assert.rejects(manager.transcribeSong(job.id, 'Movie.mp4', {}, owner), { statusCode: 400 });
+  await assert.rejects(manager.transcribeJobFile(job.id, 'Movie.mp4', {}, owner), { statusCode: 400 });
 
   const zip = new AdmZip();
   zip.addFile('Media/Artist/Album/Song.wav', audio);

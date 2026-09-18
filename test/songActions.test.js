@@ -11,12 +11,14 @@ let SongGroups;
 let findNoVocals;
 let queueSongNext;
 let ExportLibraryDialog;
+let ImportMusic;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, TranscriptionDialog } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ SongGroups, findNoVocals, queueSongNext } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
+  ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
 });
 
 after(async () => { await server?.close(); });
@@ -24,6 +26,16 @@ after(async () => { await server?.close(); });
 function renderExportDialog() {
   return renderToStaticMarkup(createElement(ExportLibraryDialog, { onClose() {} }));
 }
+
+test('media import offers audio and movie uploads to playlists', () => {
+  const html = renderToStaticMarkup(createElement(ImportMusic, { request() {}, onClose() {}, onImported() {} }));
+  assert.match(html, />Import media<\/h2>/);
+  assert.match(html, /Audio and movie files/);
+  const input = html.match(/<input[^>]*type="file"[^>]*>/)[0];
+  for (const extension of ['.mp3', '.wav', '.mp4', '.m4v', '.webm', '.mov', '.ogv']) assert.ok(input.includes(extension));
+  assert.match(input, /multiple=""/);
+  assert.match(html, /Create New Playlist/);
+});
 
 test('library export uses a native GET download in a separate tab', () => {
   const html = renderExportDialog();

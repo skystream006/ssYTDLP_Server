@@ -1,6 +1,6 @@
 import { openDatabase } from './database.js';
 import { getPlaylistTracks, individualSongsId, reconcileLibrary, songKey, themes } from './library.js';
-import { isSongFile } from './transcription.js';
+import { isPlayableFile } from './media.js';
 
 function invalid(message, statusCode = 400) {
   throw Object.assign(new Error(message), { statusCode });
@@ -69,7 +69,7 @@ function validateLibrary(value, jobs, current) {
     const job = jobMap.get(jobId);
     const files = new Set(job?.files || []);
     if (!job || !Array.isArray(names) || new Set(names).size !== names.length
-      || names.some((name) => typeof name !== 'string' || !isSongFile(name) || !files.has(name))) invalid('Invalid song order');
+      || names.some((name) => typeof name !== 'string' || !isPlayableFile(name) || !files.has(name))) invalid('Invalid song order');
     return [jobId, names];
   }));
   const playlistIds = new Set(entries.filter((entry) => entry.type === 'playlist').map((entry) => entry.id));
@@ -81,7 +81,7 @@ function validateLibrary(value, jobs, current) {
   const songMoves = moves.map((track) => {
     const key = track && songKey(track);
     const job = jobMap.get(track?.jobId);
-    if (!job || typeof track.name !== 'string' || !isSongFile(track.name) || !job.files?.includes(track.name)
+    if (!job || typeof track.name !== 'string' || !isPlayableFile(track.name) || !job.files?.includes(track.name)
       || !playlistIds.has(track.playlistId) || movedKeys.has(key)) invalid('Songs can only be moved to available playlists');
     movedKeys.add(key);
     return { jobId: track.jobId, name: track.name, playlistId: track.playlistId };
@@ -91,7 +91,7 @@ function validateLibrary(value, jobs, current) {
   if (!orders || typeof orders !== 'object' || Array.isArray(orders)) invalid('Invalid playlist song order');
   const playlistTracks = getPlaylistTracks(library, jobs);
   library.playlistSongOrder = Object.fromEntries(Object.entries(orders).map(([id, keys]) => {
-    const allowed = new Set((playlistTracks.get(id) || []).filter((track) => isSongFile(track.name)).map(songKey));
+    const allowed = new Set((playlistTracks.get(id) || []).filter((track) => isPlayableFile(track.name)).map(songKey));
     if (!playlistIds.has(id) || !Array.isArray(keys) || new Set(keys).size !== keys.length
       || keys.some((key) => typeof key !== 'string' || !allowed.has(key))) invalid('Invalid playlist song order');
     return [id, keys];
@@ -138,11 +138,11 @@ export function moveLibrarySong(userId, value, jobs) {
       invalid('Songs can only be moved to available playlists');
     }
     const job = jobs.find((item) => item.id === value.jobId);
-    if (!job || typeof value.name !== 'string' || !isSongFile(value.name) || !job.files?.includes(value.name)) invalid('Song is no longer available');
+    if (!job || typeof value.name !== 'string' || !isPlayableFile(value.name) || !job.files?.includes(value.name)) invalid('Song is no longer available');
     const key = songKey(value);
     const source = [...getPlaylistTracks(current, jobs).values()].flat().find((track) => songKey(track) === key);
     if (source?.playlistId === value.playlistId) return current;
-    const destination = getPlaylistTracks(current, jobs).get(value.playlistId).filter((track) => isSongFile(track.name)).map(songKey);
+    const destination = getPlaylistTracks(current, jobs).get(value.playlistId).filter((track) => isPlayableFile(track.name)).map(songKey);
     const songMoves = [...current.songMoves.filter((track) => songKey(track) !== key), { jobId: value.jobId, name: value.name, playlistId: value.playlistId }];
     const playlistSongOrder = Object.fromEntries(Object.entries(current.playlistSongOrder).map(([id, order]) => [id, order.filter((item) => item !== key)]));
     playlistSongOrder[value.playlistId] = [...destination, key];

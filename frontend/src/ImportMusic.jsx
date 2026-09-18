@@ -1,15 +1,14 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Check, FileAudio, FileArchive, FileCode, HardDrive, RefreshCw, Upload, X } from 'lucide-react';
 import { formatBytes } from './SongActions.jsx';
+import { mediaAccept } from '../../src/media.js';
 
-const audioTypes = '.mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.wma';
-
-export default function ImportMusic({ request, onClose, onImported }) {
+export default function ImportMusic({ request, onClose, onImported, initialPlaylistId = '' }) {
   const dialogRef = useRef(null);
   const headingId = useId();
   const [mode, setMode] = useState('files');
   const [playlists, setPlaylists] = useState(null);
-  const [playlistId, setPlaylistId] = useState('');
+  const [playlistId, setPlaylistId] = useState(initialPlaylistId);
   const [createNew, setCreateNew] = useState(false);
   const [playlistTitle, setPlaylistTitle] = useState('');
   const [files, setFiles] = useState([]);
@@ -42,7 +41,7 @@ export default function ImportMusic({ request, onClose, onImported }) {
       if (!active) return;
       const available = library.playlists.filter((playlist) => !['running', 'queued'].includes(playlist.status));
       setPlaylists(available);
-      setPlaylistId((current) => current || available[0]?.id || '');
+      setPlaylistId((current) => available.some((playlist) => playlist.id === current) ? current : available[0]?.id || '');
       if (!available.length) setCreateNew(true);
     }).catch((failure) => { if (active) setLoadError(failure.message); });
     return () => { active = false; };
@@ -78,7 +77,7 @@ export default function ImportMusic({ request, onClose, onImported }) {
         return;
       }
       if (mode === 'files' && (files.length > 1000 || files.some((file) => file.size > 512 * 1024 ** 2))) {
-        setError('Select up to 1,000 audio files, no larger than 512 MB each.');
+        setError('Select up to 1,000 audio or movie files, no larger than 512 MB each.');
         return;
       }
       if (mode === 'itunes' && xml?.size > 20 * 1024 ** 2) {
@@ -114,7 +113,7 @@ export default function ImportMusic({ request, onClose, onImported }) {
   return <dialog ref={dialogRef} className="confirmation-dialog import-dialog" aria-labelledby={headingId}
     onCancel={(event) => { event.preventDefault(); if (!submitting) onClose(); }}>
     <div className="folder-dialog-heading">
-      <h2 id={headingId}>Import music</h2>
+      <h2 id={headingId}>Import media</h2>
       <button className="music-icon-button" type="button" title="Close import" aria-label="Close import" disabled={submitting} onClick={onClose}><X size={18} /></button>
     </div>
     {result ? <>
@@ -138,8 +137,8 @@ export default function ImportMusic({ request, onClose, onImported }) {
               {playlists?.map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.playlistTitle}</option>)}
             </select>
           </label>}
-          <label className="import-field import-upload"><span><FileAudio size={18} />Audio files</span>
-            <input key="audio" type="file" accept={audioTypes} multiple required onChange={(event) => setFiles([...event.target.files])} />
+          <label className="import-field import-upload"><span><FileAudio size={18} />Audio and movie files</span>
+            <input key="files" type="file" accept={mediaAccept} multiple required onChange={(event) => setFiles([...event.target.files])} />
             {files.length > 0 && <small>{files.length} {files.length === 1 ? 'file' : 'files'} / {formatBytes(files.reduce((size, file) => size + file.size, 0))}</small>}
           </label>
         </div> : <div className="import-itunes-options">
@@ -176,7 +175,7 @@ export default function ImportMusic({ request, onClose, onImported }) {
         </div>}
       </fieldset>
       {error && <p className="notice error" role="alert">{error}</p>}
-      {submitting && <p className="import-progress" role="status"><RefreshCw className="spin" size={17} />{mode === 'itunes' && itunesSource === 'local' ? 'Processing local library...' : 'Importing music...'}</p>}
+      {submitting && <p className="import-progress" role="status"><RefreshCw className="spin" size={17} />{mode === 'itunes' && itunesSource === 'local' ? 'Processing local library...' : 'Importing media...'}</p>}
       <div className="dialog-actions">
         <button className="secondary-button" type="button" disabled={submitting} onClick={onClose}>Cancel</button>
         <button className="primary-button" type="submit" disabled={!ready || submitting}><Upload size={17} />{submitting ? 'Importing' : 'Import'}</button>

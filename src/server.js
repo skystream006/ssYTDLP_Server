@@ -9,6 +9,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setSongMetadata, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
+import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata } from './music.js';
 import { findNoVocals, getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey } from './library.js';
 import { getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, setLibrary, setTheme } from './libraryStore.js';
@@ -124,12 +125,12 @@ app.get('/api/library', (req, res) => {
     const job = jobMap.get(entry.id);
     return { id: entry.id, jobId: job?.id || null, playlistTitle: entry.name || job?.playlistTitle,
       protected: Boolean(entry.protected), status: job?.status || 'completed', initiatedBy: job?.initiatedBy || req.user,
-      updatedAt: job?.updatedAt, songCount: tracks.get(entry.id).filter((track) => isSongFile(track.name)).length };
+      updatedAt: job?.updatedAt, songCount: tracks.get(entry.id).filter((track) => isPlayableFile(track.name)).length };
   });
   res.json({ ...library, playlists, jobs: jobs.map((job) => ({
     id: job.id, isPlaylist: job.isPlaylist, playlistTitle: job.playlistTitle, status: job.status, initiatedBy: job.initiatedBy,
     contributors: job.contributors || [], transcriptions: job.transcriptions || {},
-    updatedAt: job.updatedAt, songCount: (job.files || []).filter(isSongFile).length
+    updatedAt: job.updatedAt, songCount: (job.files || []).filter(isPlayableFile).length
   })) });
 });
 
@@ -186,10 +187,10 @@ app.get('/api/library/tracks', async (req, res) => {
     }
     const jobMap = new Map(jobs.map((job) => [job.id, job]));
     const playlistTracks = getPlaylistTracks(library, jobs);
-    const tracks = getPlaylistIds(library.entries, selectedId).flatMap((id) => playlistTracks.get(id)).filter((track) => isSongFile(track.name));
+    const tracks = getPlaylistIds(library.entries, selectedId).flatMap((id) => playlistTracks.get(id)).filter((track) => isPlayableFile(track.name));
     const sourceFiles = await Promise.all([...new Set(tracks.map((track) => track.jobId))].map(async (id) => {
       const files = await listJobFiles(jobMap.get(id));
-      return files.filter((file) => file.isSong).map((file) => [songKey({ jobId: id, name: file.name }), file]);
+      return files.filter((file) => file.isPlayable).map((file) => [songKey({ jobId: id, name: file.name }), file]);
     }));
     const files = new Map(sourceFiles.flat());
     return res.json({ files: tracks.filter((track) => files.has(songKey(track))).map((track) => ({
@@ -262,7 +263,9 @@ async function listJobFiles(job, order) {
         sizeBytes: stat.size,
         downloadUrl: `/api/jobs/${job.id}/download/${encodeURIComponent(fileName)}`,
         isSong: isSongFile(fileName),
-        streamUrl: isSongFile(fileName) ? `/api/jobs/${job.id}/stream/${encodeURIComponent(fileName)}?v=${stat.mtimeMs}` : null
+        isPlayable: isPlayableFile(fileName),
+        mediaType: mediaType(fileName),
+        streamUrl: isPlayableFile(fileName) ? `/api/jobs/${job.id}/stream/${encodeURIComponent(fileName)}?v=${stat.mtimeMs}` : null
       });
     }
   }
@@ -273,11 +276,11 @@ async function listJobFiles(job, order) {
   });
 }
 
-async function resolveRequestedFile(req, songOnly = false) {
+async function resolveRequestedFile(req, acceptsFile = null) {
   const job = getJob(req.params.id);
   if (!job) throw Object.assign(new Error('Job not found'), { statusCode: 404 });
   const name = req.params.name;
-  if (!isValidJobFileName(name) || (songOnly && !isSongFile(name))) {
+  if (!isValidJobFileName(name) || (acceptsFile && !acceptsFile(name))) {
     throw Object.assign(new Error('Invalid file path'), { statusCode: 400 });
   }
   if (!job.outputDir || !job.files.includes(name)) {
@@ -305,8 +308,9 @@ app.get('/api/jobs/:id/download/:name', async (req, res) => {
 
 app.get('/api/jobs/:id/stream/:name', async (req, res) => {
   try {
-    const filePath = await resolveRequestedFile(req, true);
+    const filePath = await resolveRequestedFile(req, isPlayableFile);
     res.set('Cache-Control', 'private, no-cache');
+    if (/\.m4v$/i.test(filePath)) res.type('video/mp4');
     return res.sendFile(filePath);
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
@@ -315,7 +319,7 @@ app.get('/api/jobs/:id/stream/:name', async (req, res) => {
 
 app.get('/api/jobs/:id/lyrics/:name', async (req, res) => {
   try {
-    const filePath = await resolveRequestedFile(req, true);
+    const filePath = await resolveRequestedFile(req, isSongFile);
     res.set('Cache-Control', 'no-store');
     return res.json(await readSongMetadata(filePath));
   } catch (error) {

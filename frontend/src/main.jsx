@@ -337,7 +337,7 @@ function JobsPage() {
           <p>Send a YouTube Music track or playlist to your local archive.</p>
         </div>
         <div className="jobs-heading-actions">
-          <button className="secondary-button" type="button" onClick={() => setImporting(true)}><Upload size={17} />Import music</button>
+          <button className="secondary-button" type="button" onClick={() => setImporting(true)}><Upload size={17} />Import media</button>
           <div className="queue-summary" aria-label="Queue summary">
           <div><strong>{jobs ? filteredJobs.length : '-'}</strong><span>Total</span></div>
           <div><strong>{counts.running || 0}</strong><span>Active</span></div>
@@ -524,7 +524,7 @@ function JobPage({ id }) {
   const [actionError, setActionError] = useState('');
   const job = data?.[0];
   const files = data?.[1]?.files || [];
-  const firstSong = files.find((file) => file.isSong);
+  const firstSong = files.find((file) => file.isPlayable);
   const isActive = job?.status === 'queued' || job?.status === 'running';
   const hasPendingTranscription = Object.values(job?.transcriptions || {}).some((transcription) => transcription.status === 'sent');
   const canModify = canModifyJob(user, job);
@@ -711,8 +711,8 @@ function JobPage({ id }) {
             {files.length === 0 ? <div className="empty-files"><FileAudio size={29} /><p>No downloadable files yet.</p></div> : (
               <ul className="file-list">{files.map((file) => (
                 <li key={file.name}>
-                  {file.isSong ? <a className="song-file-link" href={`/job/${encodeURIComponent(id)}/player?${new URLSearchParams({ song: file.name, play: '1' })}`} aria-label={`Play ${file.name}`} title="Play song">
-                    <span className="file-icon"><FileAudio size={19} /></span>
+                  {file.isPlayable ? <a className="song-file-link" href={`/job/${encodeURIComponent(id)}/player?${new URLSearchParams({ song: file.name, play: '1' })}`} aria-label={`Play ${file.name}`} title="Play media">
+                    <span className="file-icon">{file.mediaType === 'video' ? <Play size={19} /> : <FileAudio size={19} />}</span>
                     <span><strong>{file.title || file.name}</strong><small>{file.title ? `${file.name} / ` : ''}{formatBytes(file.sizeBytes)}</small>
                       <TranscriptionStatus transcription={pendingTranscriptions[file.name] || job.transcriptions?.[file.name]} />
                     </span>

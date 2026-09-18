@@ -9,8 +9,8 @@ On **Jobs**, enter a YouTube Music URL and check **Download metadata only**
 before choosing **Add job**. The initial run retrieves the title and playlist
 song count, creates the output folder, and adds the job to your library without
 downloading audio. yt-dlp is still used for metadata lookup with `--skip-download`.
-For playlists, use **Import music > Files** and select the new playlist to upload
-your own songs into its folder.
+For playlists, use **Import media > Files** and select the new playlist to upload
+your own audio or movies into its folder.
 
 **Rerun** downloads media normally, keeping existing files and downloading missing
 songs. Metadata-only applies only to the initial run. Submitting an existing URL
@@ -18,13 +18,15 @@ still offers a normal media-downloading rerun, even with the checkbox selected.
 The API accepts the optional boolean `metadataOnly` on `POST /api/jobs`; it defaults
 to `false`.
 
-## Import music
+## Import media
 
-On **Jobs**, choose **Import music**.
+On **Jobs**, choose **Import media**, or use the **Import media** upload button
+in your library. From a selected playlist, that playlist is preselected.
 
 - **Files:** select an existing playlist from your personal library, or check
-    **Create New Playlist** and enter its name. Select audio files and choose
-    **Import**. MP3, WAV, FLAC, M4A, AAC, OGG, Opus and WMA are accepted; playback
+    **Create New Playlist** and enter its name. Select audio or movie files and choose
+    **Import**. MP3, WAV, FLAC, M4A, AAC, OGG, Opus, WMA, MP4, M4V, WebM, MOV
+    and OGV are accepted; playback
     depends on your browser's codec support. Existing files are never overwritten.
 - **iTunes library:** choose **Upload files** for an exported iTunes/Music library
     **XML** and a separate **ZIP**, or **Import from local** to select those files
@@ -37,13 +39,13 @@ On **Jobs**, choose **Import music**.
     Tracks in several playlists are copied into each playlist. Internet-only
     tracks are skipped; unsupported local formats must be converted first.
 
-Original audio and embedded tags are preserved without transcoding. New imports
+Original media and embedded tags are preserved without transcoding. New imports
 appear as completed jobs and in your music library; imported jobs cannot be
 rerun. Imports into existing playlists require owner or contributor access.
 
-Browser uploads are limited to 2 GB total, 512 MB per audio file, 20 MB XML,
+Browser uploads are limited to 2 GB total, 512 MB per audio or movie file, 20 MB XML,
 and 1,000 directly uploaded files. Uploaded iTunes libraries are limited to
-10,000 ZIP entries, 2,000 audio tracks, 500 playlists, and 4 GB expanded media
+10,000 ZIP entries, 2,000 media tracks, 500 playlists, and 4 GB expanded media
 (including playlist copies). Limits are enforced by the server as well as the
 upload form where applicable.
 
@@ -62,6 +64,20 @@ The authenticated `POST /api/jobs/import` endpoint accepts multipart form data:
 or `createNew=false` with `playlistId` instead of `playlistTitle`.
 For iTunes, send `mode=itunes`, `xml`, and `media`. Session cookies, PATs and
 bearer tokens use the same authentication as the existing jobs API.
+
+### Movie playback
+
+Select a movie in a playlist or a job's file list to play it in the app. Movies
+and audio share the playback queue, seek, volume, repeat and shuffle controls.
+The movie viewer has native playback and fullscreen controls; minimize it and
+use the dock's movie button to reopen it without restarting playback. Playback
+continues while navigating within the app. Lyrics and transcription remain audio-only.
+
+Codec support depends on the browser and operating system. MP4 with H.264/AAC
+or WebM with VP8/VP9 and Opus are common choices; a supported extension does not
+guarantee a supported codec. There is no automatic video conversion. Music library
+exports remain audio-only; movies can be downloaded from their file actions or
+the job's **Download all** archive.
 
 ### Import from a Windows folder
 
@@ -84,7 +100,7 @@ Rebuild/recreate the app after updating the code or mount:
 docker compose up -d --build
 ```
 
-In **Jobs > Import music > iTunes library > Import from local**, refresh the
+In **Jobs > Import media > iTunes library > Import from local**, refresh the
 file list, select the XML and ZIP, then choose **Import**. Only regular files
 directly in the folder are listed; subfolders and symbolic links are excluded.
 Finish copying both files before importing, and do not replace them while an

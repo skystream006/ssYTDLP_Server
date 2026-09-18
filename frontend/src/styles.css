@@ -528,6 +528,13 @@ code { font: 400 11px 'DM Mono', monospace; }
 .library-mobile-tabs { display: none; }
 .player-dock { position: fixed; z-index: 40; inset: auto 0 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 1.35fr) minmax(180px, 1fr); gap: 24px; align-items: center; min-height: 104px; padding: 14px max(24px, calc((100vw - 1500px) / 2)); border-top: 1px solid var(--line); background: var(--surface); box-shadow: 0 -6px 28px color-mix(in srgb, var(--shadow) 18%, transparent); }
 .player-dock audio { display: none; }
+.movie-player { position: fixed; z-index: 24; right: 16px; bottom: calc(var(--dock-height, 124px) + 12px); width: min(640px, calc(100% - 32px)); max-height: calc(100dvh - var(--dock-height, 124px) - 24px); overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 10px 40px var(--shadow); }
+.movie-player[hidden] { display: none; }
+.movie-player header { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 8px 4px 14px; }
+.movie-player header > svg { flex: none; }
+.movie-player header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.movie-player header button { flex: none; }
+.movie-player video { display: block; width: 100%; aspect-ratio: 16 / 9; max-height: calc(100dvh - var(--dock-height, 124px) - 78px); object-fit: contain; background: #000; }
 .app-shell main { padding-bottom: calc(var(--dock-height, 124px) + 32px); }
 .global-player .player-panel { position: fixed; z-index: 25; inset: auto 16px calc(var(--dock-height, 124px) + 12px) auto; width: min(360px, calc(100% - 32px)); max-height: calc(100dvh - var(--dock-height, 124px) - 36px); margin: 0; padding: 20px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 10px 40px var(--shadow); overflow-y: auto; }
 .global-player .playback-queue { max-height: none; }

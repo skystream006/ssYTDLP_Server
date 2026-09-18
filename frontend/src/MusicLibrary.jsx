@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ArrowRightLeft, Check, ChevronDown, ChevronRight, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import MusicPlayer, { usePlayback } from './MusicPlayer.jsx';
+import ImportMusic from './ImportMusic.jsx';
+import { Upload } from 'lucide-react';
 import { getPlaylistIds, songKey } from '../../src/library.js';
 import { submitJobUrl } from './jobSubmission.js';
 import { canManageJob, canModifyJob, MetadataDialog, TranscriptionDialog } from './SongActions.jsx';
@@ -225,6 +227,7 @@ export default function MusicLibrary({ user, request, confirm }) {
   const [folderDialog, setFolderDialog] = useState(null);
   const [renamingPlaylist, setRenamingPlaylist] = useState(null);
   const [addingPlaylist, setAddingPlaylist] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [exportingLibrary, setExportingLibrary] = useState(false);
   const [reordering, setReordering] = useState(false);
   const [movingSong, setMovingSong] = useState(null);
@@ -601,6 +604,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     <header className="library-titlebar"><div><p className="eyebrow"><Music2 size={13} />Your music, collected</p><h1>{user.name}'s Music</h1></div>
       <div className="library-header-actions"><span className="library-save-status" role="status">{saving ? 'Saving...' : saved ? 'Saved' : `${jobs.length} playlists`}</span>
         <button className="music-icon-button" type="button" title="Refresh library" aria-label="Refresh library" disabled={saving} onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={18} /></button>
+        <button className="music-icon-button" type="button" title="Import media" aria-label="Import media" aria-haspopup="dialog" disabled={!library || saving} onClick={() => setImporting(true)}><Upload size={18} /></button>
         <button className="secondary-button compact-button library-export-button" type="button" title="Export library" aria-label="Export library" aria-haspopup="dialog" disabled={!library || saving} onClick={() => setExportingLibrary(true)}><Download size={17} />Export library</button>
         <button className="primary-button compact-button" type="button" title="Add Playlist" aria-label="Add Playlist" disabled={!library || saving} onClick={() => setAddingPlaylist(true)}><Plus size={17} />Add Playlist</button></div></header>
     {(error || trackError) && <div className="notice error library-notice" role="alert">{error || trackError}<button className="music-icon-button" type="button" title="Retry" aria-label="Retry loading library" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={16} /></button></div>}
@@ -620,6 +624,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     {folderDialog && <FolderDialog folder={folderDialog.folder} parentId={folderDialog.parentId} folders={possibleFolders(folderDialog.folder?.id)} saving={saving} onSave={saveFolder} onClose={() => setFolderDialog(null)} />}
     {renamingPlaylist && <RenamePlaylistDialog playlist={renamingPlaylist} saving={saving} onSave={renamePlaylist} onClose={() => setRenamingPlaylist(null)} />}
     {addingPlaylist && <AddPlaylistDialog user={user} request={request} confirm={confirm} onAdded={playlistAdded} onClose={() => setAddingPlaylist(false)} />}
+    {importing && <ImportMusic request={request} initialPlaylistId={selected?.type === 'playlist' ? selectedId : ''} onClose={() => setImporting(false)} onImported={() => setRefresh((value) => value + 1)} />}
     {exportingLibrary && <ExportLibraryDialog onClose={() => setExportingLibrary(false)} />}
     {movingSong && <MoveSongDialog track={movingSong} playlists={entries.filter((entry) => entry.type === 'playlist' && entry.id !== movingSong.playlistId).map((entry) => ({
       id: entry.id, title: `${entry.parentId ? `${folderPath(entryMap.get(entry.parentId))} / ` : ''}${entryTitle(entry)}`

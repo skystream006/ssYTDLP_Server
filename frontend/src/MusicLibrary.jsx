@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ArrowDown, ArrowRightLeft, ArrowUp, Check, ChevronDown, ChevronRight, ExternalLink, Folder, FolderOpen, FolderPlus, Library, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { ArrowRightLeft, Check, ChevronDown, ChevronRight, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import MusicPlayer, { usePlayback } from './MusicPlayer.jsx';
 import { getPlaylistIds, songKey } from '../../src/library.js';
 import { submitJobUrl } from './jobSubmission.js';
@@ -171,6 +171,7 @@ export default function MusicLibrary({ user, request, confirm }) {
   const [folderDialog, setFolderDialog] = useState(null);
   const [renamingPlaylist, setRenamingPlaylist] = useState(null);
   const [addingPlaylist, setAddingPlaylist] = useState(false);
+  const [reordering, setReordering] = useState(false);
   const [movingSong, setMovingSong] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [transcribingFile, setTranscribingFile] = useState(null);
@@ -382,25 +383,27 @@ export default function MusicLibrary({ user, request, confirm }) {
   const folders = entries.filter((entry) => entry.type === 'folder').map((folder) => ({ ...folder, path: folderPath(folder) }));
   const possibleFolders = (id) => folders.filter((folder) => !insideFolder(folder.id, id));
 
-  function moveEntry(id, parentId, beforeId = null) {
+  function moveEntry(id, parentId, targetId = null, after = false) {
     const entry = entryMap.get(id);
-    if (!entry || id === beforeId || (entry.type === 'folder' && insideFolder(parentId, id))) return;
+    if (savingRef.current || !entry || id === targetId || (entry.type === 'folder' && insideFolder(parentId, id))) return;
     const next = entries.filter((item) => item.id !== id);
-    const destination = beforeId ? next.findIndex((item) => item.id === beforeId) : -1;
-    next.splice(destination < 0 ? next.length : destination, 0, { ...entry, parentId });
+    const destination = targetId ? next.findIndex((item) => item.id === targetId) : -1;
+    next.splice(destination < 0 ? next.length : destination + (after ? 1 : 0), 0, { ...entry, parentId });
+    if (next.every((item, index) => item.id === entries[index].id && item.parentId === entries[index].parentId)) return;
     if (parentId) setCollapsed((current) => { const updated = new Set(current); updated.delete(parentId); return updated; });
     void saveLibrary({ entries: next });
   }
 
-  function reorderEntry(direction) {
-    if (!selected) return;
-    const siblings = entries.filter((entry) => entry.parentId === selected.parentId);
-    const index = siblings.findIndex((entry) => entry.id === selected.id);
+  function reorderEntry(direction, id = selectedId) {
+    const entry = entryMap.get(id);
+    if (!entry || savingRef.current) return;
+    const siblings = entries.filter((item) => item.parentId === entry.parentId);
+    const index = siblings.findIndex((item) => item.id === entry.id);
     const neighbor = siblings[index + direction];
     if (!neighbor) return;
-    const next = entries.filter((entry) => entry.id !== selected.id);
-    const destination = next.findIndex((entry) => entry.id === neighbor.id) + (direction > 0 ? 1 : 0);
-    next.splice(destination, 0, selected);
+    const next = entries.filter((item) => item.id !== entry.id);
+    const destination = next.findIndex((item) => item.id === neighbor.id) + (direction > 0 ? 1 : 0);
+    next.splice(destination, 0, entry);
     void saveLibrary({ entries: next });
   }
 
@@ -452,18 +455,31 @@ export default function MusicLibrary({ user, request, confirm }) {
   }
 
   function renderEntries(parentId = null, depth = 0) {
-    return <ul className="library-tree">{entries.filter((entry) => entry.parentId === parentId && (!search || matches(entry))).map((entry) => {
+    const siblings = entries.filter((entry) => entry.parentId === parentId);
+    return <ul className="library-tree">{siblings.filter((entry) => reordering || !search || matches(entry)).map((entry) => {
       const folder = entry.type === 'folder';
       const open = !collapsed.has(entry.id) || Boolean(search);
       const count = folder ? getPlaylistIds(entries, entry.id).length : jobMap.get(entry.id)?.songCount || 0;
-      const acceptEntry = (event) => allowDrop(event, !saving && (event.dataTransfer.types.includes('application/x-ssmusic-entry')
-        || (!folder && event.dataTransfer.types.includes('application/x-ssmusic-song'))));
+      const dropPosition = (event) => {
+        if (event.dataTransfer.types.includes('application/x-ssmusic-song')) return 'inside';
+        const bounds = event.currentTarget.getBoundingClientRect();
+        const offset = (event.clientY - bounds.top) / bounds.height;
+        if (folder && !reordering && offset >= .25 && offset <= .75) return 'inside';
+        return offset < .5 ? 'before' : 'after';
+      };
+      const acceptEntry = (event) => {
+        const allowed = !saving && (event.dataTransfer.types.includes('application/x-ssmusic-entry')
+          || (!folder && event.dataTransfer.types.includes('application/x-ssmusic-song')));
+        allowDrop(event, allowed);
+        if (allowed) event.currentTarget.dataset.dropPosition = dropPosition(event);
+      };
       return <li key={entry.id}>
         <div className={`library-entry ${selectedId === entry.id ? 'is-selected' : ''}`} style={{ paddingLeft: 8 + Math.min(depth, 4) * 12 }}
           draggable={!saving} onDragStart={(event) => { event.currentTarget.dataset.dragging = 'true'; event.dataTransfer.setData('application/x-ssmusic-entry', entry.id); event.dataTransfer.effectAllowed = 'move'; }}
           onDragEnter={acceptEntry} onDragOver={acceptEntry} onDragLeave={leaveDrop}
           onDrop={(event) => {
             event.preventDefault();
+            event.stopPropagation();
             if (saving) return;
             const songData = event.dataTransfer.getData('application/x-ssmusic-song');
             if (songData) {
@@ -471,35 +487,43 @@ export default function MusicLibrary({ user, request, confirm }) {
               return;
             }
             const movedId = event.dataTransfer.getData('application/x-ssmusic-entry');
-            if (movedId !== entry.id) moveEntry(movedId, folder ? entry.id : entry.parentId, folder ? null : entry.id);
+            const position = dropPosition(event);
+            if (movedId !== entry.id) moveEntry(movedId, position === 'inside' ? entry.id : entry.parentId,
+              position === 'inside' ? null : entry.id, position === 'after');
           }}>
           {folder ? <button className="folder-expander" type="button" aria-label={`${open ? 'Collapse' : 'Expand'} ${entry.name}`} aria-expanded={open} title={open ? 'Collapse folder' : 'Expand folder'} onClick={() => setCollapsed((current) => {
             const updated = new Set(current); if (updated.has(entry.id)) updated.delete(entry.id); else updated.add(entry.id); return updated;
           })}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button> : <span className="folder-expander" />}
-          <button className="library-entry-select" type="button" aria-current={selectedId === entry.id ? 'true' : undefined} title={entryTitle(entry)} onClick={() => selectEntry(entry.id)}>
+          <button className="library-entry-select" type="button" aria-current={selectedId === entry.id ? 'true' : undefined} title={entryTitle(entry)} onClick={() => { if (!reordering) selectEntry(entry.id); }}>
             {folder ? open ? <FolderOpen size={18} /> : <Folder size={18} /> : <ListMusic size={18} />}<span>{entryTitle(entry)}</span>{entry.protected && <LockKeyhole size={12} aria-label="Permanent playlist" />}<small>{count}</small>
           </button>
+          {reordering && <button className="music-icon-button library-entry-drag" type="button" title={`Drag to reorder ${entryTitle(entry)}`}
+            aria-label={`Reorder ${entryTitle(entry)}`} aria-keyshortcuts="ArrowUp ArrowDown" draggable={!saving} disabled={saving}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+                event.preventDefault();
+                reorderEntry(event.key === 'ArrowUp' ? -1 : 1, entry.id);
+              }
+            }}><GripVertical size={18} /></button>}
         </div>
         {folder && open && renderEntries(entry.id, depth + 1)}
       </li>;
     })}</ul>;
   }
 
-  const siblings = selected ? entries.filter((entry) => entry.parentId === selected.parentId) : [];
-  const selectedIndex = siblings.findIndex((entry) => entry.id === selectedId);
   const sidebar = <aside className="library-sidebar" aria-label="Playlists">
     <div className="library-sidebar-heading"><h2>Playlists <small>{jobs.length}</small></h2>
+      <div className="library-sidebar-tools"><button className="music-icon-button" type="button" title="Reorder playlists" aria-label="Reorder playlists" aria-pressed={reordering}
+        disabled={!library || saving} onClick={() => setReordering((current) => !current)}><GripVertical size={19} /></button>
       <button className="music-icon-button" type="button" title="New playlist folder" aria-label="New playlist folder" disabled={!library || saving}
-        onClick={() => setFolderDialog({ folder: null, parentId: selected?.type === 'folder' ? selected.id : selected?.parentId || null })}><FolderPlus size={19} /></button></div>
-    <label className="queue-search"><Search size={15} /><input type="search" aria-label="Search playlists" placeholder="Find a playlist" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+        onClick={() => setFolderDialog({ folder: null, parentId: selected?.type === 'folder' ? selected.id : selected?.parentId || null })}><FolderPlus size={19} /></button></div></div>
+    <label className="queue-search"><Search size={15} /><input type="search" aria-label="Search playlists" placeholder="Find a playlist" value={search} disabled={reordering} onChange={(event) => setSearch(event.target.value)} /></label>
     <button className={`all-music ${selectedId === null ? 'is-selected' : ''}`} type="button" aria-current={selectedId === null ? 'true' : undefined} onClick={() => selectEntry(null)}><Library size={18} /><span>All music</span><small>{jobs.reduce((total, job) => total + job.songCount, 0)}</small></button>
     <div className="library-tree-scroll">{!library && !error ? <p className="music-empty" role="status">Loading playlists...</p> : renderEntries()}
       {library && !entries.length && <p className="music-empty">No playlists yet.</p>}
-      {search && !entries.some(matches) && <p className="music-empty">No matching playlists.</p>}</div>
+      {!reordering && search && !entries.some(matches) && <p className="music-empty">No matching playlists.</p>}</div>
     {selected && <div className="library-organize">
       <div className="library-organize-heading"><strong title={title}>{title}</strong><div>
-        <button className="music-icon-button" type="button" title="Move playlist or folder up" aria-label="Move selected playlist or folder up" disabled={saving || selectedIndex === 0} onClick={() => reorderEntry(-1)}><ArrowUp size={16} /></button>
-        <button className="music-icon-button" type="button" title="Move playlist or folder down" aria-label="Move selected playlist or folder down" disabled={saving || selectedIndex === siblings.length - 1} onClick={() => reorderEntry(1)}><ArrowDown size={16} /></button>
         {selected.type === 'folder' ? <>
           <button className="music-icon-button" type="button" title="Edit folder" aria-label="Edit folder" disabled={saving} onClick={() => setFolderDialog({ folder: selected, parentId: selected.parentId })}><Pencil size={16} /></button>
           <button className="music-icon-button" type="button" title="Delete folder" aria-label="Delete folder" disabled={saving} onClick={removeFolder}><Trash2 size={16} /></button>

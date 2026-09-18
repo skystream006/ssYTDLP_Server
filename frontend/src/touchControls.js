@@ -4,7 +4,7 @@ import 'mobile-drag-drop/default.css';
 
 export function findTouchDraggable(event) {
   if (event.touches.length !== 1) return;
-  const handle = event.target.closest('.song-drag, .library-entry-select');
+  const handle = event.target.closest('.song-drag, .library-entry-select, .library-entry-drag');
   const draggable = handle?.closest('[draggable="true"]');
   return handle && !handle.disabled ? draggable || undefined : undefined;
 }
@@ -18,7 +18,10 @@ export function allowDrop(event, allowed) {
 }
 
 export function leaveDrop(event) {
-  if (!event.currentTarget.contains(event.relatedTarget)) delete event.currentTarget.dataset.dragOver;
+  if (!event.currentTarget.contains(event.relatedTarget)) {
+    delete event.currentTarget.dataset.dragOver;
+    delete event.currentTarget.dataset.dropPosition;
+  }
 }
 
 export function initializeTouchControls() {
@@ -33,6 +36,7 @@ export function initializeTouchControls() {
     document.querySelectorAll('[data-drag-over], [data-dragging]').forEach((element) => {
       delete element.dataset.dragOver;
       delete element.dataset.dragging;
+      delete element.dataset.dropPosition;
     });
   };
   document.addEventListener('dragend', clearDrag);

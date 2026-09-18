@@ -82,6 +82,32 @@ test('nested folders aggregate playlists and songs in saved order', () => {
   assert.deepEqual(getPreferences('alice'), { theme: 'green', mode: 'light' });
 });
 
+test('playlist reordering preserves folders and Individual Songs across reloads without changing another account', () => {
+  const single = { id: 'single', isPlaylist: false, files: ['Single.mp3'] };
+  const available = [...jobs, single];
+  const initial = linkLibraryJob('alice', single, available);
+  const individual = initial.entries.find((entry) => entry.id === individualSongsId);
+  const folder = { id: 'folder-favorites', type: 'folder', parentId: null, name: 'Favorites' };
+  const organized = setLibrary('alice', { ...initial, entries: [
+    folder, { id: 'jazz', type: 'playlist', parentId: folder.id },
+    { id: 'soul', type: 'playlist', parentId: folder.id },
+    { id: 'live', type: 'playlist', parentId: null }, individual
+  ] }, available);
+  const byId = new Map(organized.entries.map((entry) => [entry.id, entry]));
+  const reordered = setLibrary('alice', { ...organized,
+    entries: [individualSongsId, 'live', folder.id, 'soul', 'jazz'].map((id) => byId.get(id))
+  }, available);
+  closeDatabases();
+  const restored = getLibrary('alice', available);
+  assert.deepEqual(restored, reordered);
+  assert.deepEqual(getPlaylistIds(restored.entries), [individualSongsId, 'live', 'soul', 'jazz']);
+  assert.deepEqual(getPlaylistIds(restored.entries, folder.id), ['soul', 'jazz']);
+  assert.equal(restored.entries[0].protected, true);
+  assert.deepEqual(restored.songOrder, organized.songOrder);
+  assert.deepEqual(getPlaylistIds(getLibrary('bob', available).entries), ['jazz', 'soul', 'live', 'single']);
+  assert.throws(() => setLibrary('alice', organized, available), { statusCode: 409 });
+});
+
 test('library reconciles new and deleted jobs and songs without changing saved order', () => {
   const initial = getLibrary('alice', jobs);
   setLibrary('alice', { ...initial, entries: [...initial.entries].reverse(), songOrder: { jazz: ['Third.mp3', 'First.mp3'] } }, jobs);

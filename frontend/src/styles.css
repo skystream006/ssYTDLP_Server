@@ -405,6 +405,12 @@ code { font: 400 11px 'DM Mono', monospace; }
 .library-sidebar-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
 .library-sidebar-heading h2 { font: 700 13px 'Manrope', sans-serif; margin: 0; }
 .library-sidebar-heading small { color: var(--muted); font: 10px 'DM Mono', monospace; margin-left: 6px; }
+.library-sidebar-tools { display: flex; align-items: center; flex: none; gap: 2px; }
+.library-sidebar-tools [aria-pressed="true"] { color: var(--royal); background: color-mix(in srgb, var(--royal) 12%, transparent); }
+.library-entry-drag { flex: none; cursor: grab; }
+.library-entry-drag:active { cursor: grabbing; }
+.library-entry[data-drop-position="before"] { box-shadow: inset 0 3px 0 var(--royal); outline: none; }
+.library-entry[data-drop-position="after"] { box-shadow: inset 0 -3px 0 var(--royal); outline: none; }
 .library-sidebar .queue-search { height: 35px; background: transparent; }
 .all-music { display: flex; align-items: center; width: 100%; gap: 12px; min-height: 44px; border: 0; border-radius: 4px; padding: 8px 12px; margin: 16px 0 10px; background: transparent; color: var(--ink); font-size: 12px; text-align: left; cursor: pointer; }
 .all-music span { flex: 1; }
@@ -444,7 +450,7 @@ code { font: 400 11px 'DM Mono', monospace; }
 .library-song-row.is-current { background: color-mix(in srgb, var(--royal) 10%, transparent); }
 .song-drag { width: 24px; cursor: grab; }
 .song-drag:active { cursor: grabbing; }
-.song-drag, .library-entry-select { -webkit-touch-callout: none; user-select: none; }
+.song-drag, .library-entry-select, .library-entry-drag { -webkit-touch-callout: none; user-select: none; }
 [data-dragging="true"] { opacity: .5; }
 [data-drag-over="true"] { outline: 2px solid var(--royal); outline-offset: -2px; background: color-mix(in srgb, var(--royal) 14%, var(--surface)); }
 .dnd-poly-drag-image { z-index: 60 !important; max-width: calc(100vw - 32px); pointer-events: none !important; }
@@ -682,6 +688,7 @@ code { font: 400 11px 'DM Mono', monospace; }
   .lyrics-copy, .lyrics-tabs button, .transport-actions button, .folder-expander { min-width: 44px; min-height: 44px; }
   .round-play, .library-selection-heading .round-play, .dock-transport .round-play { width: 44px; height: 44px; }
   .library-entry-select, .all-music, .library-mobile-tabs button { min-height: 48px; }
+  .library-entry-drag { width: 44px; height: 44px; }
   .library-entry-select { padding-block: 10px; }
   .library-location select, .folder-dialog :is(input, select), .metadata-inputs input { min-height: 44px; font-size: 16px; }
   .queue-search { min-height: 44px; }

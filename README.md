@@ -400,10 +400,20 @@ removes that job's songs from their library.
 Use **New playlist folder** to create a folder. A selected folder becomes the
 default location for new subfolders. Folders support nesting up to 32 levels.
 The selected item's **Location** menu moves it to any valid folder or back to
-the library root. Drag a playlist onto a folder to move it inside, or onto another
-playlist to place it before that playlist. The up/down buttons also reorder the
-selected playlist or folder. Folders can be renamed; deleting a folder moves its
+the library root. Drag a playlist onto the center of a folder to move it inside,
+or onto the upper/lower half of another playlist to place it before/after that
+playlist. Folders can be renamed; deleting a folder moves its
 immediate contents to its parent without deleting any music.
+
+Select **Reorder playlists** beside the Playlists heading to show drag grips
+on every playlist and folder, including **Individual Songs**. Drag a row by its
+grip or name to the insertion line above or below another row. In reorder mode,
+dropping on a folder places the item beside it rather than inside it. Each move
+saves automatically for your account. Moving a folder keeps its contents together.
+On mobile, press and hold a grip or name, then drag; the Playlists view stays open.
+Keyboard users can focus a grip and press Arrow Up or Arrow Down to reorder siblings.
+Search is temporarily disabled and all entries are shown while reordering; toggle
+**Reorder playlists** off to restore the normal list and search.
 
 A selected folder plays all descendant playlists in their saved tree order, then
 each playlist's songs in its saved song order. Drag a song within its playlist
@@ -412,7 +422,7 @@ details and the existing `/job/:id/player` view show the same saved song order.
 New playlists appear at the library root; new songs append after saved song
 positions. Deleted jobs and files are removed from the saved layout automatically.
 
-On phones and tablets, press and hold a song's grip or a playlist/folder name
+On phones and tablets, press and hold a song's grip or a playlist/folder grip or name
 for a moment, then drag to organize it. Valid drop targets are highlighted, and
 dragging near the edge scrolls the list. Swipe normally to scroll without
 reordering. On narrow screens, use **Move to playlist** to move songs between

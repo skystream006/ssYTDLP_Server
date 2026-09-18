@@ -28,6 +28,7 @@ function setup(url = '/job/one/player?song=Song.mp3&play=1') {
     popstate();
   });
   const browser = {
+    get location() { return new URL(entries[index].url, 'https://music.example'); },
     history: {
       get state() { return structuredClone(entries[index].state); },
       pushState(state, _, destination = entries[index].url) {
@@ -193,12 +194,47 @@ test('same-URL route navigation still remounts, but synthetic popstate does not'
 
 test('playlist URL replacements retain the route identity for overlay Back', () => {
   const app = setup('/');
-  app.browser.history.replaceState(app.browser.history.state, '', '/?playlist=one');
+  const page = app.browser.history.state.ssMusicNavigation.page;
+  app.navigation.replaceURL('/?playlist=one');
+  assert.equal(app.browser.history.state.ssMusicNavigation.page, page);
+  assert.equal(app.browser.history.state.existing, 'preserved');
+  app.popstate();
+  assert.equal(app.routeChanges, 0);
   app.navigation.setLyricsOpen(true);
   app.browser.history.back();
   app.flush();
   assert.equal(app.url, '/?playlist=one');
   assert.equal(app.routeChanges, 0);
+  app.browser.history.forward();
+  app.flush();
+  assert.equal(app.lyricsOpen, true);
+  app.navigation.setLyricsOpen(false);
+  app.flush();
+  assert.equal(app.routeChanges, 0);
+  assert.equal(app.scrolls, 0);
+});
+
+test('Forward restores the playlist route if selection changed after dismissing lyrics', () => {
+  const app = setup('/?playlist=one');
+  app.navigation.setLyricsOpen(true);
+  app.navigation.setLyricsOpen(false);
+  app.flush();
+  app.navigation.replaceURL('/?playlist=two');
+  assert.equal(app.routeChanges, 0);
+  assert.equal(app.url, '/?playlist=two');
+  app.browser.history.forward();
+  app.flush();
+  assert.equal(app.url, '/?playlist=one');
+  assert.equal(app.lyricsOpen, true);
+  assert.equal(app.routeChanges, 1);
+  app.browser.history.back();
+  app.flush();
+  assert.equal(app.url, '/?playlist=two');
+  assert.equal(app.lyricsOpen, false);
+  assert.equal(app.routeChanges, 2);
+  app.popstate();
+  assert.equal(app.routeChanges, 2);
+  assert.equal(app.scrolls, 0);
 });
 
 test('subscription replay does not push history and removes its listeners', () => {

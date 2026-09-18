@@ -18,6 +18,7 @@ export function createNavigationHistory(browser) {
   }
 
   let currentPage = pageState().page;
+  let currentURL = browser.location.href;
   let lyricsOpen = pageState().lyrics;
 
   function notify(routeChanged = false) {
@@ -51,6 +52,7 @@ export function createNavigationHistory(browser) {
     browser.history[replace ? 'replaceState' : 'pushState']({
       [historyKey]: { page: currentPage, lyrics: false }
     }, '', destination);
+    currentURL = browser.location.href;
     notify(true);
     browser.scrollTo(0, 0);
   }
@@ -58,9 +60,10 @@ export function createNavigationHistory(browser) {
   function onPopState() {
     const state = pageState();
     // Synthetic popstate events must not complete a pending history.back().
-    if (closing && state.page === currentPage && state.lyrics) return;
-    const routeChanged = state.page !== currentPage;
+    if (closing && state.page === currentPage && state.lyrics && browser.location.href === currentURL) return;
+    const routeChanged = state.page !== currentPage || browser.location.href !== currentURL;
     currentPage = state.page;
+    currentURL = browser.location.href;
     if (closing) {
       closing = false;
       if (destinationAfterClose !== null) {
@@ -80,6 +83,11 @@ export function createNavigationHistory(browser) {
 
   return {
     navigate,
+    replaceURL(destination) {
+      // Selection changes are already rendered by the caller, not a new route.
+      browser.history.replaceState(browser.history.state, '', destination);
+      currentURL = browser.location.href;
+    },
     setLyricsOpen(open) {
       lyricsOpen = open;
       if (!closing) {
@@ -95,6 +103,7 @@ export function createNavigationHistory(browser) {
     subscribe(listener) {
       if (!listening) {
         currentPage = pageState().page;
+        currentURL = browser.location.href;
         lyricsOpen = Boolean(pageState().lyrics);
       }
       listeners.add(listener);
@@ -111,6 +120,7 @@ export function navigationHistory() {
 }
 
 export function navigate(destination) { navigationHistory().navigate(destination); }
+export function replaceURL(destination) { navigationHistory().replaceURL(destination); }
 
 export function useNavigation() {
   const [revision, setRevision] = useState(0);

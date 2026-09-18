@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, Copy, Disc3, Folder, GripVertical, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Search, Shuffle, SkipBack, SkipForward, Trash2, Volume2, VolumeX, X } from 'lucide-react';
 import { SongActions, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
+import { navigationHistory } from './navigation.js';
 import { findNoVocals, isNoVocals } from '../../src/library.js';
 export { findNoVocals, isNoVocals } from '../../src/library.js';
 
@@ -192,7 +193,11 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const [job, setJob] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
-  const [panel, setPanel] = useState(null);
+  const [panel, updatePanel] = useState(null);
+  function setPanel(next) {
+    updatePanel(next);
+    if (dockOnly) navigationHistory().setLyricsOpen(next === 'lyrics');
+  }
   const lyricRef = useRef(null);
   const dockRef = useRef(null);
   const lyricsOverlayRef = useRef(null);
@@ -201,6 +206,13 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const activeLine = lines.findLastIndex((line) => line.time <= position);
   const requestedSong = new URLSearchParams(window.location.search).get('song');
   const requestedPlay = new URLSearchParams(window.location.search).get('play') === '1';
+
+  useEffect(() => {
+    if (!dockOnly) return;
+    return navigationHistory().subscribe(({ lyricsOpen }) => {
+      updatePanel((current) => lyricsOpen ? 'lyrics' : current === 'lyrics' ? null : current);
+    });
+  }, [dockOnly]);
 
   useEffect(() => {
     if (!id) return;

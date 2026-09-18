@@ -232,7 +232,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     setSelectedId(id);
     setSidebarOpen(false);
     const params = id ? `?${new URLSearchParams({ playlist: id })}` : '';
-    window.history.replaceState(null, '', `/${params}`);
+    window.history.replaceState(window.history.state, '', `/${params}`);
   }
 
   function songState(track) {

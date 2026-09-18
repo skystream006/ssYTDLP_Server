@@ -233,20 +233,20 @@ function inferPlaylistTitle(job) {
 
 export function parsePlaylistMetadata(output) {
   const metadata = JSON.parse(output);
-  const playlistTitle = typeof metadata.title === 'string' && metadata.title.trim() ? metadata.title.trim() : 'playlist';
+  const playlistTitle = typeof metadata.title === 'string' && metadata.title.trim() ? metadata.title.trim() : null;
   const playlistSongCount = Number.isSafeInteger(metadata.playlist_count) && metadata.playlist_count >= 0
     ? metadata.playlist_count
     : Array.isArray(metadata.entries) ? metadata.entries.length : null;
-  return { playlistTitle, folderName: sanitizeFolderName(playlistTitle), playlistSongCount };
+  return { playlistTitle, folderName: sanitizeFolderName(playlistTitle || 'playlist'), playlistSongCount };
 }
 
-async function getPlaylistMetadata(url, denoPath) {
+async function getSourceMetadata(url, denoPath, isPlaylist) {
   const args = [
     '--flat-playlist',
     '--dump-single-json',
     '--skip-download',
     '--ignore-errors',
-    '--yes-playlist',
+    isPlaylist ? '--yes-playlist' : '--no-playlist',
     '--js-runtimes',
     `deno:${denoPath}`,
     url
@@ -355,13 +355,12 @@ async function executeJob(job) {
   job.updatedAt = new Date().toISOString();
   await persistJob(job);
 
-  const playlistMetadata = job.isPlaylist
-    ? await getPlaylistMetadata(job.url, denoPath).catch(() => null)
-    : null;
-  const folderName = job.folderName || (playlistMetadata ? `${playlistMetadata.folderName}_${job.id}` : randomSongFolderName());
+  const sourceMetadata = await getSourceMetadata(job.url, denoPath, job.isPlaylist).catch(() => null);
+  const folderName = job.folderName || (job.isPlaylist && sourceMetadata?.playlistTitle
+    ? `${sourceMetadata.folderName}_${job.id}` : randomSongFolderName());
 
-  job.playlistTitle = job.playlistTitleOverride || playlistMetadata?.playlistTitle || job.playlistTitle;
-  job.playlistSongCount = playlistMetadata?.playlistSongCount ?? null;
+  job.playlistTitle = job.playlistTitleOverride || sourceMetadata?.playlistTitle || job.playlistTitle;
+  job.playlistSongCount = job.isPlaylist ? sourceMetadata?.playlistSongCount ?? null : null;
   job.folderName = folderName;
   job.outputDir = job.outputDir || path.join(outputRoot, folderName);
 

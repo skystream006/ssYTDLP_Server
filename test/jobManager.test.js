@@ -8,12 +8,15 @@ import http from 'node:http';
 import AdmZip from 'adm-zip';
 import { replaceTranscribedFiles } from '../src/transcription.js';
 
+const fixtureCleanups = new WeakMap();
+
 beforeEach(async (testContext) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-job-db-'));
   process.env.DATABASE_PATH = path.join(directory, 'test.sqlite');
   process.env.AUTH_STORE_PATH = path.join(directory, 'auth.json');
   process.env.JOB_STORE_PATH = path.join(directory, 'jobs.json');
-  testContext.after(() => {
+  testContext.after(async () => {
+    await fixtureCleanups.get(testContext)?.();
     closeDatabases();
     return fs.rm(directory, { recursive: true, force: true });
   });
@@ -29,6 +32,153 @@ async function makeFakeBin(dir, name, { delayMs = 0 } = {}) {
 async function waitForJobToFinish(job) {
   while (job.status === 'queued' || job.status === 'running') {
     await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function waitForFile(file) {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    if (await fs.stat(file).catch(() => null)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`Timed out waiting for ${file}`);
+}
+
+async function makeMetadataFixture(t, metadata) {
+  const directory = path.dirname(process.env.DATABASE_PATH);
+  const configPath = path.join(directory, 'metadata.json');
+  const file = (name) => path.join(directory, name);
+  await fs.writeFile(configPath, JSON.stringify(metadata));
+  const script = `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const directory = __dirname;
+const args = process.argv.slice(2);
+const metadata = args.includes('--dump-single-json');
+const phase = metadata ? 'metadata' : 'download';
+fs.appendFileSync(path.join(directory, 'calls.jsonl'), JSON.stringify(args) + '\\n');
+fs.writeFileSync(path.join(directory, phase + '-started'), '');
+const deadline = Date.now() + 10000;
+const timer = setInterval(() => {
+  if (Date.now() > deadline) process.exit(2);
+  if (!fs.existsSync(path.join(directory, phase + '-release'))) return;
+  clearInterval(timer);
+  if (metadata) {
+    const config = JSON.parse(fs.readFileSync(path.join(directory, 'metadata.json')));
+    process.stdout.write(config.output);
+    process.exitCode = config.exitCode || 0;
+  } else {
+    const output = args[args.indexOf('--output') + 1];
+    fs.writeFileSync(path.join(path.dirname(output), 'Filename fallback.mp3'), '');
+  }
+}, 10);
+`;
+  const executable = file('yt-dlp.cjs');
+  await fs.writeFile(executable, script, { mode: 0o755 });
+  process.env.YTDLP_PATH = executable;
+  process.env.YTDLP_OUTPUT_ROOT = directory;
+  const manager = await import(`../src/jobManager.js?source-title=${encodeURIComponent(directory)}`);
+  fixtureCleanups.set(t, async () => {
+    await fs.writeFile(file('metadata-release'), '');
+    await fs.writeFile(file('download-release'), '');
+    for (let attempt = 0; attempt < 500; attempt += 1) {
+      if (!manager.getJobs().some((job) => job.status === 'queued' || job.status === 'running')) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.fail('Fixture jobs did not finish');
+  });
+  return { manager, file, configPath };
+}
+
+for (const { label, url, isPlaylist } of [
+  { label: 'playlist', url: 'https://music.youtube.com/playlist?list=abc', isPlaylist: true },
+  { label: 'video', url: 'https://music.youtube.com/watch?v=abc', isPlaylist: false },
+  { label: 'video with list query', url: 'https://music.youtube.com/watch?v=abc&list=xyz', isPlaylist: false }
+]) {
+  test(`${label} source title is persisted before downloading and custom titles survive successful reruns`, {
+    skip: process.platform === 'win32' && 'requires POSIX executable test fixtures'
+  }, async (t) => {
+    const title = 'Björk / 東京: “Live” & Soul!';
+    const { manager, file, configPath } = await makeMetadataFixture(t, {
+      output: JSON.stringify({ title, playlist_count: 12, entries: [{ id: 'one' }] })
+    });
+    const owner = { id: 'owner', role: 'user' };
+    const job = await manager.createJob(url, owner);
+    await waitForFile(file('metadata-started'));
+    assert.equal(job.playlistTitle, null, 'creation returns before the metadata lookup completes');
+    await fs.writeFile(file('metadata-release'), '');
+    await waitForFile(file('download-started'));
+    const stored = JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get(job.id).data);
+    assert.equal(stored.status, 'running');
+    assert.equal(stored.playlistTitle, title);
+    assert.equal(stored.isPlaylist, isPlaylist);
+    assert.equal(stored.playlistSongCount, isPlaylist ? 12 : null);
+    assert.deepEqual(stored.files, []);
+    if (isPlaylist) {
+      const { sanitizeFolderName } = await import('../src/utils.js');
+      assert.equal(stored.folderName, `${sanitizeFolderName(title)}_${job.id}`);
+    } else {
+      assert.match(stored.folderName, /^song_[0-9a-f-]{36}$/);
+    }
+    assert.equal(stored.outputDir, file(stored.folderName));
+    await fs.writeFile(file('download-release'), '');
+    await waitForJobToFinish(job);
+    assert.equal(job.status, 'completed');
+    assert.equal(job.playlistTitle, title);
+
+    await manager.setJobTitle(job.id, 'My custom collection', owner);
+    await fs.writeFile(configPath, JSON.stringify({
+      output: JSON.stringify({ title: 'Changed source title', playlist_count: 15 })
+    }));
+    await fs.rm(file('download-started'));
+    await fs.rm(file('download-release'));
+    const rerun = await manager.rerunJob(job.id, owner);
+    await waitForFile(file('download-started'));
+    assert.equal(rerun.playlistTitle, 'My custom collection');
+    assert.equal(rerun.playlistSongCount, isPlaylist ? 15 : null);
+    assert.equal(rerun.folderName, stored.folderName);
+    assert.equal(rerun.outputDir, stored.outputDir);
+    await fs.writeFile(file('download-release'), '');
+    await waitForJobToFinish(rerun);
+    assert.equal(rerun.status, 'completed');
+    assert.equal(manager.getJob(job.id).playlistTitle, 'My custom collection');
+    assert.equal(manager.getJob(job.id).playlistTitleOverride, 'My custom collection');
+    const calls = (await fs.readFile(file('calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(calls.length, 4);
+    for (const [index, args] of calls.entries()) {
+      assert.equal(args.includes('--dump-single-json'), index % 2 === 0);
+      assert.ok(args.includes(isPlaylist ? '--yes-playlist' : '--no-playlist'));
+      assert.ok(!args.includes(isPlaylist ? '--no-playlist' : '--yes-playlist'));
+      assert.equal(args.at(-1), url);
+    }
+  });
+}
+
+for (const isPlaylist of [false, true]) {
+  for (const { label, output, exitCode } of [
+    { label: 'failed lookup', output: '', exitCode: 1 },
+    { label: 'invalid JSON', output: 'not JSON' },
+    { label: 'missing title', output: '{"playlist_count":12}' },
+    { label: 'blank title', output: '{"title":"  "}' },
+    { label: 'non-string title', output: '{"title":42}' }
+  ]) {
+    test(`${isPlaylist ? 'playlist' : 'video'} ${label} still downloads and falls back to the filename`, {
+      skip: process.platform === 'win32' && 'requires POSIX executable test fixtures'
+    }, async (t) => {
+      const { manager, file } = await makeMetadataFixture(t, { output, exitCode });
+      const job = await manager.createJob(isPlaylist
+        ? 'https://music.youtube.com/playlist?list=fallback'
+        : 'https://music.youtube.com/watch?v=fallback');
+      await fs.writeFile(file('metadata-release'), '');
+      await waitForFile(file('download-started'));
+      assert.equal(job.playlistTitle, null);
+      assert.match(job.folderName, /^song_[0-9a-f-]{36}$/);
+      await fs.writeFile(file('download-release'), '');
+      await waitForJobToFinish(job);
+      assert.equal(job.status, 'completed');
+      assert.equal(job.error, null);
+      assert.equal(job.playlistTitle, 'Filename fallback');
+      assert.equal(manager.getJob(job.id).playlistTitle, 'Filename fallback');
+    });
   }
 }
 
@@ -59,7 +209,7 @@ test('playlist metadata counts all songs independently of downloaded files', asy
     playlistTitle: 'My playlist', folderName: 'My_playlist', playlistSongCount: 12
   });
   assert.equal(parsePlaylistMetadata('{"title":"Jazz / Soul: live"}').playlistTitle, 'Jazz / Soul: live');
-  assert.equal(parsePlaylistMetadata('{}').playlistTitle, 'playlist');
+  assert.equal(parsePlaylistMetadata('{}').playlistTitle, null);
   assert.equal(parsePlaylistMetadata(JSON.stringify({ entries: [{ id: 'one' }, null, { id: 'private' }] })).playlistSongCount, 3);
   assert.equal(parsePlaylistMetadata('{"entries":[]}').playlistSongCount, 0);
   assert.equal(parsePlaylistMetadata('{"playlist_count":0}').playlistSongCount, 0);
@@ -233,6 +383,8 @@ test('jobManager queues jobs around a maintenance update', {
   assert.equal(jobManager.isUpdateInProgress(), false);
   assert.ok(events.indexOf('update-finished') > -1);
   assert.notEqual(jobManager.getJob(queuedJob.id).status, 'queued');
+  await waitForJobToFinish(job);
+  await waitForJobToFinish(queuedJob);
 
   t.after(async () => {
     await fs.rm(binDir, { recursive: true, force: true });

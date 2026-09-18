@@ -205,8 +205,12 @@ Private videos skipped by yt-dlp produce a partially completed job rather than a
 Downloaded files are written under `./output/<job-folder>/` and can be downloaded from the job details page.
 Use **Download all** on a job with files to download its songs as a ZIP archive.
 Job details include the command and complete captured stdout and stderr output.
-Jobs record a separate `playlistTitle`, preserving the source title's spaces and
-punctuation. The job list, details, music library, and ZIP name use this title.
+New jobs automatically fetch their YouTube playlist or video title before downloading
+and record it as a separate `playlistTitle`, preserving spaces, punctuation, and
+non-ASCII characters. Job creation does not wait for this lookup. If the lookup fails
+or returns no title, downloads continue and the title falls back to the folder or
+downloaded song name. Single-track jobs keep their random output folders.
+The job list, details, music library, and ZIP name use this title.
 Existing jobs receive readable titles derived from their folder or song names;
 their output folders and download archives are not renamed or moved.
 Owners and administrators can use the pencil beside **Playlist Title** in job

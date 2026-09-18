@@ -1,10 +1,63 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ArrowRightLeft, Check, ChevronDown, ChevronRight, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { ArrowRightLeft, Check, ChevronDown, ChevronRight, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import MusicPlayer, { usePlayback } from './MusicPlayer.jsx';
 import { getPlaylistIds, songKey } from '../../src/library.js';
 import { submitJobUrl } from './jobSubmission.js';
 import { canManageJob, canModifyJob, MetadataDialog, TranscriptionDialog } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
+
+export function ExportLibraryDialog({ onClose }) {
+  const dialogRef = useRef(null);
+  const headingId = useId();
+  const formatId = useId();
+  const destinationId = useId();
+  const instructionsId = useId();
+  const destinationHelpId = useId();
+  const downloadHelpId = useId();
+  const [format, setFormat] = useState('itunes');
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    dialog.querySelector('select').focus();
+    return () => { dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, []);
+
+  return <dialog ref={dialogRef} className="confirmation-dialog folder-dialog export-library-dialog" aria-labelledby={headingId}
+    onCancel={(event) => { event.preventDefault(); onClose(); }}>
+    <form action="/api/library/export" method="get" target="_blank" rel="noopener">
+      <div className="folder-dialog-heading"><h2 id={headingId}>Export library</h2>
+        <button className="music-icon-button" type="button" title="Close" aria-label="Close export library" onClick={onClose}><X size={18} /></button></div>
+      <label htmlFor={formatId}>Export format</label>
+      <select id={formatId} name="format" value={format} aria-describedby={instructionsId} onChange={(event) => setFormat(event.target.value)}>
+        <option value="itunes">iTunes XML</option>
+        <option value="android">Android M3U8 (compatible players)</option>
+      </select>
+      <div id={instructionsId}>
+        <p>Download a ZIP of your library. Song order within each playlist is retained.</p>
+        <p hidden={format !== 'itunes'}>Extract the ZIP directly into the destination folder below, so <strong>Music/</strong> and <strong>Library.xml</strong> are at its root.
+          Add the Music folder to your app library first, then use <strong>File &gt; Library &gt; Import Playlist</strong> to import Library.xml in iTunes or Music.</p>
+        <p hidden={format !== 'android'}>Extract the whole ZIP and keep the root <strong>.m3u8</strong> playlists beside the <strong>Music/</strong> folder.
+          Transfer that folder together to your Android device and open the playlists in a player supporting UTF-8 M3U8 with relative paths.
+          This does not import into a universal Android system music database.</p>
+      </div>
+      <div hidden={format !== 'itunes'}>
+        <label htmlFor={destinationId}>Absolute extraction folder on your computer</label>
+        <input id={destinationId} name="destination" type="text" required={format === 'itunes'} disabled={format !== 'itunes'}
+          pattern={String.raw`(?:[A-Za-z]:(?:\\|/)|/(?!/))[^\r\n]*`} aria-describedby={destinationHelpId}
+          title="Enter an absolute local path, such as C:\Users\YourName\Music\Export or /Users/YourName/Music/Export. File URLs and network paths are not supported."
+          placeholder={'C:\\Users\\YourName\\Music\\Export or /Users/YourName/Music/Export'} />
+        <p id={destinationHelpId}>Enter the Windows drive path or macOS absolute path where you will extract the ZIP, not a server path or the Music subfolder.
+          This is used to generate the correct file URLs in Library.xml; it does not select or create a folder.
+          Do not use file URLs or UNC/network paths. If you move the extracted folder later, export again with the new destination.</p>
+      </div>
+      <p id={downloadHelpId}>Your browser downloads the ZIP directly. Export errors open in a separate tab; check that tab if no download starts.</p>
+      <div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button>
+        <button className="primary-button" type="submit" aria-describedby={downloadHelpId}><Download size={17} />Download ZIP</button></div>
+    </form>
+  </dialog>;
+}
 
 function AddPlaylistDialog({ user, request, confirm, onAdded, onClose }) {
   const dialogRef = useRef(null);
@@ -171,6 +224,7 @@ export default function MusicLibrary({ user, request, confirm }) {
   const [folderDialog, setFolderDialog] = useState(null);
   const [renamingPlaylist, setRenamingPlaylist] = useState(null);
   const [addingPlaylist, setAddingPlaylist] = useState(false);
+  const [exportingLibrary, setExportingLibrary] = useState(false);
   const [reordering, setReordering] = useState(false);
   const [movingSong, setMovingSong] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -546,6 +600,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     <header className="library-titlebar"><div><p className="eyebrow"><Music2 size={13} />Your music, collected</p><h1>{user.name}'s Music</h1></div>
       <div className="library-header-actions"><span className="library-save-status" role="status">{saving ? 'Saving...' : saved ? 'Saved' : `${jobs.length} playlists`}</span>
         <button className="music-icon-button" type="button" title="Refresh library" aria-label="Refresh library" disabled={saving} onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={18} /></button>
+        <button className="secondary-button compact-button library-export-button" type="button" title="Export library" aria-label="Export library" aria-haspopup="dialog" disabled={!library || saving} onClick={() => setExportingLibrary(true)}><Download size={17} />Export library</button>
         <button className="primary-button compact-button" type="button" title="Add Playlist" aria-label="Add Playlist" disabled={!library || saving} onClick={() => setAddingPlaylist(true)}><Plus size={17} />Add Playlist</button></div></header>
     {(error || trackError) && <div className="notice error library-notice" role="alert">{error || trackError}<button className="music-icon-button" type="button" title="Retry" aria-label="Retry loading library" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={16} /></button></div>}
     {actionError && <div className="notice error library-notice" role="alert">{actionError}<button className="music-icon-button" type="button" title="Dismiss error" aria-label="Dismiss song error" onClick={() => setActionError('')}><X size={16} /></button></div>}
@@ -564,6 +619,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     {folderDialog && <FolderDialog folder={folderDialog.folder} parentId={folderDialog.parentId} folders={possibleFolders(folderDialog.folder?.id)} saving={saving} onSave={saveFolder} onClose={() => setFolderDialog(null)} />}
     {renamingPlaylist && <RenamePlaylistDialog playlist={renamingPlaylist} saving={saving} onSave={renamePlaylist} onClose={() => setRenamingPlaylist(null)} />}
     {addingPlaylist && <AddPlaylistDialog user={user} request={request} confirm={confirm} onAdded={playlistAdded} onClose={() => setAddingPlaylist(false)} />}
+    {exportingLibrary && <ExportLibraryDialog onClose={() => setExportingLibrary(false)} />}
     {movingSong && <MoveSongDialog track={movingSong} playlists={entries.filter((entry) => entry.type === 'playlist' && entry.id !== movingSong.playlistId).map((entry) => ({
       id: entry.id, title: `${entry.parentId ? `${folderPath(entryMap.get(entry.parentId))} / ` : ''}${entryTitle(entry)}`
     }))} onSave={moveSong} onClose={() => setMovingSong(null)} />}

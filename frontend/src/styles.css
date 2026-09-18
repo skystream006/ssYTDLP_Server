@@ -554,6 +554,8 @@ code { font: 400 11px 'DM Mono', monospace; }
 .folder-dialog label { display: block; font-size: 12px; margin: 18px 0 8px; }
 .folder-dialog :is(input, select) { width: 100%; height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); color: var(--ink); font-size: 13px; }
 .folder-dialog .dialog-actions { margin-top: 26px; }
+.export-library-dialog { width: min(600px, calc(100% - 32px)); }
+.export-library-dialog :is(input, select):focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 @media (max-width: 1180px) {
   .library-layout, .library-layout:has(.player-panel) { grid-template-columns: 230px minmax(0, 1fr); }
   .player-panel { position: fixed; z-index: 15; inset: 145px 24px 116px auto; width: 340px; margin: 0; padding: 20px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 10px 40px var(--shadow); overflow-y: auto; }
@@ -583,7 +585,7 @@ code { font: 400 11px 'DM Mono', monospace; }
   .library-titlebar h1 { font-size: 30px; }
   .library-titlebar .eyebrow { font-size: 9px; }
   .library-header-actions { gap: 4px; }
-  .library-header-actions .primary-button { font-size: 0; width: 34px; height: 34px; padding: 0; justify-content: center; }
+  .library-header-actions :is(.primary-button, .library-export-button) { font-size: 0; width: 34px; height: 34px; padding: 0; justify-content: center; }
   .library-save-status { display: none; }
   .library-mobile-tabs { display: flex; margin: 0 0 14px; border-bottom: 1px solid var(--line); }
   .library-mobile-tabs button { display: flex; gap: 8px; align-items: center; justify-content: center; flex: 1; height: 40px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font-size: 12px; }
@@ -707,7 +709,7 @@ code { font: 400 11px 'DM Mono', monospace; }
   .library-location select, .folder-dialog :is(input, select), .metadata-inputs input { min-height: 44px; font-size: 16px; }
   .queue-search { min-height: 44px; }
   .queue-search input { font-size: 16px; }
-  .library-header-actions .primary-button { min-width: 44px; min-height: 44px; }
+  .library-header-actions :is(.primary-button, .library-export-button) { min-width: 44px; min-height: 44px; }
   .library-song-row { grid-template-columns: 44px minmax(0, 1fr); padding-block: 6px; }
   .library-song-row .song-playlist { display: none; }
   .song-select { min-height: 48px; }

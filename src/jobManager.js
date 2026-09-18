@@ -29,7 +29,7 @@ const outputRoot = process.env.YTDLP_OUTPUT_ROOT || path.resolve(process.cwd(), 
 const jobEvents = new EventEmitter();
 jobEvents.setMaxListeners(0);
 let runningJobsCount = 0;
-const privateVideoPattern = /\b(?:private video|video is private)\b/i;
+const privateVideoPattern = /\b(?:private video|video is private|video unavailable)\b/i;
 
 // Non-null while a maintenance update (yt-dlp -U / deno upgrade) is running.
 // Jobs about to start wait on this promise so they queue behind the update.
@@ -59,7 +59,7 @@ async function loadJobs() {
     ) {
       job.status = 'partially_completed';
       job.error = null;
-      job.warning = 'One or more private videos were skipped.';
+      job.warning = 'One or more private or unavailable videos were skipped.';
       updatedStoredJob = true;
     }
     for (const transcription of Object.values(job.transcriptions || {})) {
@@ -401,13 +401,13 @@ async function executeJob(job) {
     job.output = formatCommandOutput(result) || 'Command completed without output.';
     job.files = await listDownloadedFiles(job.outputDir);
     job.status = classification.hasPrivateVideoWarning ? 'partially_completed' : 'completed';
-    job.warning = classification.hasPrivateVideoWarning ? 'One or more private videos were skipped.' : null;
+    job.warning = classification.hasPrivateVideoWarning ? 'One or more private or unavailable videos were skipped.' : null;
   } catch (error) {
     const classification = classifyCommandOutput(error);
     const privateVideosOnly = classification.hasPrivateVideoWarning && !classification.hasNonPrivateError;
     job.status = privateVideosOnly ? 'partially_completed' : 'failed';
     job.error = privateVideosOnly ? null : error.message;
-    job.warning = privateVideosOnly ? 'One or more private videos were skipped.' : null;
+    job.warning = privateVideosOnly ? 'One or more private or unavailable videos were skipped.' : null;
     job.output = formatCommandOutput(error) || error.message;
     job.files = await listDownloadedFiles(job.outputDir);
   } finally {

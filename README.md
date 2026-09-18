@@ -201,7 +201,7 @@ on every job sharing the folder.
 Jobs are persisted in SQLite and restored after server restarts. Jobs show
 queued/running/completed/partially completed/failed status; any active job interrupted by a restart
 is restored as failed so it can be rerun safely.
-Private videos skipped by yt-dlp produce a partially completed job rather than a failed job.
+Private or unavailable videos skipped by yt-dlp produce a partially completed job rather than a failed job.
 Downloaded files are written under `./output/<job-folder>/` and can be downloaded from the job details page.
 Use **Download all** on a job with files to download its songs as a ZIP archive.
 Job details include the command and complete captured stdout and stderr output.

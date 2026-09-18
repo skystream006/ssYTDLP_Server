@@ -37,7 +37,7 @@ export function ExportLibraryDialog({ onClose }) {
       <div id={instructionsId}>
         <p>Download a ZIP of your library. Song order within each playlist is retained.</p>
         <p hidden={format !== 'itunes'}>Extract the ZIP directly into the destination folder below, so <strong>Music/</strong> and <strong>Library.xml</strong> are at its root.
-          You may need to add the Music folder to your app library first, then use <strong>File &gt; Library &gt; Import Playlist</strong> to import Library.xml in iTunes or Music.</p>
+          Add the Music folder to your app library first, then use <strong>File &gt; Library &gt; Import Playlist</strong> to import Library.xml in iTunes or Music.</p>
         <p hidden={format !== 'android'}>Extract the whole ZIP and keep the root <strong>.m3u8</strong> playlists beside the <strong>Music/</strong> folder.
           Transfer that folder together to your Android device and open the playlists in a player supporting UTF-8 M3U8 with relative paths.
           This does not import into a universal Android system music database.</p>

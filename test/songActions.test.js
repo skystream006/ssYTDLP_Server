@@ -73,7 +73,7 @@ test('library export explains extraction layout and format compatibility honestl
   const html = renderExportDialog();
   assert.match(html, /Song order within each playlist is retained/);
   assert.match(html, /Music\/<\/strong> and <strong>Library.xml<\/strong> are at its root/);
-  assert.match(html, /add the Music folder to your app library first/);
+  assert.match(html, /Add the Music folder to your app library first/);
   assert.match(html, /File &gt; Library &gt; Import Playlist/);
   assert.match(html, /correct file URLs in Library.xml/);
   assert.match(html, /root <strong>.m3u8<\/strong> playlists beside the <strong>Music\/<\/strong> folder/);

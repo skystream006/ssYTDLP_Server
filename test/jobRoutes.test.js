@@ -290,6 +290,11 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const shared = await call(contributorRoute, 'PUT', credentials.Owner[0], { userIds: [users.Other.id, users.Other.id] });
   assert.equal(shared.status, 200);
   assert.deepEqual(shared.body.contributors, [{ id: users.Other.id, name: 'Other' }]);
+  const contributedExport = await call('/api/library/export?format=android', 'GET', credentials.Other[1]);
+  assert.equal(contributedExport.status, 200);
+  const contributedZip = new AdmZip(contributedExport.buffer);
+  assert.equal(contributedZip.getEntries().filter((entry) => entry.entryName.endsWith('.m3u8')).length, 1);
+  assert.equal(contributedZip.getEntries().filter((entry) => entry.entryName.startsWith('Music/')).length, 2);
   assert.equal((await call(`/api/jobs/shared/files/${encodeURIComponent(songName)}/metadata`, 'PATCH', credentials.Other[0], { title: 'Contributor edit' })).status, 200);
   const actionLibrary = (await call('/api/library', 'GET', credentials.Other[0])).body;
   assert.deepEqual(actionLibrary.jobs.find((job) => job.id === 'shared').contributors, shared.body.contributors);

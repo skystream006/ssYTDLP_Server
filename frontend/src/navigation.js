@@ -1,15 +1,133 @@
 import { useEffect, useState } from 'react';
 
-export function navigate(destination) {
-  window.history.pushState(null, '', destination);
-  window.dispatchEvent(new PopStateEvent('popstate'));
-  window.scrollTo(0, 0);
+const historyKey = 'ssMusicNavigation';
+
+export function createNavigationHistory(browser) {
+  const listeners = new Set();
+  let listening = false;
+  let closing = false;
+  let destinationAfterClose = null;
+
+  function pageState() {
+    let state = browser.history.state?.[historyKey];
+    if (!state) {
+      state = { page: `${Date.now()}-${Math.random()}`, lyrics: false };
+      browser.history.replaceState({ ...browser.history.state, [historyKey]: state }, '');
+    }
+    return state;
+  }
+
+  let currentPage = pageState().page;
+  let currentURL = browser.location.href;
+  let lyricsOpen = pageState().lyrics;
+
+  function notify(routeChanged = false) {
+    for (const listener of listeners) listener({ routeChanged, lyricsOpen });
+  }
+
+  function updateListener() {
+    const needed = listeners.size > 0 || closing;
+    if (needed === listening) return;
+    browser[needed ? 'addEventListener' : 'removeEventListener']('popstate', onPopState);
+    listening = needed;
+  }
+
+  function pushLyrics() {
+    browser.history.pushState({
+      ...browser.history.state,
+      [historyKey]: { ...pageState(), lyrics: true }
+    }, '');
+  }
+
+  function navigate(destination) {
+    lyricsOpen = false;
+    if (closing) {
+      // Wait for our asynchronous Back before pushing a new route.
+      destinationAfterClose = destination;
+      notify();
+      return;
+    }
+    const replace = pageState().lyrics;
+    currentPage = `${Date.now()}-${Math.random()}`;
+    browser.history[replace ? 'replaceState' : 'pushState']({
+      [historyKey]: { page: currentPage, lyrics: false }
+    }, '', destination);
+    currentURL = browser.location.href;
+    notify(true);
+    browser.scrollTo(0, 0);
+  }
+
+  function onPopState() {
+    const state = pageState();
+    // Synthetic popstate events must not complete a pending history.back().
+    if (closing && state.page === currentPage && state.lyrics && browser.location.href === currentURL) return;
+    const routeChanged = state.page !== currentPage || browser.location.href !== currentURL;
+    currentPage = state.page;
+    currentURL = browser.location.href;
+    if (closing) {
+      closing = false;
+      if (destinationAfterClose !== null) {
+        const destination = destinationAfterClose;
+        destinationAfterClose = null;
+        navigate(destination);
+        updateListener();
+        return;
+      }
+      // A rapid reopen must wait until Back has consumed the old overlay entry.
+      if (lyricsOpen && !routeChanged && !state.lyrics) pushLyrics();
+      else lyricsOpen = Boolean(state.lyrics);
+    } else lyricsOpen = Boolean(state.lyrics);
+    notify(routeChanged);
+    updateListener();
+  }
+
+  return {
+    navigate,
+    replaceURL(destination) {
+      // Selection changes are already rendered by the caller, not a new route.
+      browser.history.replaceState(browser.history.state, '', destination);
+      currentURL = browser.location.href;
+    },
+    setLyricsOpen(open) {
+      lyricsOpen = open;
+      if (!closing) {
+        if (open && !pageState().lyrics) pushLyrics();
+        else if (!open && pageState().lyrics) {
+          closing = true;
+          updateListener();
+          browser.history.back();
+        }
+      }
+      notify();
+    },
+    subscribe(listener) {
+      if (!listening) {
+        currentPage = pageState().page;
+        currentURL = browser.location.href;
+        lyricsOpen = Boolean(pageState().lyrics);
+      }
+      listeners.add(listener);
+      updateListener();
+      listener({ routeChanged: false, lyricsOpen });
+      return () => { listeners.delete(listener); updateListener(); };
+    }
+  };
 }
+
+let history;
+export function navigationHistory() {
+  return history ||= createNavigationHistory(window);
+}
+
+export function navigate(destination) { navigationHistory().navigate(destination); }
+export function replaceURL(destination) { navigationHistory().replaceURL(destination); }
 
 export function useNavigation() {
   const [revision, setRevision] = useState(0);
   useEffect(() => {
-    const update = () => setRevision((current) => current + 1);
+    const unsubscribe = navigationHistory().subscribe(({ routeChanged }) => {
+      if (routeChanged) setRevision((current) => current + 1);
+    });
     const followLink = (event) => {
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const link = event.target.closest('a[href]');
@@ -19,10 +137,9 @@ export function useNavigation() {
       event.preventDefault();
       navigate(url.pathname + url.search);
     };
-    window.addEventListener('popstate', update);
     document.addEventListener('click', followLink);
     return () => {
-      window.removeEventListener('popstate', update);
+      unsubscribe();
       document.removeEventListener('click', followLink);
     };
   }, []);

@@ -5,6 +5,7 @@ import { getPlaylistIds, songKey } from '../../src/library.js';
 import { submitJobUrl } from './jobSubmission.js';
 import { canManageJob, canModifyJob, MetadataDialog, TranscriptionDialog } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
+import { replaceURL } from './navigation.js';
 
 export function ExportLibraryDialog({ onClose }) {
   const dialogRef = useRef(null);
@@ -286,7 +287,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     setSelectedId(id);
     setSidebarOpen(false);
     const params = id ? `?${new URLSearchParams({ playlist: id })}` : '';
-    window.history.replaceState(null, '', `/${params}`);
+    replaceURL(`/${params}`);
   }
 
   function songState(track) {

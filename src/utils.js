@@ -17,7 +17,7 @@ export function isPlaylistUrl(value) {
   }
 
   const parsed = new URL(value);
-  return parsed.pathname === '/playlist' && parsed.searchParams.has('list');
+  return parsed.searchParams.has('list');
 }
 
 export function sanitizeFolderName(name) {

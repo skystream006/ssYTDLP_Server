@@ -92,7 +92,7 @@ const timer = setInterval(() => {
 for (const { label, url, isPlaylist } of [
   { label: 'playlist', url: 'https://music.youtube.com/playlist?list=abc', isPlaylist: true },
   { label: 'video', url: 'https://music.youtube.com/watch?v=abc', isPlaylist: false },
-  { label: 'video with list query', url: 'https://music.youtube.com/watch?v=abc&list=xyz', isPlaylist: false }
+  { label: 'video with list query', url: 'https://music.youtube.com/watch?v=RTcsY6aIoEc&list=PLbMbcPGUE7ak', isPlaylist: true }
 ]) {
   test(`${label} source title is persisted before downloading and custom titles survive successful reruns`, {
     skip: process.platform === 'win32' && 'requires POSIX executable test fixtures'

@@ -289,7 +289,7 @@ authenticated feature requests use native networking.
     the most recent matching job. Confirming keeps its downloaded files and opens its
     details under the same job ID; cancelling leaves it unchanged. Active matches can
     be opened but cannot be rerun until they finish.
-- Playlist URL (`/playlist?list=...`) runs with `--yes-playlist`
+- Any music URL with a `list` query parameter (including `/playlist?list=...` and `/watch?v=...&list=...`) runs with `--yes-playlist`
 - Any other music URL runs with `--no-playlist`
 - Open a finished job's details to view its command, rerun it under the same job ID,
   or delete the job and its downloaded files

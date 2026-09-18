@@ -5,7 +5,6 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { pipeline } from 'node:stream/promises';
-import { Transform } from 'node:stream';
 import multer from 'multer';
 import * as plist from 'plist';
 import yauzl from 'yauzl';
@@ -15,33 +14,18 @@ import { getLibrary, linkLibraryJob, setLibrary } from './libraryStore.js';
 import { individualSongsId } from './library.js';
 import { isSongFile } from './transcription.js';
 
-const maxUploadBytes = 2 * 1024 ** 3;
-const maxExpandedBytes = 4 * 1024 ** 3;
-const maxAudioBytes = 512 * 1024 ** 2;
-const maxXmlBytes = 20 * 1024 ** 2;
 const activeImports = new Set();
 const failure = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const libraryJobs = (user) => getJobs().filter((job) => job.initiatedBy?.id === user.id
   || job.contributors?.some((contributor) => contributor.id === user.id));
 
 const upload = multer({
-  storage: {
-    _handleFile(req, file, callback) {
-      const filePath = path.join(req.importDirectory, randomUUID());
-      let size = 0;
-      const limit = file.fieldname === 'xml' ? maxXmlBytes : file.fieldname === 'media' ? maxUploadBytes : maxAudioBytes;
-      const counter = new Transform({ transform(chunk, _encoding, done) {
-        size += chunk.length;
-        req.importBytes += chunk.length;
-        done(size > limit || req.importBytes > maxUploadBytes ? failure('Import upload exceeds the size limit', 413) : null, chunk);
-      } });
-      pipeline(file.stream, counter, createWriteStream(filePath, { flags: 'wx' }))
-        .then(() => callback(null, { path: filePath, size }), callback);
-    },
-    _removeFile(_req, file, callback) { fs.rm(file.path, { force: true }).then(() => callback(null), callback); }
-  },
-  limits: { files: 1000, fields: 4, parts: 1004, fieldSize: 1024, fileSize: maxUploadBytes }
-}).fields([{ name: 'files', maxCount: 1000 }, { name: 'xml', maxCount: 1 }, { name: 'media', maxCount: 1 }]);
+  storage: multer.diskStorage({
+    destination(req, _file, callback) { callback(null, req.importDirectory); },
+    filename(_req, _file, callback) { callback(null, randomUUID()); }
+  }),
+  limits: { fields: 4, fieldSize: 1024 }
+}).fields([{ name: 'files' }, { name: 'xml', maxCount: 1 }, { name: 'media', maxCount: 1 }]);
 
 export async function validateImportAudio(file) {
   const extension = path.extname(file.name).toLowerCase();
@@ -50,7 +34,7 @@ export async function validateImportAudio(file) {
   const expected = { '.m4a': ['m4a', 'mp4'], '.wma': ['asf'], '.opus': ['opus', 'ogg'] }[extension] || [extension.slice(1)];
   if (!type || !expected.includes(type.ext)) throw failure(`Invalid or mismatched audio: ${file.name}`);
   const { size } = await fs.stat(file.path);
-  if (!size || size > maxAudioBytes) throw failure(`Audio file exceeds the 512 MB limit: ${file.name}`, 413);
+  if (!size) throw failure(`Empty audio file: ${file.name}`);
   return { ...file, size };
 }
 
@@ -59,23 +43,16 @@ export async function extractImportMedia(zipPath, directory) {
     { lazyEntries: true, strictFileNames: true, validateEntrySizes: true }, (error, zip) => error ? reject(failure('Invalid media ZIP')) : resolve(zip)));
   return new Promise((resolve, reject) => {
     const files = [];
-    let count = 0;
-    let total = 0;
     const fail = (error) => { archive.close(); reject(error.statusCode ? error : failure('Invalid or damaged media ZIP')); };
     archive.on('error', fail);
     archive.on('end', () => resolve(files));
     archive.on('entry', (entry) => {
       void (async () => {
-        if (++count > 10000) throw failure('The ZIP contains too many entries', 413);
         if (entry.fileName.length > 2048 || entry.fileName.split('/').length > 32
           || entry.fileName.split('/').some((part) => part === '..') || /^[\\/]|^[a-z]:/i.test(entry.fileName)
           || /[\\\x00]/.test(entry.fileName) || ((entry.externalFileAttributes >>> 16) & 0xf000) === 0xa000
           || entry.isEncrypted()) throw failure('The ZIP contains an unsafe or encrypted entry');
         if (!entry.fileName.endsWith('/') && !entry.fileName.startsWith('__MACOSX/') && isSongFile(entry.fileName)) {
-          total += entry.uncompressedSize;
-          if (files.length >= 2000 || entry.uncompressedSize > maxAudioBytes || total > maxExpandedBytes) {
-            throw failure('The media ZIP exceeds the import limits', 413);
-          }
           const filePath = path.join(directory, randomUUID());
           const stream = await new Promise((done, failStream) => archive.openReadStream(entry, (error, value) => error ? failStream(error) : done(value)));
           await pipeline(stream, createWriteStream(filePath, { flags: 'wx' }));
@@ -89,7 +66,6 @@ export async function extractImportMedia(zipPath, directory) {
 }
 
 export function parseItunesImport(xml, media) {
-  if (Buffer.byteLength(xml) > maxXmlBytes) throw failure('The XML exceeds the 20 MB limit', 413);
   if (/<!ENTITY|<!DOCTYPE[^>]*\[/i.test(xml)) throw failure('XML entity declarations are not supported');
   let library;
   try { library = plist.parse(xml); } catch { throw failure('Invalid iTunes library XML'); }
@@ -106,7 +82,6 @@ export function parseItunesImport(xml, media) {
   const tracks = new Map();
   for (const [key, track] of Object.entries(library.Tracks)) {
     if (track?.['Track Type'] === 'URL') continue;
-    if (tracks.size >= 2000) throw failure('The library contains too many tracks', 413);
     let location;
     try {
       if (typeof track.Location !== 'string' || track.Location.length > 4096) throw new Error();
@@ -141,9 +116,6 @@ export function parseItunesImport(xml, media) {
   }
   const remaining = [...tracks].filter(([id]) => !included.has(id)).map(([, file]) => file);
   if (remaining.length) playlists.push({ playlistTitle: 'iTunes Library', files: remaining });
-  if (playlists.length > 500 || playlists.reduce((total, playlist) => total + playlist.files.reduce((size, file) => size + file.size, 0), 0) > maxExpandedBytes) {
-    throw failure('The imported playlists exceed the import limits', 413);
-  }
   return playlists;
 }
 
@@ -193,7 +165,6 @@ export async function handleLibraryImport(req, res) {
   let status = 201;
   try {
     req.importDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-import-'));
-    req.importBytes = 0;
     await new Promise((resolve, reject) => upload(req, res, (error) => error ? reject(error) : resolve()));
     if (req.body?.mode === 'files' && !req.files?.xml && !req.files?.media) {
       const files = (req.files?.files || []).map((file) => {
@@ -208,7 +179,7 @@ export async function handleLibraryImport(req, res) {
       result = await importItunesLibrary(xml, media, req.user);
     } else throw failure('Choose files, or upload both an iTunes XML and a media ZIP');
   } catch (error) {
-    status = error instanceof multer.MulterError ? (error.code === 'LIMIT_FILE_SIZE' ? 413 : 400) : error.statusCode || 500;
+    status = error instanceof multer.MulterError ? 400 : error.statusCode || 500;
     result = { error: status === 500 ? 'Unable to import music' : error.message };
   } finally {
     if (req.importDirectory) await fs.rm(req.importDirectory, { recursive: true, force: true }).catch(() => {});

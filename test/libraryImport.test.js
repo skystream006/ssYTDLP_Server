@@ -76,6 +76,24 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   const plans = imports.parseItunesImport(xml, media);
   assert.deepEqual(plans.map((plan) => plan.playlistTitle), ['Favorites', 'Shared song']);
   assert.deepEqual(plans[0].files.map((track) => track.name), ['Second.wav', 'Song.wav']);
+  const largeXml = xml.replace('</plist>', `${' '.repeat(21 * 1024 ** 2)}</plist>`);
+  assert.deepEqual(imports.parseItunesImport(largeXml, media), plans);
+  const largeMedia = media.map((track) => ({ ...track, size: 5 * 1024 ** 3 }));
+  assert.equal(imports.parseItunesImport(xml, largeMedia).length, 2);
+  const manyTracks = Object.fromEntries(Array.from({ length: 2001 }, (_, index) => [index + 1,
+    { 'Track ID': index + 1, Location: document.Tracks[1].Location }]));
+  const manyPlaylists = Array.from({ length: 501 }, (_, index) => ({ Name: `Playlist ${index}`, 'Playlist Items': [{ 'Track ID': index + 1 }] }));
+  const largePlans = imports.parseItunesImport(plist.build({ Tracks: manyTracks, Playlists: manyPlaylists }), media);
+  assert.equal(largePlans.length, 502);
+  assert.equal(largePlans.reduce((total, plan) => total + plan.files.length, 0), 2001);
+  const originalStat = fs.stat;
+  const statMock = context.mock.method(fs, 'stat', async (...args) => {
+    const stat = await originalStat(...args);
+    if (args[0] === file.path) stat.size = 3 * 1024 ** 3;
+    return stat;
+  });
+  try { assert.equal((await imports.validateImportAudio(file)).size, 3 * 1024 ** 3); }
+  finally { statMock.mock.restore(); }
   const imported = await imports.importItunesLibrary(xml, media, owner);
   assert.equal(imported.importedFiles, 3);
   assert.equal(imported.jobs[0].source, 'itunes');
@@ -100,4 +118,10 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   await assert.rejects(imports.extractImportMedia(zipPath, directory), /unsafe/);
   await fs.writeFile(zipPath, 'not a zip');
   await assert.rejects(imports.extractImportMedia(zipPath, directory), /Invalid media ZIP/);
+  const largeZip = new AdmZip();
+  for (let index = 0; index < 2001; index++) largeZip.addFile(`Music/Track ${index}.wav`, audio);
+  for (let index = 0; index < 8000; index++) largeZip.addFile(`Ignored/${index}/`, Buffer.alloc(0));
+  await fs.writeFile(zipPath, largeZip.toBuffer());
+  const extracted = await imports.extractImportMedia(zipPath, directory);
+  assert.equal(extracted.length, 2001);
 });

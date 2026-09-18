@@ -471,4 +471,9 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(importedItunes.body.jobs[0].source, 'itunes');
   const itunesTracks = await call(`/api/library/tracks?entryId=${importedItunes.body.jobs[0].id}`, 'GET', credentials.Owner[0]);
   assert.equal(itunesTracks.body.files[0].name, 'Uploaded.wav');
+  const manyFiles = Array.from({ length: 1001 }, (_, index) => ({ ...uploadFile, name: `Track ${index}.wav` }));
+  const bulkImport = await upload({ ...importOptions, playlistTitle: 'Large import' }, manyFiles);
+  assert.equal(bulkImport.status, 201, bulkImport.text);
+  assert.equal(bulkImport.body.importedFiles, 1001);
+  assert.equal(bulkImport.body.jobs[0].files.length, 1001);
 });

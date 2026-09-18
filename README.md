@@ -25,11 +25,16 @@ Original audio and embedded tags are preserved without transcoding. New imports
 appear as completed jobs and in your music library; imported jobs cannot be
 rerun. Imports into existing playlists require owner or contributor access.
 
-Limits: 2 GB total upload, 512 MB per audio file, 20 MB XML, 1,000 directly
-uploaded files, 2,000 ZIP audio files, 500 iTunes playlists, and 4 GB expanded
-media (including playlist copies). Uploads use temporary disk storage, cleaned
-after each request. Allow enough server disk space for temporary and final audio.
-At most two imports run concurrently, with one per user.
+Imports have no application-enforced upload-size, audio-size, XML-size,
+file-count, or expanded-ZIP-size caps. Uploads stream to temporary disk storage,
+cleaned after each request; XML parsing still uses memory. Allow enough server
+disk space and memory for the import, including expanded media and playlist
+copies. Browser/runtime limits and server or reverse-proxy timeouts and upload
+limits may still apply. Removing size caps also means a highly compressed ZIP
+can exhaust server disk space.
+
+File validation, unsafe archive-path checks, and the existing 5,000-entry
+library constraint remain. At most two imports run concurrently, one per user.
 
 The authenticated `POST /api/jobs/import` endpoint accepts multipart form data:
 `mode=files`, `createNew=true`, `playlistTitle`, and repeated `files` fields;

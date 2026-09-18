@@ -45,19 +45,6 @@ export default function ImportMusic({ request, onClose, onImported }) {
     event.preventDefault();
     if (submitting) return;
     setError('');
-    const selected = mode === 'files' ? files : [xml, media].filter(Boolean);
-    if (selected.reduce((total, file) => total + file.size, 0) > 2 * 1024 ** 3) {
-      setError('The total upload must be no larger than 2 GB.');
-      return;
-    }
-    if (mode === 'files' && (files.length > 1000 || files.some((file) => file.size > 512 * 1024 ** 2))) {
-      setError('Select up to 1,000 audio files, no larger than 512 MB each.');
-      return;
-    }
-    if (mode === 'itunes' && xml?.size > 20 * 1024 ** 2) {
-      setError('The XML file must be no larger than 20 MB.');
-      return;
-    }
     const body = new FormData();
     body.set('mode', mode);
     if (mode === 'files') {

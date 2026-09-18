@@ -44,7 +44,7 @@ import MusicLibrary from './MusicLibrary.jsx';
 import { submitJobUrl } from './jobSubmission.js';
 import { navigate, useNavigation } from './navigation.js';
 import { initializeTouchControls } from './touchControls.js';
-import { themes } from '../../src/library.js';
+import { countDownloadedFiles, themes } from '../../src/library.js';
 import { canManageJob, canModifyJob, isContributor, formatBytes, formatDate, MetadataDialog, SongActions, TranscriptionDialog, TranscriptionStatus } from './SongActions.jsx';
 
 const POLL_INTERVAL = 5000;
@@ -396,7 +396,7 @@ function JobsPage() {
                   <td><StatusBadge status={job.status} /></td>
                   <td>{formatDate(job.createdAt)}</td>
                   <td>{job.isPlaylist ? (job.playlistSongCount ?? '-') : 1}</td>
-                  <td>{job.files?.length ?? 0}</td>
+                  <td>{countDownloadedFiles(job.files)}</td>
                   <td><span className="job-initiator">{job.initiatedBy?.name || 'Unknown'}</span></td>
                   <td><div className="job-row-actions">
                     <a className="icon-link" href={`/job/${job.id}`} aria-label={`Open job ${job.id}`} title="Open job"><ExternalLink size={17} /></a>
@@ -668,7 +668,7 @@ function JobPage({ id }) {
                 <span>{job.contributors?.map((contributor) => contributor.name).join(', ') || 'None'}</span>
                 {canManage && <button className="icon-link" type="button" title="Manage contributors" aria-label="Manage contributors" disabled={mutationDisabled} onClick={() => setEditingContributors(true)}><Users size={17} /></button>}
               </dd>
-              <dt>Downloaded files</dt><dd>{data?.[1] ? files.length : 'Not available'}</dd>
+              <dt>Downloaded files</dt><dd>{data?.[1] ? countDownloadedFiles(files) : 'Not available'}</dd>
               {job.isPlaylist && <><dt>Playlist songs</dt><dd>{job.playlistSongCount ?? 'Not available'}</dd></>}
               <dt>Playlist Title</dt><dd>
                 {editingTitle ? <form className="playlist-title-editor" onSubmit={saveTitle}>

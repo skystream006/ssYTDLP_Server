@@ -24,6 +24,10 @@ export function isNoVocals(track) {
   return track.name.toLowerCase().startsWith('[novocals]/');
 }
 
+export function countDownloadedFiles(files) {
+  return (files || []).filter((file) => !isNoVocals(typeof file === 'string' ? { name: file } : file)).length;
+}
+
 export function findNoVocals(track, tracks) {
   if (!track || isNoVocals(track)) return null;
   const candidates = tracks.filter((candidate) => candidate.jobId === track.jobId && isNoVocals(candidate));

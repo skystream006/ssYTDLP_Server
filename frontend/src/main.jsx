@@ -253,6 +253,7 @@ function JobsPage() {
   const [revision, setRevision] = useState(0);
   const { data: jobs, error: loadError } = usePolling(loadJobs, POLL_INTERVAL, revision);
   const [url, setUrl] = useState('');
+  const [metadataOnly, setMetadataOnly] = useState(false);
   const [message, setMessage] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [jobAction, setJobAction] = useState(null);
@@ -292,7 +293,7 @@ function JobsPage() {
     setSubmitting(true);
     setMessage(null);
     try {
-      const result = await submitJobUrl(url, { request, user, confirm });
+      const result = await submitJobUrl(url, { request, user, confirm, metadataOnly });
       if (!result) return;
       const { job, created } = result;
       if (!created) {
@@ -300,6 +301,7 @@ function JobsPage() {
         return;
       }
       setUrl('');
+      setMetadataOnly(false);
       setMessage({ type: 'success', text: `Job ${job.id} was added to the queue.` });
     } catch (error) {
       setMessage({ type: 'error', text: error.message });
@@ -366,6 +368,10 @@ function JobsPage() {
             {submitting ? <RefreshCw className="spin" size={18} /> : <Plus size={18} />}
             {submitting ? 'Adding' : 'Add job'}
           </button>
+          <label className="job-metadata-only">
+            <input type="checkbox" checked={metadataOnly} disabled={submitting} onChange={(event) => setMetadataOnly(event.target.checked)} />
+            Download metadata only
+          </label>
         </form>
         {message && <div className={`notice ${message.type}`} role="status">{message.text}</div>}
       </section>

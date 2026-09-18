@@ -391,7 +391,7 @@ app.post('/api/jobs', async (req, res) => {
   }
 
   try {
-    const job = await createJob(url, req.user);
+    const job = await createJob(url, req.user, { metadataOnly: req.body?.metadataOnly });
     linkLibraryJob(req.user.id, job, getLibraryJobs(req.user));
     return res.status(202).json(job);
   } catch (error) {

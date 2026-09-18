@@ -129,7 +129,9 @@ h1 { margin: 0; max-width: 780px; font: 600 48px/1.05 'Newsreader', serif; overf
 .panel-index, .section-title > div > span { font: 500 11px 'DM Mono', monospace; color: var(--royal); }
 .create-copy h2, .section-title h2 { margin: 0; font: 600 22px 'Newsreader', serif; }
 .create-copy p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.create-panel form { display: flex; gap: 10px; align-items: center; }
+.create-panel form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.job-metadata-only { grid-column: 1 / -1; grid-row: 2; display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+.job-metadata-only input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--royal); }
 .url-field { flex: 1; min-width: 0; height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 14px; border: 1px solid var(--line); background: var(--field); }
 .url-field:focus-within { border-color: var(--royal); outline: 2px solid rgba(95, 127, 240, .22); }
 .url-field svg { flex: none; color: var(--royal); }
@@ -794,7 +796,7 @@ code { font: 400 11px 'DM Mono', monospace; }
   .page-heading { gap: 24px; }
   .create-panel { display: block; box-shadow: 4px 4px 0 var(--shadow); }
   .panel-index { margin-bottom: 14px; }
-  .create-panel form { flex-direction: column; align-items: stretch; margin-top: 20px; }
+  .create-panel form { grid-template-columns: minmax(0, 1fr); align-items: stretch; margin-top: 20px; }
   .create-panel > .notice { margin-top: 12px; }
   .jobs-section { margin-top: 42px; }
   .refresh-note { display: none; }

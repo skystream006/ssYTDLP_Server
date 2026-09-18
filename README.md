@@ -3,6 +3,21 @@
 ssMusic Player is a personal music library backed by ssYTDLP download jobs from
 `music.youtube.com` URLs.
 
+## Metadata-only jobs
+
+On **Jobs**, enter a YouTube Music URL and check **Download metadata only**
+before choosing **Add job**. The initial run retrieves the title and playlist
+song count, creates the output folder, and adds the job to your library without
+downloading audio. yt-dlp is still used for metadata lookup with `--skip-download`.
+For playlists, use **Import music > Files** and select the new playlist to upload
+your own songs into its folder.
+
+**Rerun** downloads media normally, keeping existing files and downloading missing
+songs. Metadata-only applies only to the initial run. Submitting an existing URL
+still offers a normal media-downloading rerun, even with the checkbox selected.
+The API accepts the optional boolean `metadataOnly` on `POST /api/jobs`; it defaults
+to `false`.
+
 ## Import music
 
 On **Jobs**, choose **Import music**.

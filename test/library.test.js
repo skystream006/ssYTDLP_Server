@@ -245,6 +245,40 @@ test('playlist and job submission share creation, duplicate, cancellation and pe
   await assert.rejects(submitJobUrl('bad', { user, request: async () => { throw new Error('Invalid URL'); } }), /Invalid URL/);
 });
 
+test('metadata-only submission applies to creation and leaves duplicate reruns as media downloads', async () => {
+  const user = { id: 'alice', role: 'user' };
+  const job = { id: 'existing', status: 'completed', initiatedBy: user, contributors: [] };
+  for (const metadataOnly of [undefined, false, true]) {
+    const result = await submitJobUrl(' https://music.youtube.com/playlist?list=manual ', {
+      user, metadataOnly, confirm: async () => assert.fail('No confirmation needed'),
+      request: async (url, options) => {
+        assert.equal(url, '/api/jobs');
+        assert.deepEqual(JSON.parse(options.body), { url: 'https://music.youtube.com/playlist?list=manual', metadataOnly: metadataOnly === true });
+        return job;
+      }
+    });
+    assert.deepEqual(result, { job, created: true });
+  }
+  const calls = [];
+  const result = await submitJobUrl('url', {
+    user, metadataOnly: true,
+    request: async (url, options) => {
+      calls.push([url, options]);
+      if (url === '/api/jobs') throw Object.assign(new Error('Duplicate'), { code: 'JOB_ALREADY_EXISTS', existingJob: job });
+      assert.deepEqual(options, { method: 'POST' });
+      return job;
+    },
+    confirm: async (options) => {
+      assert.equal(options.action, 'rerun');
+      assert.match(options.message, /downloading missing ones/);
+      return true;
+    }
+  });
+  assert.deepEqual(result, { job, created: false });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][0], '/api/jobs/existing/rerun');
+});
+
 test('stale saves are rejected and deleting an account removes its preferences', () => {
   const initial = getLibrary('alice', jobs);
   const saved = setLibrary('alice', initial, jobs);

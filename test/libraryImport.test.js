@@ -74,6 +74,21 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   const singles = await imports.importUploadedFiles([file], { createNew: 'false', playlistId: 'individual-songs' }, owner);
   assert.ok(getLibrary(owner.id, manager.getJobs()).singleJobIds.includes(singles.jobs[0].id));
 
+  const movie = { name: 'Movie.MP4', path: path.join(directory, 'movie') };
+  const video = Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex');
+  await fs.writeFile(movie.path, video);
+  const movies = await imports.importUploadedFiles([movie], { createNew: 'true', playlistTitle: 'Movies' }, owner);
+  assert.deepEqual(movies.jobs[0].files, ['Movie.mp4']);
+  assert.equal(movies.jobs[0].playlistSongCount, 1);
+  const mixed = await imports.importUploadedFiles([movie], { createNew: 'false', playlistId: job.id }, owner);
+  assert.deepEqual(mixed.jobs[0].files, ['Song.wav', 'Song (2).wav', 'Movie.mp4']);
+  assert.equal(mixed.jobs[0].playlistSongCount, 3);
+  assert.deepEqual(await fs.readFile(path.join(job.outputDir, 'Movie.mp4')), video);
+  await assert.rejects(imports.validateImportMedia({ ...file, name: 'fake.mp4' }), /mismatched video/);
+  await assert.rejects(imports.validateImportMedia({ ...movie, name: 'fake.webm' }), /mismatched video/);
+  await assert.rejects(imports.validateImportAudio(movie), /Unsupported audio/);
+  await assert.rejects(manager.transcribeSong(job.id, 'Movie.mp4', {}, owner), { statusCode: 400 });
+
   const zip = new AdmZip();
   zip.addFile('Media/Artist/Album/Song.wav', audio);
   zip.addFile('Media/Artist/Album/Second.wav', audio);

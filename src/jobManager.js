@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import { isPlaylistUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
 import { openDatabase, writeJob } from './database.js';
 import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
+import { isPlayableFile } from './media.js';
 import { updateSongMetadata } from './music.js';
 
 const jobs = new Map();
@@ -256,12 +257,13 @@ async function getSourceMetadata(url, denoPath, isPlaylist) {
   return parsePlaylistMetadata(stdout);
 }
 
-function newJob(url, initiatedBy) {
+function newJob(url, initiatedBy, metadataOnly = false) {
   const id = randomSongFolderName();
   const now = new Date().toISOString();
   const job = {
     id,
     url,
+    metadataOnly,
     initiatedBy,
     contributors: [],
     isPlaylist: isPlaylistUrl(url),
@@ -355,7 +357,11 @@ async function executeJob(job) {
   job.updatedAt = new Date().toISOString();
   await persistJob(job);
 
-  const sourceMetadata = await getSourceMetadata(job.url, denoPath, job.isPlaylist).catch(() => null);
+  let metadataError;
+  const sourceMetadata = await getSourceMetadata(job.url, denoPath, job.isPlaylist).catch((error) => {
+    metadataError = error;
+    return null;
+  });
   const folderName = job.folderName || (job.isPlaylist && sourceMetadata?.playlistTitle
     ? `${sourceMetadata.folderName}_${job.id}` : randomSongFolderName());
 
@@ -389,14 +395,17 @@ async function executeJob(job) {
   args.push(job.isPlaylist ? '--yes-playlist' : '--no-playlist');
   args.push(job.url);
 
-  job.command = [ytDlpPath, ...args]
+  job.command = job.metadataOnly ? null : [ytDlpPath, ...args]
     .map((value) => (value.includes(' ') ? `"${value}"` : value))
     .join(' ');
 
   await persistJob(job);
 
   try {
-    const result = await runCommand(ytDlpPath, args);
+    if (job.metadataOnly && metadataError) throw metadataError;
+    const result = job.metadataOnly
+      ? { stdout: 'Metadata retrieved. Media download skipped.', stderr: '' }
+      : await runCommand(ytDlpPath, args);
     const classification = classifyCommandOutput(result);
     job.output = formatCommandOutput(result) || 'Command completed without output.';
     job.files = await listDownloadedFiles(job.outputDir);
@@ -462,16 +471,19 @@ export function isUpdateInProgress() {
   return updateGate !== null;
 }
 
-export async function createJob(url, user = null) {
+export async function createJob(url, user = null, { metadataOnly = false } = {}) {
+  if (metadataOnly !== undefined && typeof metadataOnly !== 'boolean') {
+    throw Object.assign(new Error('metadataOnly must be a boolean'), { statusCode: 400 });
+  }
   await ensureOutputRoot();
   const sourceUrl = url.trim();
-  const job = database.transaction(() => createJobRecord(sourceUrl, user)).immediate();
+  const job = database.transaction(() => createJobRecord(sourceUrl, user, metadataOnly)).immediate();
   jobs.set(job.id, job);
   startJob(job);
   return job;
 }
 
-function createJobRecord(sourceUrl, user) {
+function createJobRecord(sourceUrl, user, metadataOnly) {
   const existingJob = database.prepare('SELECT id, status, data FROM jobs WHERE url = ? ORDER BY created_at DESC LIMIT 1').get(sourceUrl);
   if (existingJob) {
     const error = new Error('This source URL already has a job');
@@ -487,7 +499,7 @@ function createJobRecord(sourceUrl, user) {
     };
     throw error;
   }
-  const job = newJob(sourceUrl, user ? { id: user.id, name: user.name } : null);
+  const job = newJob(sourceUrl, user ? { id: user.id, name: user.name } : null, metadataOnly);
   writeJob(database, job);
   return job;
 }
@@ -509,8 +521,8 @@ export async function setJobTitle(id, title, user = null) {
 
 export async function importJobFiles({ files, playlistId, playlistTitle, source = 'files', individual = false }, user) {
   if (!user?.id) throw Object.assign(new Error('Authentication required'), { statusCode: 401 });
-  if (!Array.isArray(files) || !files.length || files.some((file) => !isSongFile(file.name) || !file.path)) {
-    throw Object.assign(new Error('Select supported audio files'), { statusCode: 400 });
+  if (!Array.isArray(files) || !files.length || files.some((file) => !isPlayableFile(file.name) || !file.path)) {
+    throw Object.assign(new Error('Select supported audio or movie files'), { statusCode: 400 });
   }
   const job = playlistId ? getJob(playlistId) : newJob(`import:${source}`, { id: user.id, name: user.name });
   if (!job) throw Object.assign(new Error('Playlist not found'), { statusCode: 404 });
@@ -549,7 +561,7 @@ export async function importJobFiles({ files, playlistId, playlistTitle, source 
     }
     job.files = [...(job.files || []), ...added];
     job.songMetadata = metadata;
-    job.playlistSongCount = job.files.filter(isSongFile).length;
+    job.playlistSongCount = job.files.filter(isPlayableFile).length;
     job.updatedAt = new Date().toISOString();
     await persistJob(job);
     return job;
@@ -572,6 +584,7 @@ export async function rerunJob(id, user = null) {
   assertJobIsIdle(job, 'rerun');
   if (job.source) throw Object.assign(new Error('Imported jobs cannot be rerun'), { statusCode: 400 });
 
+  job.metadataOnly = false;
   job.playlistSongCount = null;
   job.status = 'queued';
   job.error = null;

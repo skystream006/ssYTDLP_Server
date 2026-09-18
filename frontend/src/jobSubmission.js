@@ -1,7 +1,7 @@
-export async function submitJobUrl(url, { request, user, confirm, library = false }) {
+export async function submitJobUrl(url, { request, user, confirm, library = false, metadataOnly = false }) {
   try {
     const job = await request('/api/jobs', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: url.trim() })
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: url.trim(), metadataOnly })
     });
     return { job, created: true };
   } catch (error) {

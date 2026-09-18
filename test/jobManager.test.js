@@ -7,6 +7,10 @@ import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
 import http from 'node:http';
 import AdmZip from 'adm-zip';
 import { replaceTranscribedFiles } from '../src/transcription.js';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 
 const fixtureCleanups = new WeakMap();
 
@@ -181,6 +185,98 @@ for (const isPlaylist of [false, true]) {
     });
   }
 }
+
+for (const isPlaylist of [false, true]) {
+  test(`metadata-only ${isPlaylist ? 'playlist' : 'track'} jobs skip initial media downloads but download on rerun`, async (t) => {
+    const calls = [];
+    const spawnMock = t.mock.method(childProcess, 'spawn', (command, args) => {
+      calls.push(args);
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      process.nextTick(() => {
+        child.stdout.end(JSON.stringify({ title: 'My collection', playlist_count: 12 }));
+        child.emit('close', 0);
+      });
+      return child;
+    });
+    syncBuiltinESMExports();
+    t.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
+    process.env.YTDLP_OUTPUT_ROOT = path.dirname(process.env.DATABASE_PATH);
+    const manager = await import(`../src/jobManager.js?metadata-only=${isPlaylist}`);
+    const owner = { id: 'owner', role: 'user' };
+    const url = isPlaylist ? 'https://music.youtube.com/playlist?list=manual' : 'https://music.youtube.com/watch?v=manual';
+    const job = await manager.createJob(url, owner, { metadataOnly: true });
+    await waitForJobToFinish(job);
+    assert.equal(job.status, 'completed');
+    assert.equal(job.metadataOnly, true);
+    assert.equal(job.playlistTitle, 'My collection');
+    assert.equal(job.playlistSongCount, isPlaylist ? 12 : null);
+    assert.ok((await fs.stat(job.outputDir)).isDirectory());
+    assert.deepEqual(job.files, []);
+    assert.equal(job.command, null);
+    assert.match(job.output, /Media download skipped/);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].includes('--skip-download'));
+    assert.ok(calls[0].includes('--dump-single-json'));
+    assert.ok(calls[0].includes(isPlaylist ? '--yes-playlist' : '--no-playlist'));
+    assert.equal(manager.getJob(job.id).metadataOnly, true);
+
+    if (isPlaylist) {
+      const uploadPath = path.join(process.env.YTDLP_OUTPUT_ROOT, 'Upload.mp3');
+      await fs.writeFile(uploadPath, 'original audio');
+      const uploaded = await manager.importJobFiles({ playlistId: job.id, files: [{ name: 'My own song.mp3', path: uploadPath }] }, owner);
+      assert.equal(uploaded.status, 'completed');
+      assert.equal(uploaded.outputDir, job.outputDir);
+      assert.deepEqual(uploaded.files, ['My own song.mp3']);
+    } else {
+      await fs.writeFile(path.join(job.outputDir, 'My own song.mp3'), 'original audio');
+    }
+    await manager.setJobTitle(job.id, 'Custom title', owner);
+    const rerun = await manager.rerunJob(job.id, owner);
+    await waitForJobToFinish(rerun);
+    assert.equal(rerun.status, 'completed');
+    assert.equal(rerun.metadataOnly, false);
+    assert.equal(manager.getJob(job.id).metadataOnly, false);
+    assert.equal(rerun.outputDir, job.outputDir);
+    assert.equal(rerun.playlistTitle, 'Custom title');
+    assert.deepEqual(rerun.files, ['My own song.mp3']);
+    assert.equal(await fs.readFile(path.join(job.outputDir, 'My own song.mp3'), 'utf8'), 'original audio');
+    assert.equal(calls.length, 3);
+    assert.ok(calls[1].includes('--skip-download'));
+    assert.ok(calls[2].includes('--extract-audio'));
+    assert.ok(calls[2].includes('--no-overwrites'));
+    assert.ok(!calls[2].includes('--skip-download'));
+  });
+}
+
+test('metadata-only lookup failures fail without starting a media download', async (t) => {
+  const spawnMock = t.mock.method(childProcess, 'spawn', () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    process.nextTick(() => {
+      child.stderr.end('ERROR: Unable to download webpage');
+      child.emit('close', 1);
+    });
+    return child;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
+  process.env.YTDLP_OUTPUT_ROOT = path.dirname(process.env.DATABASE_PATH);
+  const manager = await import('../src/jobManager.js?metadata-only-failure');
+  const owner = { id: 'owner', role: 'user' };
+  const url = 'https://music.youtube.com/playlist?list=failure';
+  for (const metadataOnly of ['true', 1, null, {}]) {
+    await assert.rejects(manager.createJob(url, owner, { metadataOnly }), { statusCode: 400 });
+  }
+  const job = await manager.createJob(url, owner, { metadataOnly: true });
+  await waitForJobToFinish(job);
+  assert.equal(job.status, 'failed');
+  assert.match(job.output, /Unable to download webpage/);
+  assert.equal(spawnMock.mock.callCount(), 1);
+  assert.equal(manager.getJob(job.id).metadataOnly, true);
+});
 
 test('private video errors are classified as warnings', async () => {
   process.env.JOB_STORE_PATH = path.join(os.tmpdir(), `ssytdlp-classify-${Date.now()}.json`);

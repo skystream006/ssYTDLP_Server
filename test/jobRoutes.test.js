@@ -389,6 +389,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
 
   const single = await call('/api/jobs', 'POST', credentials.Owner[0], { url: 'https://music.youtube.com/watch?v=individual' });
   assert.equal(single.status, 202);
+  assert.equal(single.body.metadataOnly, false);
   const singleId = single.body.id;
   const firstSingleLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
   assert.equal(firstSingleLibrary.playlists.find((playlist) => playlist.id === 'individual-songs').playlistTitle, 'Individual Songs');
@@ -429,6 +430,30 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   server.kill();
   await stopped;
   await startServer();
+
+  const metadataUrl = 'https://music.youtube.com/playlist?list=metadata-only';
+  for (const metadataOnly of ['true', 1, null]) {
+    const invalid = await call('/api/jobs', 'POST', credentials.Owner[0], { url: metadataUrl, metadataOnly });
+    assert.equal(invalid.status, 400);
+    assert.match(invalid.body.error, /metadataOnly must be a boolean/);
+  }
+  const metadataJob = await call('/api/jobs', 'POST', credentials.Owner[0], { url: metadataUrl, metadataOnly: true });
+  assert.equal(metadataJob.status, 202);
+  assert.equal(metadataJob.body.metadataOnly, true);
+  const metadataId = metadataJob.body.id;
+  const metadataResult = await waitForJob(metadataId, credentials.Owner[0]);
+  assert.equal(metadataResult.body.metadataOnly, true);
+  assert.equal(metadataResult.body.command, null);
+  assert.deepEqual(metadataResult.body.files, []);
+  assert.ok((await fs.stat(metadataResult.body.outputDir)).isDirectory());
+  assert.ok((await call('/api/library', 'GET', credentials.Owner[0])).body.playlists.some((playlist) => playlist.id === metadataId));
+  const metadataRerun = await call(`/api/jobs/${metadataId}/rerun`, 'POST', credentials.Owner[0]);
+  assert.equal(metadataRerun.status, 202);
+  assert.equal(metadataRerun.body.metadataOnly, false);
+  const mediaResult = await waitForJob(metadataId, credentials.Owner[0]);
+  assert.match(mediaResult.body.command, /--extract-audio/);
+  assert.equal(mediaResult.body.outputDir, metadataResult.body.outputDir);
+  assert.equal((await call(`/api/jobs/${metadataId}`, 'DELETE', credentials.Owner[0])).status, 204);
 
   const upload = async (fields, files, headers = credentials.Owner[0]) => {
     const form = new FormData();

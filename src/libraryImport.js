@@ -14,6 +14,7 @@ import { deleteJob, getJobs, importJobFiles } from './jobManager.js';
 import { getLibrary, linkLibraryJob, setLibrary } from './libraryStore.js';
 import { individualSongsId } from './library.js';
 import { isSongFile } from './transcription.js';
+import { isPlayableFile, mediaType } from './media.js';
 
 const maxUploadBytes = 2 * 1024 ** 3;
 const maxAudioBytes = 512 * 1024 ** 2;
@@ -103,6 +104,18 @@ export async function validateImportAudio(file, { local = false } = {}) {
   return { ...file, size };
 }
 
+export async function validateImportMedia(file, { local = false } = {}) {
+  if (mediaType(file.name) !== 'video') return validateImportAudio(file, { local });
+  const extension = path.extname(file.name).toLowerCase();
+  const type = await fileTypeFromFile(file.path).catch(() => null);
+  const expected = { '.mp4': ['mp4'], '.m4v': ['mp4', 'm4v'], '.webm': ['webm'], '.mov': ['mov'], '.ogv': ['ogv'] }[extension];
+  if (!type || !expected.includes(type.ext)) throw failure(`Invalid or mismatched video: ${file.name}`);
+  const { size } = await fs.stat(file.path);
+  if (!size) throw failure(`Empty video file: ${file.name}`);
+  if (!local && size > maxAudioBytes) throw failure(`Video file exceeds the 512 MB limit: ${file.name}`, 413);
+  return { ...file, size };
+}
+
 export async function extractImportMedia(zipPath, directory, { local = false } = {}) {
   const archive = await new Promise((resolve, reject) => yauzl.open(zipPath,
     { lazyEntries: true, strictFileNames: true, validateEntrySizes: true }, (error, zip) => error ? reject(failure('Invalid media ZIP')) : resolve(zip)));
@@ -121,7 +134,7 @@ export async function extractImportMedia(zipPath, directory, { local = false } =
           || entry.fileName.split('/').some((part) => part === '..') || /^[\\/]|^[a-z]:/i.test(entry.fileName)
           || /[\\\x00]/.test(entry.fileName) || ((entry.externalFileAttributes >>> 16) & 0xf000) === 0xa000
           || entry.isEncrypted()) throw failure('The ZIP contains an unsafe or encrypted entry');
-        if (!entry.fileName.endsWith('/') && !entry.fileName.startsWith('__MACOSX/') && isSongFile(entry.fileName)) {
+        if (!entry.fileName.endsWith('/') && !entry.fileName.startsWith('__MACOSX/') && isPlayableFile(entry.fileName)) {
           total += entry.uncompressedSize;
           if (!local && (files.length >= 2000 || entry.uncompressedSize > maxAudioBytes || total > maxExpandedBytes)) {
             throw failure('The media ZIP exceeds the import limits', 413);
@@ -129,7 +142,7 @@ export async function extractImportMedia(zipPath, directory, { local = false } =
           const filePath = path.join(directory, randomUUID());
           const stream = await new Promise((done, failStream) => archive.openReadStream(entry, (error, value) => error ? failStream(error) : done(value)));
           await pipeline(stream, createWriteStream(filePath, { flags: 'wx' }));
-          files.push(await validateImportAudio({ name: entry.fileName, path: filePath }, { local }));
+          files.push(await validateImportMedia({ name: entry.fileName, path: filePath }, { local }));
         }
         archive.readEntry();
       })().catch(fail);
@@ -178,7 +191,7 @@ export function parseItunesImport(xml, media, { local = false } = {}) {
     if (tracks.has(id)) throw failure('Duplicate iTunes track ID');
     tracks.set(id, { ...match, name: path.posix.basename(match.name) });
   }
-  if (!tracks.size) throw failure('No local audio tracks found in the iTunes library');
+  if (!tracks.size) throw failure('No local media tracks found in the iTunes library');
   const playlists = [];
   const included = new Set();
   for (const playlist of library.Playlists || []) {
@@ -207,9 +220,9 @@ export async function importUploadedFiles(files, options, user) {
     throw failure('Select one of your existing playlists');
   }
   if (createNew && library.entries.length >= 5000) throw failure('The library contains too many entries', 413);
-  if (!files.length) throw failure('Select audio files to import');
+  if (!files.length) throw failure('Select audio or movie files to import');
   const validated = [];
-  for (const file of files) validated.push(await validateImportAudio(file));
+  for (const file of files) validated.push(await validateImportMedia(file));
   const individual = !createNew && options.playlistId === individualSongsId;
   const job = await importJobFiles({ files: validated, playlistId: createNew || individual ? undefined : options.playlistId,
     playlistTitle: individual ? 'Imported songs' : options.playlistTitle, individual }, user);

@@ -397,9 +397,9 @@ export default function MusicLibrary({ user, request, confirm }) {
     } finally { savingRef.current = false; setSaving(false); }
   }
 
-  function saveLibrary(changes) {
-    return persistLibrary('/api/library', 'PUT', {
-      version: library.version, entries: library.entries, songOrder: library.songOrder, ...changes
+  function saveEntry(changes) {
+    return persistLibrary('/api/library/entries', 'POST', {
+      version: library.version, ...changes
     });
   }
 
@@ -471,12 +471,8 @@ export default function MusicLibrary({ user, request, confirm }) {
   function moveEntry(id, parentId, targetId = null, after = false) {
     const entry = entryMap.get(id);
     if (savingRef.current || !entry || id === targetId || (entry.type === 'folder' && insideFolder(parentId, id))) return;
-    const next = entries.filter((item) => item.id !== id);
-    const destination = targetId ? next.findIndex((item) => item.id === targetId) : -1;
-    next.splice(destination < 0 ? next.length : destination + (after ? 1 : 0), 0, { ...entry, parentId });
-    if (next.every((item, index) => item.id === entries[index].id && item.parentId === entries[index].parentId)) return;
     if (parentId) setCollapsed((current) => { const updated = new Set(current); updated.delete(parentId); return updated; });
-    void saveLibrary({ entries: next });
+    void saveEntry({ action: 'move', id, parentId, targetId, after });
   }
 
   function reorderEntry(direction, id = selectedId) {
@@ -486,18 +482,14 @@ export default function MusicLibrary({ user, request, confirm }) {
     const index = siblings.findIndex((item) => item.id === entry.id);
     const neighbor = siblings[index + direction];
     if (!neighbor) return;
-    const next = entries.filter((item) => item.id !== entry.id);
-    const destination = next.findIndex((item) => item.id === neighbor.id) + (direction > 0 ? 1 : 0);
-    next.splice(destination, 0, entry);
-    void saveLibrary({ entries: next });
+    moveEntry(entry.id, entry.parentId, neighbor.id, direction > 0);
   }
 
   async function saveFolder(changes) {
     const folder = folderDialog.folder;
     const id = folder?.id || `folder-${crypto.randomUUID()}`;
-    const next = folder ? entries.map((entry) => entry.id === id ? { ...entry, ...changes } : entry)
-      : [...entries, { id, type: 'folder', ...changes }];
-    const result = await saveLibrary({ entries: next });
+    const result = await saveEntry({ action: folder ? 'update-folder' : 'create-folder', id,
+      name: changes.name, parentId: changes.parentId });
     if (result === true) {
       setCollapsed(new Set());
       selectEntry(id);
@@ -508,10 +500,7 @@ export default function MusicLibrary({ user, request, confirm }) {
   async function removeFolder() {
     if (!selected || selected.type !== 'folder' || saving) return;
     if (!await confirm({ title: 'Delete folder?', message: `Delete "${selected.name}"? Its playlists and subfolders will move to ${selected.parentId ? entryMap.get(selected.parentId).name : 'your library'}. No music files will be deleted.`, action: 'delete', label: 'Delete folder' })) return;
-    const children = entries.filter((entry) => entry.parentId === selected.id).map((entry) => ({ ...entry, parentId: selected.parentId }));
-    const next = entries.filter((entry) => entry.parentId !== selected.id);
-    next.splice(next.findIndex((entry) => entry.id === selected.id), 1, ...children);
-    if (await saveLibrary({ entries: next }) === true) selectEntry(selected.parentId);
+    if (await saveEntry({ action: 'delete-folder', id: selected.id }) === true) selectEntry(selected.parentId);
   }
 
   function reorderSong(track, target) {

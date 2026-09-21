@@ -5,7 +5,7 @@ import path from 'node:path';
 import test, { beforeEach } from 'node:test';
 import { closeDatabases, openDatabase, writeUser } from '../src/database.js';
 import { getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey, themes } from '../src/library.js';
-import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, reorderLibrarySong, setLibrary, setTheme } from '../src/libraryStore.js';
+import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme } from '../src/libraryStore.js';
 import { submitJobUrl } from '../frontend/src/jobSubmission.js';
 
 const jobs = [
@@ -106,6 +106,71 @@ test('playlist reordering preserves folders and Individual Songs across reloads 
   assert.deepEqual(restored.songOrder, organized.songOrder);
   assert.deepEqual(getPlaylistIds(getLibrary('bob', available).entries), ['jazz', 'soul', 'live', 'single']);
   assert.throws(() => setLibrary('alice', organized, available), { statusCode: 409 });
+});
+
+test('compact entry mutations preserve large libraries and promote folder children in order', () => {
+  const available = [...jobs, { id: 'large', files: Array.from({ length: 3000 }, (_, index) => `${'Long song name '.repeat(8)}${index}.mp3`) }];
+  let library = addLibraryJobFiles('alice', { version: 0, jobId: 'jazz', playlistId: 'soul' }, available);
+  library = setLibrary('alice', { ...library, songOrder: { large: available.at(-1).files } }, available);
+  const initial = library;
+  assert.ok(Buffer.byteLength(JSON.stringify(initial)) > 128 * 1024);
+  function mutate(changes) {
+    const body = { version: library.version, ...changes };
+    assert.ok(Buffer.byteLength(JSON.stringify(body)) < 1024);
+    library = mutateLibraryEntry('alice', body, available);
+    for (const key of ['songOrder', 'playlistSongOrder', 'songMoves', 'songAdds', 'singleJobIds']) {
+      assert.deepEqual(library[key], initial[key]);
+    }
+    return library;
+  }
+  mutate({ action: 'create-folder', id: 'folder-parent', name: 'Parent', parentId: null });
+  mutate({ action: 'create-folder', id: 'folder-child', name: 'Child', parentId: 'folder-parent' });
+  mutate({ action: 'update-folder', id: 'folder-child', name: 'Renamed', parentId: null });
+  assert.equal(library.entries.find((entry) => entry.id === 'folder-child').name, 'Renamed');
+  mutate({ action: 'move', id: 'folder-child', parentId: 'folder-parent', targetId: null, after: false });
+  mutate({ action: 'move', id: 'jazz', parentId: 'folder-parent', targetId: 'folder-child', after: false });
+  mutate({ action: 'move', id: 'soul', parentId: 'folder-parent', targetId: 'folder-child', after: true });
+  assert.deepEqual(library.entries.filter((entry) => entry.parentId === 'folder-parent').map((entry) => entry.id), ['jazz', 'folder-child', 'soul']);
+  mutate({ action: 'move', id: 'folder-parent', parentId: null, targetId: 'live', after: false });
+  mutate({ action: 'delete-folder', id: 'folder-parent' });
+  assert.deepEqual(library.entries.map((entry) => entry.id), ['jazz', 'folder-child', 'soul', 'live', 'large']);
+  assert.ok(library.entries.every((entry) => entry.parentId === null));
+  closeDatabases();
+  assert.deepEqual(getLibrary('alice', available), library);
+  assert.deepEqual(getLibrary('bob', available).entries.map((entry) => entry.id), ['jazz', 'soul', 'live', 'large']);
+});
+
+test('entry mutations reject invalid changes atomically and keep the tree and version constraints', () => {
+  const initial = setLibrary('alice', { ...getLibrary('alice', jobs), entries: [
+    ...getLibrary('alice', jobs).entries,
+    { id: 'folder-parent', type: 'folder', name: 'Parent', parentId: null },
+    { id: 'folder-child', type: 'folder', name: 'Child', parentId: 'folder-parent' }
+  ] }, jobs);
+  for (const changes of [
+    { action: 'create-folder', id: 'folder-parent', name: 'Duplicate', parentId: null },
+    { action: 'create-folder', id: 'invalid', name: 'Invalid', parentId: null },
+    { action: 'create-folder', id: 'folder-new', name: ' ', parentId: null },
+    { action: 'create-folder', id: 'folder-new', name: 'New', parentId: 'jazz' },
+    { action: 'update-folder', id: 'jazz', name: 'Not a folder', parentId: null },
+    { action: 'update-folder', id: 'folder-parent', name: 'Cycle', parentId: 'folder-child' },
+    { action: 'move', id: 'folder-parent', parentId: 'folder-child', targetId: null, after: false },
+    { action: 'move', id: 'jazz', parentId: null, targetId: 'folder-child', after: false },
+    { action: 'move', id: 'jazz', parentId: null, targetId: 'missing', after: false },
+    { action: 'move', id: 'jazz', parentId: null, targetId: 'soul', after: 'true' },
+    { action: 'delete-folder', id: 'jazz' }, { action: 'delete-folder', id: 'missing' },
+    { action: 'unknown', id: 'jazz', parentId: null }, { action: 'delete-folder', id: 'folder-parent', version: null }
+  ]) {
+    assert.throws(() => mutateLibraryEntry('alice', { version: initial.version, ...changes }, jobs), { statusCode: 400 });
+    assert.deepEqual(getLibrary('alice', jobs), initial);
+  }
+  assert.throws(() => mutateLibraryEntry('alice', { version: 0, action: 'delete-folder', id: 'folder-parent' }, jobs), { statusCode: 409 });
+  const full = setLibrary('alice', { ...initial, entries: [...initial.entries,
+    ...Array.from({ length: 4995 }, (_, index) => ({ id: `folder-${index}`, type: 'folder', name: `Folder ${index}`, parentId: null }))]
+  }, jobs);
+  assert.ok(Buffer.byteLength(JSON.stringify(full.entries)) > 128 * 1024);
+  assert.throws(() => mutateLibraryEntry('alice', { version: full.version, action: 'create-folder', id: 'folder-overflow', name: 'Overflow', parentId: null }, jobs), { statusCode: 400 });
+  const renamed = mutateLibraryEntry('alice', { version: full.version, action: 'update-folder', id: 'folder-0', name: 'Renamed', parentId: null }, jobs);
+  assert.equal(renamed.entries.length, 5000);
 });
 
 test('compact song reordering handles large playlists, preserves hidden songs and persists per account', () => {

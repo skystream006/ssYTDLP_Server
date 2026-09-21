@@ -634,6 +634,14 @@ or onto the upper/lower half of another playlist to place it before/after that
 playlist. Folders can be renamed; deleting a folder moves its
 immediate contents to its parent without deleting any music.
 
+Folder creation, editing, deletion, and playlist/folder moves use compact,
+version-checked actions at `POST /api/library/entries`: `create-folder`,
+`update-folder`, `delete-folder`, and `move`. Requests contain the affected entry
+ID and changed fields, not the library's entries or song orders. Song moves,
+reorders, playlist linking and bulk additions also use targeted requests. The
+legacy full-replacement `PUT /api/library` remains available with its existing
+128 KB limit; the frontend no longer uses it for organizing the library.
+
 Select **Reorder playlists** beside the Playlists heading to show drag grips
 on every playlist and folder, including **Individual Songs**. Drag a row by its
 grip or name to the insertion line above or below another row. In reorder mode,

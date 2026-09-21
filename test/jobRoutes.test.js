@@ -493,7 +493,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
 
   const largeDirectory = path.join(outputRoot, 'pagination');
   await fs.mkdir(largeDirectory);
-  const largeFiles = Array.from({ length: 1205 }, (_, index) => `Track ${String(index).padStart(4, '0')} ${'long filename '.repeat(6)}.mp3`);
+  const largeFiles = Array.from({ length: 1205 }, (_, index) => `Track ${String(index).padStart(4, '0')} ${'long filename '.repeat(7)}.mp3`);
   await Promise.all(largeFiles.map((name) => fs.writeFile(path.join(largeDirectory, name), 'audio')));
   writeJob(openDatabase(), { id: 'pagination', status: 'completed', isPlaylist: true, playlistTitle: 'Pagination Fixture',
     url: 'https://music.youtube.com/playlist?list=pagination-fixture',
@@ -542,6 +542,43 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const restored = await call(reorderRoute, 'POST', credentials.Owner[0], { ...reorder, version: reordered.body.version, after: false });
   assert.equal(restored.status, 200, restored.text);
   assert.deepEqual(restored.body.songOrder.pagination, largeFiles);
+  const entryRoute = '/api/library/entries';
+  let tree = restored.body;
+  const newFolder = { action: 'create-folder', id: 'folder-large-import', name: 'Imported music', parentId: null };
+  const oldFolderRequest = { version: tree.version, entries: [...tree.entries,
+    { id: newFolder.id, type: 'folder', name: newFolder.name, parentId: null }], songOrder: tree.songOrder };
+  assert.ok(Buffer.byteLength(JSON.stringify(oldFolderRequest)) > 128 * 1024);
+  assert.equal((await call('/api/library', 'PUT', credentials.Owner[0], oldFolderRequest)).status, 413);
+  assert.equal((await call(entryRoute, 'POST', {}, { version: tree.version, ...newFolder })).status, 401);
+  assert.equal((await call(entryRoute, 'POST', credentials.Other[0], { version: otherVersion,
+    action: 'move', id: 'pagination', parentId: null, targetId: null, after: false })).status, 400);
+  async function changeEntry(changes, headers = credentials.Owner[0]) {
+    const body = { version: tree.version, ...changes };
+    assert.ok(Buffer.byteLength(JSON.stringify(body)) < 1024);
+    const result = await call(entryRoute, 'POST', headers, body);
+    assert.equal(result.status, 200, result.text);
+    tree = result.body;
+    for (const key of ['songOrder', 'playlistSongOrder', 'songMoves', 'songAdds', 'singleJobIds']) {
+      assert.deepEqual(tree[key], restored.body[key]);
+    }
+  }
+  await changeEntry(newFolder, credentials.Owner[1]);
+  assert.ok(tree.entries.some((entry) => entry.id === newFolder.id));
+  assert.equal((await call(entryRoute, 'POST', credentials.Owner[0], { ...newFolder, version: restored.body.version })).status, 409);
+  await changeEntry({ action: 'update-folder', id: newFolder.id, name: 'Renamed folder', parentId: 'folder-mixes' });
+  await changeEntry({ action: 'create-folder', id: 'folder-nested-import', name: 'Nested', parentId: newFolder.id });
+  await changeEntry({ action: 'move', id: 'pagination', parentId: newFolder.id, targetId: 'folder-nested-import', after: false });
+  assert.deepEqual(tree.entries.filter((entry) => entry.parentId === newFolder.id).map((entry) => entry.id), ['pagination', 'folder-nested-import']);
+  await changeEntry({ action: 'move', id: 'folder-nested-import', parentId: newFolder.id, targetId: 'pagination', after: false });
+  await changeEntry({ action: 'move', id: 'folder-nested-import', parentId: newFolder.id, targetId: 'pagination', after: true });
+  await changeEntry({ action: 'move', id: newFolder.id, parentId: null, targetId: 'folder-mixes', after: false });
+  await changeEntry({ action: 'delete-folder', id: newFolder.id });
+  assert.deepEqual(tree.entries.filter((entry) => ['pagination', 'folder-nested-import'].includes(entry.id)).map((entry) => entry.parentId), [null, null]);
+  await changeEntry({ action: 'delete-folder', id: 'folder-nested-import' });
+  const reloadedTree = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+  assert.deepEqual(reloadedTree.entries, tree.entries);
+  assert.deepEqual(reloadedTree.songOrder, restored.body.songOrder);
+  assert.equal((await call('/api/library', 'GET', credentials.Other[0])).body.version, otherVersion);
   for (const name of largeFiles.slice(1200)) {
     assert.equal((await call(`/api/jobs/pagination/files/${encodeURIComponent(name)}`, 'DELETE', credentials.Owner[0])).status, 200);
   }

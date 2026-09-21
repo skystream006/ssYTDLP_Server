@@ -139,6 +139,53 @@ export function setLibrary(userId, value, jobs) {
   }).immediate();
 }
 
+export function mutateLibraryEntry(userId, value, jobs) {
+  const database = openDatabase();
+  return database.transaction(() => {
+    const current = getLibrary(userId, jobs);
+    if (!value || !Number.isSafeInteger(value.version) || value.version < 0) invalid('Invalid library version');
+    if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
+    if (typeof value.id !== 'string') invalid('Invalid library entry');
+    const entry = current.entries.find((item) => item.id === value.id);
+    let entries;
+    if (value.action === 'delete-folder') {
+      if (entry?.type !== 'folder') invalid('Folder is no longer available');
+      const children = current.entries.filter((item) => item.parentId === entry.id)
+        .map((item) => ({ ...item, parentId: entry.parentId }));
+      entries = current.entries.filter((item) => item.parentId !== entry.id);
+      entries.splice(entries.findIndex((item) => item.id === entry.id), 1, ...children);
+    } else {
+      if (!(value.parentId === null || typeof value.parentId === 'string')) invalid('Invalid parent folder');
+      if (value.parentId !== null && !current.entries.some((item) => item.id === value.parentId && item.type === 'folder')) {
+        invalid('Parent folder is no longer available');
+      }
+      if (value.action === 'create-folder') {
+        if (entry) invalid('Library entry already exists');
+        entries = [...current.entries, { id: value.id, type: 'folder', name: value.name, parentId: value.parentId }];
+      } else if (value.action === 'update-folder') {
+        if (entry?.type !== 'folder') invalid('Folder is no longer available');
+        entries = current.entries.map((item) => item.id === entry.id ? { ...item, name: value.name, parentId: value.parentId } : item);
+      } else if (value.action === 'move') {
+        if (!entry) invalid('Library entry is no longer available');
+        if (!(value.targetId === null || typeof value.targetId === 'string') || typeof value.after !== 'boolean') {
+          invalid('Invalid library entry position');
+        }
+        const target = current.entries.find((item) => item.id === value.targetId);
+        if (value.targetId !== null && (!target || target.parentId !== value.parentId || target.id === entry.id)) {
+          invalid('Target entry is no longer in the destination folder');
+        }
+        entries = current.entries.filter((item) => item.id !== entry.id);
+        const position = target ? entries.findIndex((item) => item.id === target.id) + (value.after ? 1 : 0) : entries.length;
+        entries.splice(position, 0, { ...entry, parentId: value.parentId });
+        if (entries.every((item, index) => item.id === current.entries[index].id && item.parentId === current.entries[index].parentId)) {
+          return current;
+        }
+      } else invalid('Invalid library entry action');
+    }
+    return setLibrary(userId, { ...current, entries }, jobs);
+  }).immediate();
+}
+
 export function reorderLibrarySong(userId, value, jobs) {
   const database = openDatabase();
   return database.transaction(() => {

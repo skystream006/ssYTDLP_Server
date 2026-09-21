@@ -515,22 +515,16 @@ export default function MusicLibrary({ user, request, confirm }) {
   }
 
   function reorderSong(track, target) {
-    if (!tracks || tracksLoading || allMusic) return;
+    if (!tracks || tracksLoading || allMusic || savingRef.current) return;
     const playlistTracks = tracks.filter((item) => item.playlistId === track.playlistId);
     const names = playlistTracks.map(songKey);
     const from = names.indexOf(songKey(track));
     const destination = typeof target === 'number' ? from + target : names.indexOf(target);
     if (from < 0 || destination < 0 || destination >= names.length || from === destination) return;
-    names.splice(from, 1);
-    names.splice(destination, 0, songKey(track));
-    const trackMap = new Map(playlistTracks.map((item) => [songKey(item), item]));
-    const ordered = names.map((key) => trackMap.get(key));
-    const songOrder = { ...library.songOrder };
-    for (const jobId of new Set(ordered.map((item) => item.jobId))) {
-      const orderedNames = ordered.filter((item) => item.jobId === jobId).map((item) => item.name);
-      songOrder[jobId] = [...orderedNames, ...(songOrder[jobId] || []).filter((name) => !orderedNames.includes(name))];
-    }
-    void saveLibrary({ songOrder, playlistSongOrder: { ...library.playlistSongOrder, [track.playlistId]: names } });
+    void persistLibrary('/api/library/songs/reorder', 'POST', {
+      version: library.version, playlistId: track.playlistId, jobId: track.jobId, name: track.name,
+      target: names[destination], after: from < destination
+    });
   }
 
   function entryTitle(entry) { return entry.type === 'folder' ? entry.name : jobMap.get(entry.id)?.playlistTitle || 'Preparing playlist'; }

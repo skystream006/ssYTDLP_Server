@@ -196,6 +196,17 @@ h1 { margin: 0; max-width: 780px; font: 600 48px/1.05 'Newsreader', serif; overf
 .import-log time, .import-log-details { color: var(--muted); }
 .import-log-details { display: block; }
 .import-log-error { color: var(--danger); }
+.import-dialog-expanded { width: min(1100px, calc(100% - 32px)); height: calc(100dvh - 32px); }
+.import-dialog-expanded[open] { display: flex; flex-direction: column; }
+.import-dialog-expanded > .folder-dialog-heading { flex: none; margin-bottom: 12px; }
+.import-dialog-expanded > form { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; }
+.import-dialog-expanded .import-log-panel { display: flex; flex-direction: column; flex: 1; min-height: min(320px, 45dvh); margin: 12px 0; }
+.import-dialog-expanded .import-log { flex: 1; min-height: 0; height: auto; max-height: none; }
+.import-dialog-expanded .dialog-actions, .import-dialog-expanded .import-log-panel > :not(.import-log) { flex: none; }
+.import-dialog-expanded .import-results { flex: 0 1 auto; max-height: 20dvh; }
+.import-local-summary { display: grid; flex: none; gap: 8px; color: var(--muted); font-size: 12px; }
+.import-local-summary > span { display: flex; align-items: flex-start; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.import-local-summary svg { flex: none; }
 .jobs-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
 .jobs-filters label { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
 .jobs-filters select { width: 220px; max-width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line); color: var(--ink); background: var(--field); font-size: 12px; }

@@ -11,6 +11,7 @@ import test from 'node:test';
 import NodeID3 from 'node-id3';
 import AdmZip from 'adm-zip';
 import { build as buildPlist } from 'plist';
+import { fileTypeFromBuffer } from 'file-type';
 import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
 
 test('job HTTP mutations enforce owner, contributor and admin access for sessions and PATs', { timeout: 60_000 }, async (context) => {
@@ -85,11 +86,15 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   })));
   const [httpPort, httpsPort] = listeners.map((listener) => listener.address().port);
   await Promise.all(listeners.map((listener) => new Promise((resolve) => listener.close(resolve))));
+  const ffmpegLocation = path.resolve(process.env.FFMPEG_PATH || path.join('runtime', 'ffmpeg', 'bin'));
+  const ffmpegPath = /^ffmpeg(?:\.exe)?$/i.test(path.basename(ffmpegLocation)) ? ffmpegLocation
+    : path.join(ffmpegLocation, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+  const canConvertWav = await fs.access(ffmpegPath).then(() => true, () => false);
   async function startServer() {
     server = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url)),
       '--http-port', String(httpPort), '--https-port', String(httpsPort)], {
       cwd: directory,
-      env: { ...process.env, YTDLP_OUTPUT_ROOT: outputRoot, YTDLP_PATH: process.execPath,
+      env: { ...process.env, YTDLP_OUTPUT_ROOT: outputRoot, YTDLP_PATH: process.execPath, FFMPEG_PATH: ffmpegLocation,
         HTTPS_KEY_PATH: '', HTTPS_CERT_PATH: '', PASSKEY_RP_ID: 'localhost',
         PASSKEY_ORIGIN: `https://localhost:${httpsPort}`, TRUST_PROXY: '', TRANSCRIPTION_ENDPOINT: '' },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -488,7 +493,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
 
   const largeDirectory = path.join(outputRoot, 'pagination');
   await fs.mkdir(largeDirectory);
-  const largeFiles = Array.from({ length: 1205 }, (_, index) => `Track ${String(index).padStart(4, '0')}.mp3`);
+  const largeFiles = Array.from({ length: 1205 }, (_, index) => `Track ${String(index).padStart(4, '0')} ${'long filename '.repeat(6)}.mp3`);
   await Promise.all(largeFiles.map((name) => fs.writeFile(path.join(largeDirectory, name), 'audio')));
   writeJob(openDatabase(), { id: 'pagination', status: 'completed', isPlaylist: true, playlistTitle: 'Pagination Fixture',
     url: 'https://music.youtube.com/playlist?list=pagination-fixture',
@@ -515,6 +520,28 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   }
   assert.equal((await call('/api/library/tracks?search=Pagination%20Fixture', 'GET', credentials.Other[0])).body.total, 0);
   assert.equal((await call('/api/library/tracks?entryId=pagination', 'GET', credentials.Owner[0])).body.files.length, 1205);
+  const largeLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+  const oversizedOrder = { ...largeLibrary, songOrder: { ...largeLibrary.songOrder, pagination: largeFiles },
+    playlistSongOrder: { ...largeLibrary.playlistSongOrder, pagination: largeFiles.map((name) => JSON.stringify(['pagination', name])) } };
+  assert.ok(Buffer.byteLength(JSON.stringify(oversizedOrder)) > 128 * 1024);
+  assert.equal((await call('/api/library', 'PUT', credentials.Owner[0], oversizedOrder)).status, 413);
+  const reorderRoute = '/api/library/songs/reorder';
+  const reorder = { version: largeLibrary.version, playlistId: 'pagination', jobId: 'pagination', name: largeFiles[0],
+    target: JSON.stringify(['pagination', largeFiles[1]]), after: true };
+  assert.ok(Buffer.byteLength(JSON.stringify(reorder)) < 1024);
+  assert.equal((await call(reorderRoute, 'POST', {}, reorder)).status, 401);
+  const otherVersion = (await call('/api/library', 'GET', credentials.Other[0])).body.version;
+  assert.equal((await call(reorderRoute, 'POST', credentials.Other[0], { ...reorder, version: otherVersion })).status, 400);
+  const reordered = await call(reorderRoute, 'POST', credentials.Owner[1], reorder);
+  assert.equal(reordered.status, 200, reordered.text);
+  assert.deepEqual(reordered.body.songOrder.pagination, [largeFiles[1], largeFiles[0], ...largeFiles.slice(2)]);
+  assert.equal((await call(reorderRoute, 'POST', credentials.Owner[0], reorder)).status, 409);
+  const persistedOrder = (await call('/api/library/tracks?entryId=pagination&page=1&pageSize=2', 'GET', credentials.Owner[0])).body;
+  assert.deepEqual(persistedOrder.files.map((file) => file.name), [largeFiles[1], largeFiles[0]]);
+  assert.deepEqual((await call('/api/jobs/pagination', 'GET', credentials.Owner[0])).body.files, reordered.body.songOrder.pagination);
+  const restored = await call(reorderRoute, 'POST', credentials.Owner[0], { ...reorder, version: reordered.body.version, after: false });
+  assert.equal(restored.status, 200, restored.text);
+  assert.deepEqual(restored.body.songOrder.pagination, largeFiles);
   for (const name of largeFiles.slice(1200)) {
     assert.equal((await call(`/api/jobs/pagination/files/${encodeURIComponent(name)}`, 'DELETE', credentials.Owner[0])).status, 200);
   }
@@ -613,10 +640,14 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   });
   assert.equal(movieMove.status, 200, movieMove.text);
   assert.equal((await call(`/api/library/tracks?entryId=${movieId}`, 'GET', credentials.Owner[0])).body.files.length, 2);
-  const xml = buildPlist({ Tracks: { 1: { 'Track ID': 1, Location: 'file:///Users/me/Music/Uploaded.wav' } },
+  const itunesSourceName = canConvertWav ? 'Uploaded.wav' : 'Uploaded.mp3';
+  const encodedAudio = Buffer.alloc(417 * 20);
+  for (let offset = 0; offset < encodedAudio.length; offset += 417) encodedAudio.writeUInt32BE(0xfffb9000, offset);
+  if (!canConvertWav) context.diagnostic('FFmpeg unavailable: using MP3 for HTTP imports; WAV conversion is covered by unit mocks.');
+  const xml = buildPlist({ Tracks: { 1: { 'Track ID': 1, Location: `file:///Users/me/Music/${itunesSourceName}` } },
     Playlists: [{ Name: 'iTunes favorites', 'Playlist Items': [{ 'Track ID': 1 }] }] });
   const mediaZip = new AdmZip();
-  mediaZip.addFile('Music/Uploaded.wav', audio);
+  mediaZip.addFile(`Music/${itunesSourceName}`, canConvertWav ? audio : encodedAudio);
   const itunesFiles = [{ field: 'xml', name: 'Library.xml', data: xml }, { field: 'media', name: 'Media.zip', data: mediaZip.toBuffer() }];
   assert.equal((await upload({ mode: 'itunes' }, itunesFiles.slice(0, 1))).status, 400);
   const importedItunes = await upload({ mode: 'itunes' }, itunesFiles, mobileHeaders.Owner);
@@ -631,9 +662,13 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(importLog.headers['cache-control'], 'no-store');
   assert.equal(importLog.body.status, 'completed');
   assert.ok(importLog.body.entries.some((entry) => entry.message === 'Playlist imported'));
+  if (canConvertWav) assert.ok(importLog.body.entries.some((entry) => entry.message === 'WAV converted to MP3'));
   assert.equal(importLog.body.entries.at(-1).message, 'Import completed');
   const itunesTracks = await call(`/api/library/tracks?entryId=${importedItunes.body.jobs[0].id}`, 'GET', credentials.Owner[0]);
-  assert.equal(itunesTracks.body.files[0].name, 'Uploaded.wav');
+  assert.equal(itunesTracks.body.files[0].name, 'Uploaded.mp3');
+  const importedAudio = await call(`/api/jobs/${importedItunes.body.jobs[0].id}/stream/Uploaded.mp3`, 'GET', credentials.Owner[0]);
+  assert.equal(importedAudio.status, 200);
+  assert.equal((await fileTypeFromBuffer(importedAudio.buffer)).ext, 'mp3');
   assert.equal((await call('/api/jobs/import/local')).status, 401);
   assert.deepEqual((await call('/api/jobs/import/local', 'GET', credentials.Owner[0])).body, { xmlFiles: [], zipFiles: [] });
   await fs.mkdir(process.env.IMPORT_STORAGE_ROOT);
@@ -673,7 +708,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(localImport.body.importedFiles, 1);
   assert.equal(localImport.body.jobs[0].initiatedBy.id, users.Owner.id);
   assert.equal(localImport.body.jobs[0].playlistTitle, 'iTunes favorites');
-  assert.deepEqual((await call(`/api/jobs/${localImport.body.jobs[0].id}/stream/Uploaded.wav`, 'GET', credentials.Owner[0])).buffer, audio);
+  assert.deepEqual((await call(`/api/jobs/${localImport.body.jobs[0].id}/stream/Uploaded.mp3`, 'GET', credentials.Owner[0])).buffer, importedAudio.buffer);
   assert.equal(await fs.readFile(localXmlPath, 'utf8'), xml);
   assert.deepEqual(await fs.readFile(localZipPath), originalZip);
   await fs.rm(localZipPath);
@@ -686,7 +721,21 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal((await upload(importOptions, [uploadFile])).status, 201);
   await fs.writeFile(localXmlPath, xml.replace('</plist>', `${' '.repeat(21 * 1024 ** 2)}</plist>`));
   await fs.writeFile(localZipPath, originalZip);
-  const largeLocalImport = await call('/api/jobs/import', 'POST', credentials.Owner[0], localOptions);
-  assert.equal(largeLocalImport.status, 201, largeLocalImport.text);
-  assert.equal(largeLocalImport.body.importedFiles, 1);
+  const largeLocalImport = await call('/api/jobs/import?background=true', 'POST', credentials.Owner[0], localOptions);
+  assert.equal(largeLocalImport.status, 202, largeLocalImport.text);
+  assert.equal(largeLocalImport.body.status, 'running');
+  const progressRoute = `/api/jobs/import/logs/${largeLocalImport.body.importId}`;
+  assert.equal((await call(progressRoute, 'GET', credentials.Other[0])).status, 404);
+  let progress;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const response = await call(progressRoute, 'GET', credentials.Owner[0]);
+    assert.equal(response.status, 200, response.text);
+    progress = response.body;
+    if (progress.status !== 'running') break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(progress.status, 'completed');
+  assert.equal(progress.result.importedFiles, 1);
+  assert.equal(progress.result.jobs[0].playlistTitle, 'iTunes favorites');
+  assert.deepEqual(Object.keys(progress.result.jobs[0]).sort(), ['id', 'playlistTitle']);
 });

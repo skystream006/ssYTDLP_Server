@@ -25,6 +25,7 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [monitoring, setMonitoring] = useState(false);
   const [result, setResult] = useState(null);
   const [importId, setImportId] = useState(null);
   const [importLogs, setImportLogs] = useState([]);
@@ -71,20 +72,42 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
     if (!importId) return;
     let active = true;
     let timer;
+    let missingCount = 0;
     async function refreshLog() {
       try {
-        const progress = await request(`/api/jobs/import/logs/${encodeURIComponent(importId)}`);
+        const progress = await request(`/api/jobs/import/logs/${encodeURIComponent(importId)}`, { signal: AbortSignal.timeout(15000) });
         if (!active) return;
+        missingCount = 0;
         setImportLogs(progress.entries);
         setLogError('');
+        if (monitoring && ['completed', 'failed'].includes(progress.status)) {
+          setMonitoring(false);
+          setSubmitting(false);
+          if (progress.status === 'completed') {
+            setResult(progress.result);
+            onImported();
+          } else setError(progress.error || 'Unable to import music');
+          return;
+        }
       } catch (failure) {
-        if (active && (failure.status !== 404 || !submitting)) setLogError('Import log unavailable.');
+        if (!active) return;
+        if (failure.status === 404) missingCount += 1;
+        else missingCount = 0;
+        if (monitoring && (missingCount >= 3 || [401, 403].includes(failure.status))) {
+          setMonitoring(false);
+          setSubmitting(false);
+          setError('Cannot retrieve this import\'s status. Check your library and server logs before retrying.');
+          return;
+        }
+        if (failure.status !== 404 || !submitting) {
+          setLogError(submitting ? 'Import status temporarily unavailable. Retrying...' : 'Import log unavailable.');
+        }
       }
       if (active && submitting) timer = setTimeout(refreshLog, 2000);
     }
     void refreshLog();
     return () => { active = false; clearTimeout(timer); };
-  }, [importId, submitting]);
+  }, [importId, submitting, monitoring]);
 
   useEffect(() => {
     if (logRef.current && followLog.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -131,17 +154,31 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
     setLogError('');
     followLog.current = true;
     setSubmitting(true);
+    setMonitoring(false);
+    let monitorProgress = false;
     try {
-      const imported = await request(`/api/jobs/import${nextImportId ? `?importId=${nextImportId}` : ''}`, options);
-      setResult(imported);
-      onImported();
-    } catch (failure) { setError(failure.message); }
-    finally { setSubmitting(false); }
+      const background = mode === 'itunes' && itunesSource === 'local';
+      const imported = await request(`/api/jobs/import${nextImportId ? `?importId=${nextImportId}${background ? '&background=true' : ''}` : ''}`, options);
+      if (imported.status === 'running') {
+        monitorProgress = true;
+        setMonitoring(true);
+      } else {
+        setResult(imported);
+        onImported();
+      }
+    } catch (failure) {
+      if (nextImportId && (!failure.status || [408, 502, 503, 504].includes(failure.status))) {
+        monitorProgress = true;
+        setMonitoring(true);
+        setLogError('Import connection interrupted. Checking server progress...');
+      } else setError(failure.message);
+    } finally { if (!monitorProgress) setSubmitting(false); }
   }
 
   const ready = mode === 'files'
     ? files.length > 0 && (createNew ? Boolean(playlistTitle.trim()) : Boolean(playlistId))
     : itunesSource === 'local' ? Boolean(localXml && localZip && localFiles && !localLoading && !localError) : Boolean(xml && media);
+  const expanded = mode === 'itunes' && itunesSource === 'local' && Boolean(importId);
 
   const logPanel = importId && <section className="import-log-panel" aria-label="Import diagnostics">
     <h3>Import log</h3>
@@ -160,7 +197,7 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
     {logError && <p className="notice error" role="status">{logError}</p>}
   </section>;
 
-  return <dialog ref={dialogRef} className="confirmation-dialog import-dialog" aria-labelledby={headingId}
+  return <dialog ref={dialogRef} className={`confirmation-dialog import-dialog${expanded ? ' import-dialog-expanded' : ''}`} aria-labelledby={headingId}
     onCancel={(event) => { event.preventDefault(); if (!submitting) onClose(); }}>
     <div className="folder-dialog-heading">
       <h2 id={headingId}>Import media</h2>
@@ -172,7 +209,7 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
       {logPanel}
       <div className="dialog-actions"><button className="primary-button" type="button" onClick={onClose}><Check size={17} />Done</button></div>
     </> : <form onSubmit={submit}>
-      <fieldset className="import-fields" disabled={submitting}>
+      <fieldset className="import-fields" disabled={submitting} hidden={expanded && submitting}>
         <div className="import-modes" role="group" aria-label="Import source">
           <button type="button" aria-pressed={mode === 'files'} onClick={() => { if (mode !== 'files') { setMode('files'); setFiles([]); setError(''); } }}><FileAudio size={17} />Files</button>
           <button type="button" aria-pressed={mode === 'itunes'} onClick={() => { if (mode !== 'itunes') { setMode('itunes'); setXml(null); setMedia(null); setError(''); } }}><FileArchive size={17} />iTunes library</button>
@@ -225,6 +262,10 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
           </label></>}
         </div>}
       </fieldset>
+      {expanded && submitting && <div className="import-local-summary">
+        <span><FileCode size={16} />{localXml}</span>
+        <span><FileArchive size={16} />{localZip}</span>
+      </div>}
       {error && <p className="notice error" role="alert">{error}</p>}
       {submitting && <p className="import-progress" role="status"><RefreshCw className="spin" size={17} />{mode === 'itunes' && itunesSource === 'local' ? 'Processing local library...' : 'Importing media...'}</p>}
       {logPanel}

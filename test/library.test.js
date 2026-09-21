@@ -5,7 +5,7 @@ import path from 'node:path';
 import test, { beforeEach } from 'node:test';
 import { closeDatabases, openDatabase, writeUser } from '../src/database.js';
 import { getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey, themes } from '../src/library.js';
-import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, setLibrary, setTheme } from '../src/libraryStore.js';
+import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, reorderLibrarySong, setLibrary, setTheme } from '../src/libraryStore.js';
 import { submitJobUrl } from '../frontend/src/jobSubmission.js';
 
 const jobs = [
@@ -106,6 +106,49 @@ test('playlist reordering preserves folders and Individual Songs across reloads 
   assert.deepEqual(restored.songOrder, organized.songOrder);
   assert.deepEqual(getPlaylistIds(getLibrary('bob', available).entries), ['jazz', 'soul', 'live', 'single']);
   assert.throws(() => setLibrary('alice', organized, available), { statusCode: 409 });
+});
+
+test('compact song reordering handles large playlists, preserves hidden songs and persists per account', () => {
+  const files = Array.from({ length: 3000 }, (_, index) => `Track ${index} ${'long filename '.repeat(8)}.mp3`);
+  const available = [...jobs, { id: 'large', files }];
+  const initial = setLibrary('alice', { ...getLibrary('alice', available), songOrder: { large: files, soul: ['Soul.mp3'] } }, available);
+  assert.ok(Buffer.byteLength(JSON.stringify(initial)) > 128 * 1024);
+  const move = { version: initial.version, playlistId: 'large', jobId: 'large', name: files[0],
+    target: songKey({ jobId: 'large', name: files[2] }), after: true };
+  assert.ok(Buffer.byteLength(JSON.stringify(move)) < 1024);
+  const saved = reorderLibrarySong('alice', move, available);
+  assert.equal(saved.version, initial.version + 1);
+  assert.deepEqual(saved.songOrder.large, [files[1], files[2], files[0], ...files.slice(3)]);
+  assert.deepEqual(saved.songOrder.soul, initial.songOrder.soul);
+  assert.deepEqual(saved.entries, initial.entries);
+  assert.deepEqual(getPlaylistTracks(saved, available).get('large').map((track) => track.name), saved.songOrder.large);
+  assert.deepEqual(getPlaylistTracks(getLibrary('bob', available), available).get('large').map((track) => track.name), files);
+  closeDatabases();
+  assert.deepEqual(getLibrary('alice', available), saved);
+  const restored = reorderLibrarySong('alice', { ...move, version: saved.version,
+    target: songKey({ jobId: 'large', name: files[1] }), after: false }, available);
+  assert.deepEqual(restored.songOrder.large, files);
+  assert.deepEqual(available.at(-1).files, files);
+});
+
+test('compact reorders support mixed source playlists and reject invalid or stale mutations', () => {
+  const single = { id: 'single', isPlaylist: false, files: ['Single.mp3'] };
+  const available = [...jobs, single];
+  let library = linkLibraryJob('alice', single, available);
+  library = moveLibrarySong('alice', { version: library.version, jobId: 'jazz', name: 'First.mp3', playlistId: individualSongsId }, available);
+  const move = { version: library.version, playlistId: individualSongsId, jobId: 'jazz', name: 'First.mp3',
+    target: songKey({ jobId: 'single', name: 'Single.mp3' }), after: false };
+  const saved = reorderLibrarySong('alice', move, available);
+  assert.deepEqual(getPlaylistTracks(saved, available).get(individualSongsId).map((track) => track.name), ['First.mp3', 'Single.mp3']);
+  assert.deepEqual(saved.songMoves, library.songMoves);
+  assert.deepEqual(saved.singleJobIds, library.singleJobIds);
+  assert.throws(() => reorderLibrarySong('alice', move, available), { statusCode: 409 });
+  for (const changes of [{ version: null }, { playlistId: 'missing' }, { jobId: 'other' }, { name: 'notes.txt' },
+    { target: songKey({ jobId: 'soul', name: 'Soul.mp3' }) }, { target: null }, { after: 'true' }]) {
+    assert.throws(() => reorderLibrarySong('alice', { ...move, version: saved.version, ...changes }, available), { statusCode: 400 });
+  }
+  assert.deepEqual(getLibrary('alice', available), saved);
+  assert.deepEqual(reorderLibrarySong('alice', { ...move, version: saved.version, target: songKey(move) }, available), saved);
 });
 
 test('library reconciles new and deleted jobs and songs without changing saved order', () => {

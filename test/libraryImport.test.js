@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import childProcess from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { promisify } from 'node:util';
 import AdmZip from 'adm-zip';
 import * as plist from 'plist';
+import { fileTypeFromFile } from 'file-type';
 import { isPlayableFile, mediaType, videoExtensions } from '../src/media.js';
 
 test('playable media distinguishes movies from audio and non-media filenames', () => {
@@ -65,6 +68,52 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   const file = { name: 'Song.wav', path: path.join(directory, 'audio'), size: audio.length };
   await fs.writeFile(file.path, audio);
 
+  await context.test('unrecognized audio is probed with bounded, format-matched validation', async (probeContext) => {
+    const frame = Buffer.alloc(417);
+    Buffer.from('fffb9000', 'hex').copy(frame);
+    const frames = Buffer.concat(Array.from({ length: 20 }, () => frame));
+    const padded = Buffer.concat([Buffer.alloc(4096), frames]);
+    const mp3 = { name: 'Padded.mp3', path: path.join(directory, 'padded-mp3') };
+    await fs.writeFile(mp3.path, padded);
+    const audioStream = { codec_type: 'audio', codec_name: 'mp3', sample_rate: '44100', channels: 2 };
+    let metadata = { format: { format_name: 'mp3' }, streams: [audioStream] };
+    let probeError;
+    const probe = probeContext.mock.method(childProcess, 'execFile', (executable, args, options, done) => {
+      assert.equal(path.basename(executable), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+      assert.equal(args.at(-1), mp3.path);
+      assert.equal(args[args.indexOf('-protocol_whitelist') + 1], 'file,pipe');
+      assert.equal(args[args.indexOf('-format_whitelist') + 1], 'mp3,wav,flac,mov,aac,ogg,asf');
+      assert.equal(options.timeout, 15000);
+      assert.equal(options.maxBuffer, 64 * 1024);
+      done(probeError, JSON.stringify(metadata));
+    });
+    const validated = await imports.validateImportAudio(mp3);
+    assert.equal(validated.size, padded.length);
+    assert.equal(probe.mock.callCount(), 1);
+    await imports.validateImportAudio(file);
+    await assert.rejects(imports.validateImportAudio({ ...file, name: 'wrong.mp3' }), /detected WAV, expected MP3/);
+    assert.equal(probe.mock.callCount(), 1);
+
+    metadata.streams.push({ codec_type: 'video', disposition: { attached_pic: 1 } });
+    assert.equal((await imports.validateImportAudio(mp3)).size, padded.length);
+    for (const invalid of [
+      { format: { format_name: 'wav' }, streams: [audioStream] },
+      { format: { format_name: 'mp3' }, streams: [] },
+      { format: { format_name: 'mp3' }, streams: [{ ...audioStream, codec_name: 'mp2' }] },
+      { format: { format_name: 'mp3' }, streams: [{ ...audioStream, sample_rate: '0' }] },
+      { format: { format_name: 'mp3' }, streams: [audioStream, { codec_type: 'video' }] }
+    ]) {
+      metadata = invalid;
+      await assert.rejects(imports.validateImportAudio(mp3), /ffprobe could not confirm MP3 audio/);
+    }
+    probeError = Object.assign(new Error('Probe failed'), { killed: true });
+    await assert.rejects(imports.validateImportAudio(mp3), { statusCode: 400 });
+    probeError = Object.assign(new Error('Missing executable'), { code: 'ENOENT' });
+    await assert.rejects(imports.validateImportAudio(mp3), { statusCode: 400, message: /ffprobe is unavailable/ });
+    await fs.writeFile(mp3.path, Buffer.alloc(0));
+    await assert.rejects(imports.validateImportAudio(mp3), /Empty audio file/);
+  });
+
   const result = await imports.importUploadedFiles([file], { createNew: 'true', playlistTitle: 'Local music' }, owner);
   const job = result.jobs[0];
   assert.equal(job.status, 'completed');
@@ -85,6 +134,91 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   linkLibraryJob(owner.id, single, manager.getJobs());
   const singles = await imports.importUploadedFiles([file], { createNew: 'false', playlistId: 'individual-songs' }, owner);
   assert.ok(getLibrary(owner.id, manager.getJobs()).singleJobIds.includes(singles.jobs[0].id));
+
+  await context.test('real FFmpeg preserves MP3s and converts detected WAVs in iTunes imports', async (probeContext) => {
+    const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
+    const bin = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
+    const suffix = process.platform === 'win32' ? '.exe' : '';
+    const ffmpeg = path.join(bin, `ffmpeg${suffix}`);
+    try {
+      await fs.access(ffmpeg);
+      await fs.access(path.join(bin, `ffprobe${suffix}`));
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      probeContext.skip('FFmpeg runtime is not installed');
+      return;
+    }
+    const mp3Path = path.join(directory, 'generated.mp3');
+    await promisify(childProcess.execFile)(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
+      '-t', '0.2', '-c:a', 'libmp3lame', '-id3v2_version', '0', '-write_xing', '0', mp3Path], { timeout: 15000 });
+    const padded = Buffer.concat([Buffer.alloc(4096), await fs.readFile(mp3Path)]);
+    await fs.writeFile(mp3Path, padded);
+    assert.equal(await fileTypeFromFile(mp3Path), undefined);
+    assert.equal((await imports.validateImportAudio({ name: 'Padded.mp3', path: mp3Path })).size, padded.length);
+    const zip = new AdmZip();
+    zip.addFile('Music/Padded.mp3', padded);
+    const zipPath = path.join(directory, 'padded.zip');
+    await fs.writeFile(zipPath, zip.toBuffer());
+    const media = await imports.extractImportMedia(zipPath, directory);
+    const xml = plist.build({ Tracks: { 1: { 'Track ID': 1, Location: 'file:///Music/Padded.mp3' } } });
+    const result = await imports.importItunesLibrary(xml, media, owner);
+    assert.equal(result.importedFiles, 1);
+    assert.deepEqual(await fs.readFile(path.join(result.jobs[0].outputDir, result.jobs[0].files[0])), padded);
+    const wavPath = path.join(directory, 'generated.wav');
+    await promisify(childProcess.execFile)(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
+      '-t', '0.2', '-metadata', 'title=Imported WAV', wavPath], { timeout: 15000 });
+    const wav = await fs.readFile(wavPath);
+    zip.addFile('Music/Converted.wav', wav);
+    zip.addFile('Music/Mislabeled.mp3', wav);
+    zip.addFile('Music/Converted.mp3', padded);
+    await fs.writeFile(zipPath, zip.toBuffer());
+    const conversionLogs = [];
+    const report = (stage, message, details) => conversionLogs.push({ stage, message, ...details });
+    const wavXml = plist.build({ Tracks: {
+      1: { 'Track ID': 1, Location: 'file:///Music/Converted.wav' },
+      2: { 'Track ID': 2, Location: 'file:///Music/Mislabeled.mp3' },
+      3: { 'Track ID': 3, Location: 'file:///Music/Padded.mp3' },
+      4: { 'Track ID': 4, Location: 'file:///Music/Converted.mp3' }
+    }, Playlists: [
+      { Name: 'Converted', 'Playlist Items': [{ 'Track ID': 1 }, { 'Track ID': 2 }, { 'Track ID': 3 }, { 'Track ID': 4 }] },
+      { Name: 'Shared', 'Playlist Items': [{ 'Track ID': 1 }] }
+    ] });
+    const wavMedia = await imports.extractImportMedia(zipPath, directory, { report });
+    const beforeConversion = (await fs.readdir(directory)).sort();
+    const converted = await imports.importItunesLibrary(wavXml, wavMedia, owner, { report });
+    assert.equal(converted.importedFiles, 5);
+    assert.deepEqual(converted.jobs[0].files, ['Converted.mp3', 'Mislabeled.mp3', 'Padded.mp3', 'Converted (2).mp3']);
+    assert.deepEqual(converted.jobs[1].files, ['Converted.mp3']);
+    assert.deepEqual(getLibrary(owner.id, manager.getJobs()).songOrder[converted.jobs[0].id], converted.jobs[0].files);
+    for (const name of ['Converted.mp3', 'Mislabeled.mp3']) {
+      const output = path.join(converted.jobs[0].outputDir, name);
+      assert.equal((await fileTypeFromFile(output)).ext, 'mp3');
+      const { stdout } = await promisify(childProcess.execFile)(path.join(bin, `ffprobe${suffix}`),
+        ['-v', 'error', '-show_entries', 'stream=codec_name:format_tags=title', '-of', 'json', output]);
+      const metadata = JSON.parse(stdout);
+      assert.equal(metadata.streams[0].codec_name, 'mp3');
+      assert.equal(metadata.format.tags.title, 'Imported WAV');
+    }
+    assert.deepEqual(await fs.readFile(path.join(converted.jobs[0].outputDir, 'Padded.mp3')), padded);
+    assert.deepEqual(await fs.readFile(path.join(converted.jobs[0].outputDir, 'Converted (2).mp3')), padded);
+    assert.deepEqual((await fs.readdir(directory)).sort(), beforeConversion);
+    assert.deepEqual(new AdmZip(zipPath).readFile('Music/Converted.wav'), wav);
+    assert.equal(conversionLogs.filter((entry) => entry.message === 'WAV converted to MP3').length, 2);
+    await fs.writeFile(mp3Path, 'This is not an audio file.');
+    await assert.rejects(imports.validateImportAudio({ name: 'Invalid.mp3', path: mp3Path }), /ffprobe could not confirm MP3 audio/);
+  });
+
+  const encodedAudio = Buffer.alloc(417 * 20);
+  for (let offset = 0; offset < encodedAudio.length; offset += 417) encodedAudio.writeUInt32BE(0xfffb9000, offset);
+  const execFile = childProcess.execFile;
+  const encoder = context.mock.method(childProcess, 'execFile', (executable, args, options, done) => {
+    if (!/^ffmpeg(?:\.exe)?$/i.test(path.basename(executable))) return execFile(executable, args, options, done);
+    assert.equal(args[args.indexOf('-protocol_whitelist') + 1], 'file,pipe');
+    assert.equal(args[args.indexOf('-format_whitelist') + 1], 'wav');
+    assert.equal(args[args.indexOf('-c:a') + 1], 'libmp3lame');
+    assert.equal(options.timeout, 5 * 60 * 1000);
+    fs.writeFile(args.at(-1), encodedAudio).then(() => done(null), done);
+  });
 
   const movie = { name: 'Movie.MP4', path: path.join(directory, 'movie') };
   const video = Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex');
@@ -181,11 +315,31 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   finally { statMock.mock.restore(); }
   const imported = await imports.importItunesLibrary(xml, media, owner, { report });
   assert.equal(imported.importedFiles, 3);
+  assert.equal(encoder.mock.callCount(), 2);
   assert.equal(imported.jobs[0].source, 'itunes');
-  assert.deepEqual(getLibrary(owner.id, manager.getJobs()).songOrder[imported.jobs[0].id], ['Second.wav', 'Song.wav']);
+  assert.deepEqual(getLibrary(owner.id, manager.getJobs()).songOrder[imported.jobs[0].id], ['Second.mp3', 'Song.mp3']);
   assert.equal(logs.filter((entry) => entry.message === 'Playlist imported').length, 2);
   assert.ok(logs.some((entry) => entry.message === 'Library tracks matched' && entry.matched === 2));
   assert.equal(logs.at(-1).stage, 'save');
+
+  await context.test('WAV conversion failures remove temporary outputs without creating playlists', async (conversionContext) => {
+    const beforeFiles = (await fs.readdir(directory)).sort();
+    const beforeJobs = manager.getJobs().map((job) => job.id).sort();
+    for (const error of [Object.assign(new Error('Missing'), { code: 'ENOENT' }),
+      Object.assign(new Error('Timed out'), { killed: true }), new Error('Encoding failed')]) {
+      let calls = 0;
+      const failedEncoder = conversionContext.mock.method(childProcess, 'execFile', (_executable, args, _options, done) => {
+        calls += 1;
+        fs.writeFile(args.at(-1), calls === 1 ? encodedAudio : Buffer.from('partial'))
+          .then(() => done(calls === 1 ? null : error), done);
+      });
+      await assert.rejects(imports.importItunesLibrary(xml, media, owner), /Unable to convert WAV to MP3/);
+      failedEncoder.mock.restore();
+      assert.deepEqual((await fs.readdir(directory)).sort(), beforeFiles);
+      assert.deepEqual(manager.getJobs().map((job) => job.id).sort(), beforeJobs);
+    }
+  });
+
   assert.throws(() => imports.parseItunesImport(xml, media.slice(1), { report }), /Missing or ambiguous/);
   assert.equal(logs.at(-1).message, 'No media file matches this track');
   assert.equal(logs.at(-1).level, 'error');
@@ -246,10 +400,45 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     assert.deepEqual(liveProgress, { status: 'running', stage: 'read' });
     const completed = imports.getImportProgress(owner.id, importId);
     assert.equal(completed.status, 'completed');
+    assert.deepEqual(completed.result, { importedFiles: response.importedFiles,
+      jobs: response.jobs.map((job) => ({ id: job.id, playlistTitle: job.playlistTitle })) });
     assert.equal(completed.entries.at(-1).message, 'Import completed');
     assert.ok(serverLogs.every((entry) => entry.importId === importId && entry.userId === owner.id
       && Number.isFinite(Date.parse(entry.time)) && entry.elapsedMs >= 0));
     readMock.mock.restore();
+    await diagnostics.test('background local import acknowledges before processing and reports completion after cleanup', async (background) => {
+      let releaseRead;
+      let readStarted;
+      const started = new Promise((resolve) => { readStarted = resolve; });
+      const wait = new Promise((resolve) => { releaseRead = resolve; });
+      background.mock.method(fs, 'readFile', async (...args) => {
+        if (path.basename(args[0]) === 'Library.XML') {
+          readStarted();
+          await wait;
+        }
+        return readFile(...args);
+      });
+      const replies = [];
+      const backgroundReply = { status(status) { this.statusCode = status; return this; },
+        json(body) { replies.push({ status: this.statusCode, body }); } };
+      const pending = imports.handleLibraryImport({ ...request, query: { importId, background: 'true' } }, backgroundReply);
+      try {
+        await started;
+        assert.deepEqual(replies, [{ status: 202, body: { importId, status: 'running' } }]);
+        const running = imports.getImportProgress(owner.id, importId);
+        assert.equal(running.status, 'running');
+        assert.equal(running.result, undefined);
+        assert.equal(imports.getImportProgress('other', importId), null);
+        await imports.handleLibraryImport(request, reply);
+        assert.equal(reply.statusCode, 409);
+      } finally { releaseRead(); await pending; }
+      assert.equal(replies.length, 1);
+      const finished = imports.getImportProgress(owner.id, importId);
+      assert.equal(finished.status, 'completed');
+      assert.equal(finished.result.importedFiles, 3);
+      assert.ok(finished.result.jobs.every((job) => Object.keys(job).sort().join(',') === 'id,playlistTitle'));
+      assert.equal(finished.entries.at(-2).stage, 'cleanup');
+    });
     const failureMock = diagnostics.mock.method(fs, 'readFile', async (...args) => {
       if (path.basename(args[0]) === 'Library.XML') throw new Error('Private filesystem detail');
       return readFile(...args);
@@ -260,11 +449,22 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     assert.equal(imports.getImportProgress(owner.id, importId), null);
     const failed = imports.getImportProgress(owner.id, response.importId);
     assert.equal(failed.status, 'failed');
+    assert.equal(failed.error, 'Unable to import music');
     assert.equal(JSON.stringify(failed).includes('Private filesystem detail'), false);
     assert.ok(serverLogs.some((entry) => entry.stage === 'read' && entry.level === 'error'
       && entry.error === 'Private filesystem detail' && entry.stack.includes('Private filesystem detail')));
+    const backgroundReplies = [];
+    await imports.handleLibraryImport({ ...request, query: { importId, background: 'true' } }, {
+      status(status) { this.statusCode = status; return this; },
+      json(body) { backgroundReplies.push({ status: this.statusCode, body }); }
+    });
+    assert.deepEqual(backgroundReplies, [{ status: 202, body: { importId, status: 'running' } }]);
+    const backgroundFailure = imports.getImportProgress(owner.id, importId);
+    assert.equal(backgroundFailure.status, 'failed');
+    assert.equal(backgroundFailure.error, 'Unable to import music');
+    assert.equal(JSON.stringify(backgroundFailure).includes('Private filesystem detail'), false);
     failureMock.mock.restore();
-    diagnostics.mock.method(Date, 'now', () => failed.finishedAt + 60 * 60 * 1000 + 1);
-    assert.equal(imports.getImportProgress(owner.id, response.importId), null);
+    diagnostics.mock.method(Date, 'now', () => backgroundFailure.finishedAt + 60 * 60 * 1000 + 1);
+    assert.equal(imports.getImportProgress(owner.id, importId), null);
   });
 });

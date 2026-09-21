@@ -12,7 +12,7 @@ import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata } from './music.js';
 import { findNoVocals, getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey } from './library.js';
-import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, setLibrary, setTheme } from './libraryStore.js';
+import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, reorderLibrarySong, setLibrary, setTheme } from './libraryStore.js';
 import { exportOptions, prepareLibraryExport, streamLibraryExport } from './libraryExport.js';
 import { getImportProgress, handleLibraryImport, listLocalImportFiles } from './libraryImport.js';
 import { getSystemHealth } from './health.js';
@@ -184,6 +184,14 @@ app.post('/api/library/jobs/add', (req, res) => {
 app.post('/api/library/songs/move', (req, res) => {
   try {
     return res.json(moveLibrarySong(req.user.id, req.body, getLibraryJobs(req.user)));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.post('/api/library/songs/reorder', (req, res) => {
+  try {
+    return res.json(reorderLibrarySong(req.user.id, req.body, getLibraryJobs(req.user)));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }

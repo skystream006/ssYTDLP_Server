@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
+import childProcess from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -104,15 +105,51 @@ const upload = multer({
   limits: { files: 1000, fields: 4, parts: 1004, fieldSize: 1024, fileSize: maxUploadBytes }
 }).fields([{ name: 'files', maxCount: 1000 }, { name: 'xml', maxCount: 1 }, { name: 'media', maxCount: 1 }]);
 
+function ffmpegExecutable(name) {
+  const location = process.env.FFMPEG_PATH || path.resolve(process.cwd(), 'runtime', 'ffmpeg', 'bin');
+  const directory = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
+  return path.join(directory, process.platform === 'win32' ? `${name}.exe` : name);
+}
+
+async function probeImportAudio(file, extension) {
+  const formats = { '.mp3': 'mp3', '.wav': 'wav', '.flac': 'flac', '.m4a': 'mp4',
+    '.aac': 'aac', '.ogg': 'ogg', '.opus': 'ogg', '.wma': 'asf' };
+  const codecs = { '.mp3': 'mp3', '.flac': 'flac', '.aac': 'aac', '.opus': 'opus' };
+  try {
+    const stdout = await new Promise((resolve, reject) => {
+      childProcess.execFile(ffmpegExecutable('ffprobe'), ['-v', 'error', '-protocol_whitelist', 'file,pipe',
+        '-format_whitelist', 'mp3,wav,flac,mov,aac,ogg,asf', '-probesize', '1048576', '-analyzeduration', '5000000',
+        '-show_entries', 'format=format_name:stream=codec_type,codec_name,sample_rate,channels:stream_disposition=attached_pic',
+        '-of', 'json', path.resolve(file.path)], { timeout: 15000, maxBuffer: 64 * 1024, windowsHide: true },
+      (error, output) => error ? reject(error) : resolve(output));
+    });
+    const metadata = JSON.parse(stdout);
+    return metadata.format?.format_name?.split(',').includes(formats[extension])
+      && Array.isArray(metadata.streams)
+      && metadata.streams.some((stream) => stream.codec_type === 'audio' && Number(stream.sample_rate) > 0
+        && stream.channels > 0 && (!codecs[extension] || stream.codec_name === codecs[extension]))
+      && !metadata.streams.some((stream) => stream.codec_type === 'video' && stream.disposition?.attached_pic !== 1);
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'EACCES') {
+      throw failure(`Cannot validate audio: ${file.name}. Its signature is unrecognized and ffprobe is unavailable. Install FFmpeg or check FFMPEG_PATH.`);
+    }
+    return false;
+  }
+}
+
 export async function validateImportAudio(file, { local = false } = {}) {
   const extension = path.extname(file.name).toLowerCase();
   if (!isSongFile(file.name)) throw failure(`Unsupported audio file: ${file.name}`);
-  const type = await fileTypeFromFile(file.path).catch(() => null);
-  const expected = { '.m4a': ['m4a', 'mp4'], '.wma': ['asf'], '.opus': ['opus', 'ogg'] }[extension] || [extension.slice(1)];
-  if (!type || !expected.includes(type.ext)) throw failure(`Invalid or mismatched audio: ${file.name}`);
   const { size } = await fs.stat(file.path);
   if (!size) throw failure(`Empty audio file: ${file.name}`);
   if (!local && size > maxAudioBytes) throw failure(`Audio file exceeds the 512 MB limit: ${file.name}`, 413);
+  const type = await fileTypeFromFile(file.path).catch(() => null);
+  const expected = { '.m4a': ['m4a', 'mp4'], '.wma': ['asf'], '.opus': ['opus', 'ogg'] }[extension] || [extension.slice(1)];
+  if (type ? !expected.includes(type.ext) : !await probeImportAudio(file, extension)) {
+    const reason = type ? `detected ${type.ext.toUpperCase()}, expected ${extension.slice(1).toUpperCase()}`
+      : `unrecognized signature; ffprobe could not confirm ${extension.slice(1).toUpperCase()} audio`;
+    throw failure(`Invalid or mismatched audio: ${file.name} (${reason}). Re-export or convert the original file; changing its extension is not enough.`);
+  }
   return { ...file, size };
 }
 
@@ -126,6 +163,28 @@ export async function validateImportMedia(file, { local = false } = {}) {
   if (!size) throw failure(`Empty video file: ${file.name}`);
   if (!local && size > maxAudioBytes) throw failure(`Video file exceeds the 512 MB limit: ${file.name}`, 413);
   return { ...file, size };
+}
+
+async function convertItunesWav(file, { local, report }) {
+  const output = { name: `${path.posix.parse(file.name).name}.mp3`, path: path.join(path.dirname(file.path), randomUUID()) };
+  report('convert', 'Converting WAV to MP3', { file: file.name, output: output.name });
+  try {
+    await new Promise((resolve, reject) => {
+      childProcess.execFile(ffmpegExecutable('ffmpeg'), ['-nostdin', '-v', 'error', '-n',
+        '-protocol_whitelist', 'file,pipe', '-format_whitelist', 'wav', '-f', 'wav', '-i', path.resolve(file.path),
+        '-map', '0:a:0', '-map_metadata', '0', '-vn', '-c:a', 'libmp3lame', '-q:a', '2', '-ac', '2', '-f', 'mp3', output.path],
+      { timeout: 5 * 60 * 1000, maxBuffer: 64 * 1024, windowsHide: true }, (error) => error ? reject(error) : resolve());
+    });
+    const converted = await validateImportAudio(output, { local });
+    report('convert', 'WAV converted to MP3', { file: file.name, output: converted.name, bytes: converted.size });
+    return converted;
+  } catch (error) {
+    await fs.rm(output.path, { force: true });
+    if (error.statusCode) throw error;
+    const reason = error.code === 'ENOENT' || error.code === 'EACCES' ? 'FFmpeg is unavailable; check FFMPEG_PATH'
+      : error.killed ? 'conversion timed out' : 'FFmpeg could not encode this WAV file';
+    throw failure(`Unable to convert WAV to MP3: ${file.name} (${reason})`);
+  }
 }
 
 export async function extractImportMedia(zipPath, directory, { local = false, report = () => {} } = {}) {
@@ -164,7 +223,13 @@ export async function extractImportMedia(zipPath, directory, { local = false, re
           const filePath = path.join(directory, randomUUID());
           const stream = await new Promise((done, failStream) => archive.openReadStream(entry, (error, value) => error ? failStream(error) : done(value)));
           await pipeline(stream, createWriteStream(filePath, { flags: 'wx' }));
-          files.push(await validateImportMedia({ name: entry.fileName, path: filePath }, { local }));
+          const type = await fileTypeFromFile(filePath).catch(() => null);
+          if (type?.ext === 'wav') {
+            const audio = await validateImportAudio({ name: `${entry.fileName}.wav`, path: filePath }, { local });
+            files.push({ ...audio, name: entry.fileName, convertFromWav: true });
+          } else {
+            files.push(await validateImportMedia({ name: entry.fileName, path: filePath }, { local }));
+          }
         }
         if (count === 1 || count % 100 === 0) {
           report('extract', 'Extracting media ZIP', { entries: count, files: files.length, bytes: total, entry: entry.fileName });
@@ -275,7 +340,19 @@ export async function importItunesLibrary(xml, media, user, { local = false, rep
   const plans = parseItunesImport(xml, media, { local, report });
   if (getLibrary(user.id, libraryJobs(user)).entries.length + plans.length > 5000) throw failure('The library contains too many entries', 413);
   const created = [];
+  const converted = new Map();
   try {
+    let copiedBytes = 0;
+    for (const plan of plans) {
+      for (const [index, file] of plan.files.entries()) {
+        if (file.convertFromWav) {
+          if (!converted.has(file.path)) converted.set(file.path, await convertItunesWav(file, { local, report }));
+          plan.files[index] = converted.get(file.path);
+        }
+        copiedBytes += plan.files[index].size;
+        if (!local && copiedBytes > maxExpandedBytes) throw failure('The imported playlists exceed the import limits', 413);
+      }
+    }
     for (const plan of plans) {
       report('copy', 'Importing playlist', { playlist: plan.playlistTitle, files: plan.files.length, index: created.length + 1, total: plans.length });
       const job = await importJobFiles({ ...plan, source: 'itunes' }, user);
@@ -295,6 +372,8 @@ export async function importItunesLibrary(xml, media, user, { local = false, rep
       report('rollback', 'Removed imported playlist', { jobId: job.id });
     }
     throw error;
+  } finally {
+    for (const file of converted.values()) await fs.rm(file.path, { force: true });
   }
 }
 
@@ -328,6 +407,7 @@ export async function handleLibraryImport(req, res) {
   };
   let result;
   let status = 201;
+  let acknowledged = false;
   report('receive', 'Import started', { source: req.is('application/json') ? 'local' : 'upload' });
   try {
     req.importDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-import-'));
@@ -339,6 +419,10 @@ export async function handleLibraryImport(req, res) {
         xml: await resolveLocalImportFile(req.body.xmlName, '.xml'),
         media: await resolveLocalImportFile(req.body.zipName, '.zip')
       };
+      if (req.query?.background === 'true') {
+        acknowledged = true;
+        res.status(202).json({ importId, status: 'running' });
+      }
     } else {
       req.importBytes = 0;
       await new Promise((resolve, reject) => upload(req, res, (error) => error ? reject(error) : resolve()));
@@ -376,6 +460,10 @@ export async function handleLibraryImport(req, res) {
   report('complete', status === 201 ? 'Import completed' : 'Import ended with errors', { status,
     ...(status === 201 ? { playlists: result.jobs.length, files: result.importedFiles } : {}) });
   progress.status = status === 201 ? 'completed' : 'failed';
+  if (status === 201) {
+    progress.result = { importedFiles: result.importedFiles,
+      jobs: result.jobs.map((job) => ({ id: job.id, playlistTitle: job.playlistTitle })) };
+  } else progress.error = result.error;
   progress.finishedAt = Date.now();
-  if (!res.destroyed) res.status(status).json({ ...result, importId });
+  if (!acknowledged && !res.destroyed) res.status(status).json({ ...result, importId });
 }

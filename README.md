@@ -72,12 +72,28 @@ in your library. From a selected playlist, that playlist is preselected.
     Tracks in several playlists are copied into each playlist. Internet-only
     tracks are skipped; unsupported local formats must be converted first.
 
-Original media and embedded tags are preserved without transcoding. New imports
-appear as completed jobs and in your music library; imported jobs cannot be
-rerun. Imports into existing playlists require owner or contributor access.
+iTunes imports convert files detected as WAV to MP3, including WAV content
+mislabeled with another supported extension. FFmpeg uses high-quality VBR MP3
+encoding and copies supported metadata. XML matching uses the original filename;
+playlists receive the `.mp3` replacement, with collisions renamed safely. Each
+matched WAV is converted once, even when it belongs to several playlists.
+The source ZIP and XML remain unchanged. Other media and direct **Files** uploads
+are preserved without transcoding. Conversion requires FFmpeg (included in Docker).
+
+New imports appear as completed jobs and in your music library; imported jobs
+cannot be rerun. Imports into existing playlists require owner or contributor access.
+
+Audio validation checks file contents, not just extensions. If the signature is
+unrecognized (for example, an MP3 with leading padding), the importer uses
+FFmpeg's `ffprobe` to confirm matching audio without changing the file. Docker
+includes it; native installations need `npm run setup:ffmpeg` on Windows or
+`FFMPEG_PATH` pointing to a directory containing `ffmpeg` and `ffprobe`.
+An **Invalid or mismatched audio** error names the rejected file and gives the
+detected format or probe failure. Re-export or convert genuinely damaged or
+mislabeled files; renaming the extension alone does not convert audio.
 
 iTunes imports display a live **Import log** in the dialog, retained on success
-or failure. It includes ZIP extraction counts, track matching diagnostics,
+or failure. It includes ZIP extraction counts, track matching diagnostics, WAV conversions,
 playlist creation, and cleanup. The import ID correlates with timestamped
 `[library-import]` JSON entries in the server output. For Docker, follow these
 with `docker compose logs -f app`. Full errors and stack traces are server-only;
@@ -90,6 +106,16 @@ logs retain the latest 200 entries of each account's latest import in memory,
 for up to an hour after completion, with at most 20 accounts retained. Restarting
 the server clears them; server output retains the full log according to your
 logging configuration.
+
+The dialog submits local imports with `?background=true`, receiving HTTP 202
+with `{importId, status: "running"}` after the source files are checked. Processing
+continues in the server process; the progress endpoint returns `status` and,
+after cleanup, either `result` (imported file count and playlist IDs/titles) or
+`error`. This avoids holding a request open through long local imports. Clients
+without this option keep the synchronous HTTP 201 response. The dialog also
+continues monitoring iTunes progress after a gateway/network interruption and
+retries temporary log failures without resubmitting the import. Background imports
+and their progress do not survive a server restart.
 
 Browser uploads are limited to 2 GB total, 512 MB per audio or movie file, 20 MB XML,
 and 1,000 directly uploaded files. Uploaded iTunes libraries are limited to
@@ -334,11 +360,11 @@ npm start
 
 Do not use a raw IP address for `PASSKEY_RP_ID`; passkey clients require a domain-shaped
 relying-party ID. For LAN-only use, configure a hostname in local DNS, or use a resolving
-hostname such as `192-168-3-175.sslip.io` for the server at `192.168.3.175`:
+hostname such as `192-168-1-123.sslip.io` for the server at `192.168.1.123`:
 
 ```bash
-PASSKEY_RP_ID=192-168-3-175.sslip.io
-PASSKEY_ORIGIN=https://192-168-3-175.sslip.io:4000
+PASSKEY_RP_ID=192-168-1-123.sslip.io
+PASSKEY_ORIGIN=https://192-168-1-123.sslip.io:4000
 ```
 
 Users, public passkey credentials, access decisions, and hashed login sessions are stored
@@ -622,6 +648,9 @@ A selected folder plays all descendant playlists in their saved tree order, then
 each playlist's songs in its saved song order. Drag a song within its playlist
 to reorder it, including when browsing a folder. Job
 details and the existing `/job/:id/player` view show the same saved song order.
+Song reordering sends a compact, version-checked move to
+`POST /api/library/songs/reorder` instead of uploading the whole library, so large
+imported playlists do not exceed the JSON request-size limit.
 New playlists appear at the library root; new songs append after saved song
 positions. Deleted jobs and files are removed from the saved layout automatically.
 

@@ -139,6 +139,39 @@ export function setLibrary(userId, value, jobs) {
   }).immediate();
 }
 
+export function reorderLibrarySong(userId, value, jobs) {
+  const database = openDatabase();
+  return database.transaction(() => {
+    const current = getLibrary(userId, jobs);
+    if (!value || !Number.isSafeInteger(value.version) || value.version < 0) invalid('Invalid library version');
+    if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
+    if (typeof value.jobId !== 'string' || typeof value.name !== 'string'
+      || typeof value.target !== 'string' || typeof value.after !== 'boolean') invalid('Invalid song reorder');
+    const tracks = getPlaylistTracks(current, jobs).get(value.playlistId)?.filter((track) => isPlayableFile(track.name));
+    if (!tracks) invalid('Songs can only be reordered in available playlists');
+    const from = tracks.findIndex((track) => songKey(track) === songKey(value));
+    const target = tracks.findIndex((track) => songKey(track) === value.target);
+    if (from < 0 || target < 0) invalid('Song is no longer in the playlist');
+    if (from === target) return current;
+    const [moved] = tracks.splice(from, 1);
+    const destination = tracks.findIndex((track) => songKey(track) === value.target) + (value.after ? 1 : 0);
+    tracks.splice(destination, 0, moved);
+    const byJob = new Map();
+    for (const track of tracks) {
+      if (!byJob.has(track.jobId)) byJob.set(track.jobId, []);
+      byJob.get(track.jobId).push(track.name);
+    }
+    const songOrder = { ...current.songOrder };
+    for (const [jobId, names] of byJob) {
+      const reordered = new Set(names);
+      songOrder[jobId] = [...names, ...(songOrder[jobId] || []).filter((name) => !reordered.has(name))];
+    }
+    return setLibrary(userId, { ...current, songOrder,
+      playlistSongOrder: { ...current.playlistSongOrder, [value.playlistId]: tracks.map(songKey) }
+    }, jobs);
+  }).immediate();
+}
+
 export function moveLibrarySong(userId, value, jobs) {
   const database = openDatabase();
   return database.transaction(() => {

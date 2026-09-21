@@ -76,6 +76,21 @@ Original media and embedded tags are preserved without transcoding. New imports
 appear as completed jobs and in your music library; imported jobs cannot be
 rerun. Imports into existing playlists require owner or contributor access.
 
+iTunes imports display a live **Import log** in the dialog, retained on success
+or failure. It includes ZIP extraction counts, track matching diagnostics,
+playlist creation, and cleanup. The import ID correlates with timestamped
+`[library-import]` JSON entries in the server output. For Docker, follow these
+with `docker compose logs -f app`. Full errors and stack traces are server-only;
+logs can contain media paths and track names, so redact these before sharing.
+
+`GET /api/jobs/import/logs/:importId` returns progress for the importing account
+only. Clients can supply a UUID via `POST /api/jobs/import?importId=<uuid>` to
+poll while the request runs. The response also includes `importId`. Browser
+logs retain the latest 200 entries of each account's latest import in memory,
+for up to an hour after completion, with at most 20 accounts retained. Restarting
+the server clears them; server output retains the full log according to your
+logging configuration.
+
 Browser uploads are limited to 2 GB total, 512 MB per audio or movie file, 20 MB XML,
 and 1,000 directly uploaded files. Uploaded iTunes libraries are limited to
 10,000 ZIP entries, 2,000 media tracks, 500 playlists, and 4 GB expanded media

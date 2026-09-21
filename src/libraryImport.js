@@ -21,11 +21,23 @@ const maxAudioBytes = 512 * 1024 ** 2;
 const maxXmlBytes = 20 * 1024 ** 2;
 const maxExpandedBytes = 4 * 1024 ** 3;
 const activeImports = new Set();
+const importProgress = new Map();
+const importLogLifetime = 60 * 60 * 1000;
 const failure = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const libraryJobs = (user) => getJobs().filter((job) => job.initiatedBy?.id === user.id
   || job.contributors?.some((contributor) => contributor.id === user.id));
 
 const importStorageRoot = () => path.resolve(process.env.IMPORT_STORAGE_ROOT || path.join(process.cwd(), 'import-storage'));
+
+export function getImportProgress(userId, importId) {
+  const progress = importProgress.get(userId);
+  if (!progress || progress.importId !== importId) return null;
+  if (progress.finishedAt && Date.now() - progress.finishedAt > importLogLifetime) {
+    importProgress.delete(userId);
+    return null;
+  }
+  return progress;
+}
 
 export async function resolveLocalImportFile(name, extension) {
   if (typeof name !== 'string' || !name || /[\\/:\x00-\x1f\x7f]/.test(name)
@@ -288,14 +300,31 @@ export async function importItunesLibrary(xml, media, user, { local = false, rep
 
 export async function handleLibraryImport(req, res) {
   if (activeImports.has(req.user.id) || activeImports.size >= 2) return res.status(409).json({ error: 'Another import is in progress. Try again shortly.' });
+  const requestedId = req.query?.importId;
+  if (requestedId !== undefined && (typeof requestedId !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestedId))) {
+    return res.status(400).json({ error: 'Invalid import ID' });
+  }
   activeImports.add(req.user.id);
-  const importId = randomUUID();
+  const importId = requestedId || randomUUID();
   const started = Date.now();
+  for (const [userId, previous] of importProgress) {
+    if (previous.finishedAt && (started - previous.finishedAt > importLogLifetime || importProgress.size >= 20)) importProgress.delete(userId);
+  }
+  const progress = { importId, status: 'running', entries: [] };
+  importProgress.delete(req.user.id);
+  importProgress.set(req.user.id, progress);
   let stage = 'receive';
   const report = (nextStage, message, details = {}, level = 'info') => {
     stage = nextStage;
     const entry = { time: new Date().toISOString(), importId, userId: req.user.id, elapsedMs: Date.now() - started, stage, level, message, ...details };
     console[level === 'error' ? 'error' : 'info'](`[library-import] ${JSON.stringify(entry)}`);
+    const visibleDetails = Object.fromEntries(Object.entries(details).filter(([key]) => [
+      'source', 'xml', 'xmlBytes', 'zip', 'zipBytes', 'bytes', 'mediaFiles', 'entries', 'files', 'skipped',
+      'entry', 'tracks', 'playlists', 'trackId', 'track', 'location', 'matched', 'playlist', 'index', 'total', 'jobId', 'status'
+    ].includes(key)).map(([key, value]) => [key, typeof value === 'string' ? value.slice(0, 1024) : value]));
+    progress.entries.push({ time: entry.time, elapsedMs: entry.elapsedMs, stage, level, message, details: visibleDetails });
+    if (progress.entries.length > 200) progress.entries.shift();
   };
   let result;
   let status = 201;
@@ -346,5 +375,7 @@ export async function handleLibraryImport(req, res) {
   }
   report('complete', status === 201 ? 'Import completed' : 'Import ended with errors', { status,
     ...(status === 201 ? { playlists: result.jobs.length, files: result.importedFiles } : {}) });
-  if (!res.destroyed) res.status(status).json(result);
+  progress.status = status === 201 ? 'completed' : 'failed';
+  progress.finishedAt = Date.now();
+  if (!res.destroyed) res.status(status).json({ ...result, importId });
 }

@@ -26,6 +26,11 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
+  const [importId, setImportId] = useState(null);
+  const [importLogs, setImportLogs] = useState([]);
+  const [logError, setLogError] = useState('');
+  const logRef = useRef(null);
+  const followLog = useRef(true);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -62,6 +67,29 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
     return () => { active = false; };
   }, [mode, itunesSource, localRevision]);
 
+  useEffect(() => {
+    if (!importId) return;
+    let active = true;
+    let timer;
+    async function refreshLog() {
+      try {
+        const progress = await request(`/api/jobs/import/logs/${encodeURIComponent(importId)}`);
+        if (!active) return;
+        setImportLogs(progress.entries);
+        setLogError('');
+      } catch (failure) {
+        if (active && (failure.status !== 404 || !submitting)) setLogError('Import log unavailable.');
+      }
+      if (active && submitting) timer = setTimeout(refreshLog, 2000);
+    }
+    void refreshLog();
+    return () => { active = false; clearTimeout(timer); };
+  }, [importId, submitting]);
+
+  useEffect(() => {
+    if (logRef.current && followLog.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [importLogs]);
+
   async function submit(event) {
     event.preventDefault();
     if (submitting) return;
@@ -97,9 +125,14 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
       }
       options = { method: 'POST', body };
     }
+    const nextImportId = mode === 'itunes' ? crypto.randomUUID() : null;
+    setImportId(nextImportId);
+    setImportLogs([]);
+    setLogError('');
+    followLog.current = true;
     setSubmitting(true);
     try {
-      const imported = await request('/api/jobs/import', options);
+      const imported = await request(`/api/jobs/import${nextImportId ? `?importId=${nextImportId}` : ''}`, options);
       setResult(imported);
       onImported();
     } catch (failure) { setError(failure.message); }
@@ -110,6 +143,23 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
     ? files.length > 0 && (createNew ? Boolean(playlistTitle.trim()) : Boolean(playlistId))
     : itunesSource === 'local' ? Boolean(localXml && localZip && localFiles && !localLoading && !localError) : Boolean(xml && media);
 
+  const logPanel = importId && <section className="import-log-panel" aria-label="Import diagnostics">
+    <h3>Import log</h3>
+    <small className="import-log-id">{importId}</small>
+    <div className="import-log" role="log" aria-label="Import log" aria-live="off" tabIndex={0} ref={logRef}
+      onScroll={(event) => {
+        const element = event.currentTarget;
+        followLog.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32;
+      }}>
+      {!importLogs.length && <div>{submitting ? 'Waiting for server...' : 'Loading import log...'}</div>}
+      {importLogs.map((entry, index) => <div key={`${entry.elapsedMs}-${index}`} className={entry.level === 'error' ? 'import-log-error' : undefined}>
+        <time dateTime={entry.time}>{new Date(entry.time).toLocaleTimeString()}</time> [{entry.stage}] {entry.message}
+        {Object.keys(entry.details).length > 0 && <span className="import-log-details">{Object.entries(entry.details).map(([key, value]) => `${key}: ${value}`).join(' | ')}</span>}
+      </div>)}
+    </div>
+    {logError && <p className="notice error" role="status">{logError}</p>}
+  </section>;
+
   return <dialog ref={dialogRef} className="confirmation-dialog import-dialog" aria-labelledby={headingId}
     onCancel={(event) => { event.preventDefault(); if (!submitting) onClose(); }}>
     <div className="folder-dialog-heading">
@@ -119,6 +169,7 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
     {result ? <>
       <p className="notice success" role="status"><Check size={18} />Imported {result.importedFiles} {result.importedFiles === 1 ? 'file' : 'files'} into {result.jobs.length} {result.jobs.length === 1 ? 'playlist' : 'playlists'}.</p>
       <ul className="import-results">{result.jobs.map((job) => <li key={job.id}><a href={`/job/${encodeURIComponent(job.id)}`}>{job.playlistTitle}</a></li>)}</ul>
+      {logPanel}
       <div className="dialog-actions"><button className="primary-button" type="button" onClick={onClose}><Check size={17} />Done</button></div>
     </> : <form onSubmit={submit}>
       <fieldset className="import-fields" disabled={submitting}>
@@ -176,6 +227,7 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
       </fieldset>
       {error && <p className="notice error" role="alert">{error}</p>}
       {submitting && <p className="import-progress" role="status"><RefreshCw className="spin" size={17} />{mode === 'itunes' && itunesSource === 'local' ? 'Processing local library...' : 'Importing media...'}</p>}
+      {logPanel}
       <div className="dialog-actions">
         <button className="secondary-button" type="button" disabled={submitting} onClick={onClose}>Cancel</button>
         <button className="primary-button" type="submit" disabled={!ready || submitting}><Upload size={17} />{submitting ? 'Importing' : 'Import'}</button>

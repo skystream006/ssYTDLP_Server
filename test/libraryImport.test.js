@@ -220,4 +220,51 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   await assert.rejects(imports.extractImportMedia(zipPath, directory), { statusCode: 413 });
   const extracted = await imports.extractImportMedia(zipPath, directory, { local: true });
   assert.equal(extracted.length, 2001);
+
+  await context.test('request diagnostics expose live owner-only progress and keep internal errors server-side', async (diagnostics) => {
+    const serverLogs = [];
+    diagnostics.mock.method(console, 'info', (line) => serverLogs.push(JSON.parse(line.slice('[library-import] '.length))));
+    diagnostics.mock.method(console, 'error', (line) => serverLogs.push(JSON.parse(line.slice('[library-import] '.length))));
+    const importId = '12345678-1234-1234-1234-123456789abc';
+    const request = { user: owner, query: { importId }, is: (type) => type === 'application/json',
+      body: { mode: 'itunes', source: 'local', xmlName: 'Library.XML', zipName: 'Media.zip' } };
+    let response;
+    const reply = { status(status) { this.statusCode = status; return this; }, json(body) { response = body; } };
+    const readFile = fs.readFile;
+    let liveProgress;
+    const readMock = diagnostics.mock.method(fs, 'readFile', async (...args) => {
+      if (path.basename(args[0]) === 'Library.XML') {
+        const progress = imports.getImportProgress(owner.id, importId);
+        liveProgress = { status: progress.status, stage: progress.entries.at(-1).stage };
+        assert.equal(imports.getImportProgress('other', importId), null);
+      }
+      return readFile(...args);
+    });
+    await imports.handleLibraryImport(request, reply);
+    assert.equal(reply.statusCode, 201);
+    assert.equal(response.importId, importId);
+    assert.deepEqual(liveProgress, { status: 'running', stage: 'read' });
+    const completed = imports.getImportProgress(owner.id, importId);
+    assert.equal(completed.status, 'completed');
+    assert.equal(completed.entries.at(-1).message, 'Import completed');
+    assert.ok(serverLogs.every((entry) => entry.importId === importId && entry.userId === owner.id
+      && Number.isFinite(Date.parse(entry.time)) && entry.elapsedMs >= 0));
+    readMock.mock.restore();
+    const failureMock = diagnostics.mock.method(fs, 'readFile', async (...args) => {
+      if (path.basename(args[0]) === 'Library.XML') throw new Error('Private filesystem detail');
+      return readFile(...args);
+    });
+    await imports.handleLibraryImport({ ...request, query: {} }, reply);
+    assert.equal(reply.statusCode, 500);
+    assert.equal(response.error, 'Unable to import music');
+    assert.equal(imports.getImportProgress(owner.id, importId), null);
+    const failed = imports.getImportProgress(owner.id, response.importId);
+    assert.equal(failed.status, 'failed');
+    assert.equal(JSON.stringify(failed).includes('Private filesystem detail'), false);
+    assert.ok(serverLogs.some((entry) => entry.stage === 'read' && entry.level === 'error'
+      && entry.error === 'Private filesystem detail' && entry.stack.includes('Private filesystem detail')));
+    failureMock.mock.restore();
+    diagnostics.mock.method(Date, 'now', () => failed.finishedAt + 60 * 60 * 1000 + 1);
+    assert.equal(imports.getImportProgress(owner.id, response.importId), null);
+  });
 });

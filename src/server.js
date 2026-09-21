@@ -14,7 +14,7 @@ import { readSongMetadata } from './music.js';
 import { findNoVocals, getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, setLibrary, setTheme } from './libraryStore.js';
 import { exportOptions, prepareLibraryExport, streamLibraryExport } from './libraryExport.js';
-import { handleLibraryImport, listLocalImportFiles } from './libraryImport.js';
+import { getImportProgress, handleLibraryImport, listLocalImportFiles } from './libraryImport.js';
 import { getSystemHealth } from './health.js';
 import { isYouTubeMusicUrl } from './utils.js';
 import { scheduleDailyMaintenance } from './scheduler.js';
@@ -243,6 +243,12 @@ app.get('/api/library/tracks', async (req, res) => {
 });
 
 app.post('/api/jobs/import', handleLibraryImport);
+
+app.get('/api/jobs/import/logs/:importId', (req, res) => {
+  const progress = getImportProgress(req.user.id, req.params.importId);
+  if (!progress) return res.status(404).json({ error: 'Import log is no longer available' });
+  res.json(progress);
+});
 
 app.get('/api/jobs/import/local', async (_req, res) => {
   try { res.json(await listLocalImportFiles()); }

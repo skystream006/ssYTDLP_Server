@@ -9,5 +9,6 @@ runtime/ffmpeg/
 runtime/yt-dlp/
 output/
 import-storage/*
+import-storage-completed/
 !import-storage/.gitkeep
 public/assets/

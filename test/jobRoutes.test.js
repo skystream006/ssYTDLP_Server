@@ -369,7 +369,21 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     assert.equal((await call(contributorRoute, 'PUT', headers, { userIds: [] })).status, 403);
     assert.equal((await call(`${contributorRoute}/users`, 'GET', headers)).status, 403);
     const name = index === 0 ? songName : 'keep.mp3';
-    assert.equal((await call(`/api/jobs/shared/files/${encodeURIComponent(name)}`, 'DELETE', headers)).status, 200);
+    assert.equal((await call(`/api/jobs/shared/files/${encodeURIComponent(name)}`, 'DELETE', headers)).status, 409);
+    const current = (await call('/api/library', 'GET', headers)).body;
+    const removed = await call('/api/library/songs/remove', 'POST', headers, {
+      version: current.version, jobId: 'shared', name, playlistId: 'shared'
+    });
+    assert.equal(removed.status, 200);
+    assert.equal(removed.body.fileDeleted, false);
+    assert.ok(await fs.stat(path.join(outputRoot, 'shared', name)));
+    const ownerLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+    const lastLink = await call('/api/library/songs/remove', 'POST', credentials.Owner[0], {
+      version: ownerLibrary.version, jobId: 'shared', name, playlistId: 'shared'
+    });
+    assert.equal(lastLink.status, 200);
+    assert.equal(lastLink.body.fileDeleted, true);
+    assert.equal(await fs.stat(path.join(outputRoot, 'shared', name)).catch(() => null), null);
     const rerun = await call('/api/jobs/shared/rerun', 'POST', headers);
     assert.equal(rerun.status, 202);
     assert.equal(rerun.body.initiatedBy.id, users.Owner.id);
@@ -579,6 +593,32 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.deepEqual(reloadedTree.entries, tree.entries);
   assert.deepEqual(reloadedTree.songOrder, restored.body.songOrder);
   assert.equal((await call('/api/library', 'GET', credentials.Other[0])).body.version, otherVersion);
+  const bulkRestart = once(server, 'exit');
+  server.kill();
+  await bulkRestart;
+  await startServer();
+  const bulkPlaylists = { version: tree.version, ids: ['pagination', 'music'], parentId: 'folder-mixes' };
+  assert.equal((await call('/api/library/playlists/move', 'POST', {}, bulkPlaylists)).status, 401);
+  assert.equal((await call('/api/library/playlists/move', 'POST', credentials.Other[0], { ...bulkPlaylists, version: otherVersion })).status, 400);
+  const bulkFolder = await call('/api/library/playlists/move', 'POST', credentials.Owner[0], bulkPlaylists);
+  assert.equal(bulkFolder.status, 200, bulkFolder.text);
+  assert.ok(bulkFolder.body.entries.filter((entry) => bulkPlaylists.ids.includes(entry.id)).every((entry) => entry.parentId === 'folder-mixes'));
+  assert.equal((await call('/api/library/playlists/move', 'POST', credentials.Owner[0], bulkPlaylists)).status, 409);
+  const bulkSongs = { version: bulkFolder.body.version, action: 'link', sourcePlaylistId: 'pagination', playlistId: 'music',
+    keys: largeFiles.map((name) => JSON.stringify(['pagination', name])) };
+  assert.ok(Buffer.byteLength(JSON.stringify(bulkSongs)) > 128 * 1024);
+  assert.equal((await call('/api/library/songs/transfer', 'POST', {}, bulkSongs)).status, 401);
+  assert.equal((await call('/api/library/songs/transfer', 'POST', credentials.Other[0], { ...bulkSongs, version: otherVersion })).status, 400);
+  const bulkLinked = await call('/api/library/songs/transfer', 'POST', credentials.Owner[1], bulkSongs);
+  assert.equal(bulkLinked.status, 200, bulkLinked.text);
+  assert.equal(bulkLinked.body.songAdds.filter((track) => track.jobId === 'pagination' && track.playlistId === 'music').length, 1205);
+  assert.equal((await call('/api/library/songs/transfer', 'POST', credentials.Owner[0], bulkSongs)).status, 409);
+  const bulkMoved = await call('/api/library/songs/transfer', 'POST', credentials.Owner[0], {
+    ...bulkSongs, version: bulkLinked.body.version, action: 'move', sourcePlaylistId: 'music', playlistId: 'pagination'
+  });
+  assert.equal(bulkMoved.status, 200, bulkMoved.text);
+  assert.equal(bulkMoved.body.songAdds.filter((track) => track.jobId === 'pagination').length, 0);
+  assert.deepEqual(bulkMoved.body.playlistSongOrder.pagination, bulkSongs.keys);
   for (const name of largeFiles.slice(1200)) {
     assert.equal((await call(`/api/jobs/pagination/files/${encodeURIComponent(name)}`, 'DELETE', credentials.Owner[0])).status, 200);
   }

@@ -1,6 +1,17 @@
 import { openDatabase } from './database.js';
+import path from 'node:path';
 import { getPlaylistTracks, individualSongsId, orderFiles, reconcileLibrary, songKey, themes } from './library.js';
 import { isPlayableFile } from './media.js';
+
+const removingSongs = new Set();
+
+export function lockLibraryFile(job, name, jobs) {
+  const aliases = jobs.filter((item) => item.outputDir && job.outputDir
+    && path.resolve(item.outputDir, name) === path.resolve(job.outputDir, name)).map((item) => songKey({ jobId: item.id, name }));
+  if (aliases.some((key) => removingSongs.has(key))) invalid('A song is being deleted. Refresh and try again.', 409);
+  for (const key of aliases) removingSongs.add(key);
+  return () => { for (const key of aliases) removingSongs.delete(key); };
+}
 
 function invalid(message, statusCode = 400) {
   throw Object.assign(new Error(message), { statusCode });
@@ -30,6 +41,9 @@ export function getLibrary(userId, jobs) {
 }
 
 function validateLibrary(value, jobs, current) {
+  if (jobs.some((job) => job.files?.some((name) => removingSongs.has(songKey({ jobId: job.id, name }))))) {
+    invalid('A song is being deleted. Refresh and try again.', 409);
+  }
   if (!value || !Number.isSafeInteger(value.version) || value.version < 0
     || !Array.isArray(value.entries) || value.entries.length > 5000
     || !value.songOrder || typeof value.songOrder !== 'object' || Array.isArray(value.songOrder)) {
@@ -97,7 +111,7 @@ function validateLibrary(value, jobs, current) {
     addedKeys.add(key);
     return { jobId: track.jobId, name: track.name, playlistId: track.playlistId };
   });
-  const library = reconcileLibrary({ entries, songOrder, singleJobIds: current.singleJobIds, songMoves, songAdds }, jobs);
+  const library = reconcileLibrary({ entries, songOrder, singleJobIds: current.singleJobIds, songMoves, songAdds, songRemovals: current.songRemovals }, jobs);
   const orders = value.playlistSongOrder === undefined ? current.playlistSongOrder : value.playlistSongOrder;
   if (!orders || typeof orders !== 'object' || Array.isArray(orders)) invalid('Invalid playlist song order');
   const playlistTracks = getPlaylistTracks(library, jobs);
@@ -186,6 +200,63 @@ export function mutateLibraryEntry(userId, value, jobs) {
   }).immediate();
 }
 
+function selectedItems(items, keys, keyFor) {
+  if (!Array.isArray(keys) || !keys.length || keys.length > 5000 || new Set(keys).size !== keys.length
+    || keys.some((key) => typeof key !== 'string')) invalid('Invalid selection');
+  const selected = new Set(keys);
+  const result = items.filter((item) => selected.has(keyFor(item)));
+  if (result.length !== keys.length) invalid('Selected items are no longer available');
+  return result;
+}
+
+export function moveLibraryPlaylists(userId, value, jobs) {
+  return openDatabase().transaction(() => {
+    const current = getLibrary(userId, jobs);
+    if (!Number.isSafeInteger(value?.version) || value.version < 0) invalid('Invalid library version');
+    if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
+    if (!(value.parentId === null || current.entries.some((entry) => entry.id === value.parentId && entry.type === 'folder'))) {
+      invalid('Destination folder is no longer available');
+    }
+    const selected = selectedItems(current.entries, value.ids, (entry) => entry.id);
+    if (selected.some((entry) => entry.type !== 'playlist')) invalid('Select playlists only');
+    const ids = new Set(selected.map((entry) => entry.id));
+    const entries = [...current.entries.filter((entry) => !ids.has(entry.id)),
+      ...selected.map((entry) => ({ ...entry, parentId: value.parentId }))];
+    return setLibrary(userId, { ...current, entries }, jobs);
+  }).immediate();
+}
+
+export function transferLibrarySongs(userId, value, jobs) {
+  return openDatabase().transaction(() => {
+    const current = getLibrary(userId, jobs);
+    if (!Number.isSafeInteger(value?.version) || value.version < 0) invalid('Invalid library version');
+    if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
+    if (!['move', 'link'].includes(value.action)) invalid('Choose move or link');
+    const playlists = getPlaylistTracks(current, jobs);
+    if (!playlists.has(value.sourcePlaylistId) || !playlists.has(value.playlistId)) invalid('Playlist is no longer available');
+    const selected = selectedItems(playlists.get(value.sourcePlaylistId).filter((track) => isPlayableFile(track.name)), value.keys, songKey);
+    if (value.sourcePlaylistId === value.playlistId) return current;
+    const destination = playlists.get(value.playlistId).filter((track) => isPlayableFile(track.name)).map(songKey);
+    const existing = new Set(destination);
+    const selectedKeys = new Set(selected.map(songKey));
+    const moves = new Map(current.songMoves.map((track) => [songKey(track), track.playlistId]));
+    const removed = new Set(current.songRemovals.map(songKey));
+    const primary = new Set(selected.filter((track) => !removed.has(songKey(track)) && (moves.get(songKey(track))
+      || (current.singleJobIds.includes(track.jobId) ? individualSongsId : track.jobId)) === value.sourcePlaylistId).map(songKey));
+    const placements = selected.map((track) => ({ jobId: track.jobId, name: track.name, playlistId: value.playlistId }));
+    const moving = value.action === 'move';
+    const songMoves = moving ? [...current.songMoves.filter((track) => !primary.has(songKey(track))),
+      ...placements.filter((track) => primary.has(songKey(track)))] : current.songMoves;
+    const songAdds = [...current.songAdds.filter((track) => !moving || !selectedKeys.has(songKey(track))
+      || (track.playlistId !== value.sourcePlaylistId && !(primary.has(songKey(track)) && track.playlistId === value.playlistId))),
+      ...placements.filter((track) => !existing.has(songKey(track)) && (!moving || !primary.has(songKey(track))))];
+    return setLibrary(userId, { ...current, songMoves, songAdds, playlistSongOrder: { ...current.playlistSongOrder,
+      ...(moving ? { [value.sourcePlaylistId]: (current.playlistSongOrder[value.sourcePlaylistId] || []).filter((key) => !selectedKeys.has(key)) } : {}),
+      [value.playlistId]: [...destination, ...selected.map(songKey).filter((key) => !existing.has(key))]
+    } }, jobs);
+  }).immediate();
+}
+
 export function reorderLibrarySong(userId, value, jobs) {
   const database = openDatabase();
   return database.transaction(() => {
@@ -231,8 +302,8 @@ export function moveLibrarySong(userId, value, jobs) {
     const job = jobs.find((item) => item.id === value.jobId);
     if (!job || typeof value.name !== 'string' || !isPlayableFile(value.name) || !job.files?.includes(value.name)) invalid('Song is no longer available');
     const key = songKey(value);
-    const primaryId = current.songMoves.find((track) => songKey(track) === key)?.playlistId
-      || (current.singleJobIds.includes(job.id) ? individualSongsId : job.id);
+    const primaryId = current.songRemovals.some((track) => songKey(track) === key) ? null
+      : current.songMoves.find((track) => songKey(track) === key)?.playlistId || (current.singleJobIds.includes(job.id) ? individualSongsId : job.id);
     const sourceId = value.sourcePlaylistId ?? primaryId;
     const playlists = getPlaylistTracks(current, jobs);
     if (!playlists.get(sourceId)?.some((track) => songKey(track) === key)) invalid('Song is no longer in the source playlist');
@@ -274,5 +345,47 @@ export function addLibraryJobFiles(userId, value, jobs) {
       playlistSongOrder: { ...current.playlistSongOrder, [value.playlistId]: [...destination, ...additions.map(songKey)] }
     }, jobs);
     return { ...library, addedCount: additions.length };
+  }).immediate();
+}
+
+export function countLibraryFileLinks(job, name, jobs) {
+  let count = 0;
+  const aliases = new Set(jobs.filter((item) => item.id === job.id || (item.outputDir && job.outputDir
+    && path.resolve(item.outputDir, name) === path.resolve(job.outputDir, name))).map((item) => item.id));
+  for (const { id } of openDatabase().prepare('SELECT id FROM users').all()) {
+    const available = jobs.filter((item) => item.initiatedBy?.id === id || item.contributors?.some((user) => user.id === id));
+    if (!available.some((item) => aliases.has(item.id))) continue;
+    const library = getLibrary(id, available);
+    for (const tracks of getPlaylistTracks(library, available).values()) {
+      count += tracks.filter((track) => aliases.has(track.jobId) && track.name === name).length;
+    }
+  }
+  return count;
+}
+
+export function removeLibrarySongLink(userId, value, jobs, allJobs) {
+  return openDatabase().transaction(() => {
+    const current = getLibrary(userId, jobs);
+    if (!Number.isSafeInteger(value?.version) || value.version < 0) invalid('Invalid library version');
+    if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
+    const key = songKey(value);
+    if (removingSongs.has(key)) invalid('A song is being deleted. Refresh and try again.', 409);
+    const tracks = getPlaylistTracks(current, jobs).get(value.playlistId);
+    if (!tracks?.some((track) => songKey(track) === key)) invalid('Song is no longer in the playlist');
+    const job = jobs.find((item) => item.id === value.jobId);
+    if (countLibraryFileLinks(job, value.name, allJobs) <= 1) return false;
+    const primaryId = current.songMoves.find((track) => songKey(track) === key)?.playlistId
+      || (current.singleJobIds.includes(job.id) ? individualSongsId : job.id);
+    const songRemovals = [...current.songRemovals];
+    if (primaryId === value.playlistId && !songRemovals.some((track) => songKey(track) === key)) {
+      songRemovals.push({ jobId: value.jobId, name: value.name });
+    }
+    const library = reconcileLibrary({ ...current, songRemovals,
+      songAdds: current.songAdds.filter((track) => !(songKey(track) === key && track.playlistId === value.playlistId)),
+      playlistSongOrder: { ...current.playlistSongOrder,
+        [value.playlistId]: (current.playlistSongOrder[value.playlistId] || []).filter((item) => item !== key) }
+    }, jobs);
+    writeLibrary(userId, library, current.version + 1);
+    return true;
   }).immediate();
 }

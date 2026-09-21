@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ArrowRightLeft, Check, ChevronDown, ChevronRight, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { ArrowRightLeft, Check, ChevronDown, ChevronRight, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, Link, ListChecks, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import MusicPlayer, { usePlayback } from './MusicPlayer.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import { Upload } from 'lucide-react';
@@ -102,11 +102,11 @@ function AddPlaylistDialog({ user, request, confirm, onAdded, onClose }) {
   </dialog>;
 }
 
-function MoveSongDialog({ track, playlists, onSave, onClose }) {
+function LibraryDestinationDialog({ title, summary, label, destinations, folder = false, onSave, onClose }) {
   const dialogRef = useRef(null);
   const headingId = useId();
   const destinationId = useId();
-  const [destination, setDestination] = useState(playlists[0]?.id || '');
+  const [destination, setDestination] = useState(folder ? '' : destinations[0]?.id || '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -117,24 +117,25 @@ function MoveSongDialog({ track, playlists, onSave, onClose }) {
     return () => { dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
   }, []);
   return <dialog ref={dialogRef} className="confirmation-dialog folder-dialog" aria-labelledby={headingId}
+    onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); if (!busy) onClose(); } }}
     onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}>
     <form onSubmit={async (event) => {
       event.preventDefault();
-      if (busy || !destination) return;
+      if (busy || (!folder && !destination)) return;
       setBusy(true);
-      const result = await onSave(track, destination);
-      if (result === true) onClose(); else setError(result || 'Unable to move song.');
+      const result = await onSave(destination || null);
+      if (result === true) onClose(); else setError(result || 'Unable to save selection.');
       setBusy(false);
     }}>
-      <div className="folder-dialog-heading"><h2 id={headingId}>Move song</h2><button className="music-icon-button" type="button" title="Close" aria-label="Close move song" disabled={busy} onClick={onClose}><X size={18} /></button></div>
-      <p>{track.name}</p>
-      <label htmlFor={destinationId}>Destination playlist</label><select id={destinationId} required value={destination} disabled={busy || !playlists.length} onChange={(event) => setDestination(event.target.value)}>
-        {!playlists.length && <option value="">No other playlists</option>}
-        {playlists.map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.title}</option>)}
+      <div className="folder-dialog-heading"><h2 id={headingId}>{title}</h2><button className="music-icon-button" type="button" title="Close" aria-label={`Close ${title.toLowerCase()}`} disabled={busy} onClick={onClose}><X size={18} /></button></div>
+      <p>{summary}</p>
+      <label htmlFor={destinationId}>Destination {folder ? 'folder' : 'playlist'}</label><select id={destinationId} required={!folder} value={destination} disabled={busy || (!folder && !destinations.length)} onChange={(event) => setDestination(event.target.value)}>
+        {folder ? <option value="">Library</option> : !destinations.length && <option value="">No other playlists</option>}
+        {destinations.map((destination) => <option key={destination.id} value={destination.id}>{destination.title}</option>)}
       </select>
       {error && <p className="notice error" role="alert">{error}</p>}
       <div className="dialog-actions"><button className="secondary-button" type="button" disabled={busy} onClick={onClose}>Cancel</button>
-        <button className="primary-button" type="submit" disabled={busy || !destination}>{busy ? <RefreshCw className="spin" size={17} /> : <ArrowRightLeft size={17} />}Move song</button></div>
+        <button className="primary-button" type="submit" disabled={busy || (!folder && !destination)}>{busy ? <RefreshCw className="spin" size={17} /> : label.startsWith('Link') ? <Link size={17} /> : <ArrowRightLeft size={17} />}{label}</button></div>
     </form>
   </dialog>;
 }
@@ -234,6 +235,11 @@ export default function MusicLibrary({ user, request, confirm }) {
   const [exportingLibrary, setExportingLibrary] = useState(false);
   const [reordering, setReordering] = useState(false);
   const [movingSong, setMovingSong] = useState(null);
+  const [selectingPlaylists, setSelectingPlaylists] = useState(false);
+  const [selectedPlaylists, setSelectedPlaylists] = useState(new Set());
+  const [selectingSongs, setSelectingSongs] = useState(false);
+  const [selectedSongs, setSelectedSongs] = useState(new Set());
+  const [bulkDialog, setBulkDialog] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [transcribingFile, setTranscribingFile] = useState(null);
   const [pendingTranscriptions, setPendingTranscriptions] = useState({});
@@ -262,6 +268,8 @@ export default function MusicLibrary({ user, request, confirm }) {
     loading: tracksLoading || searchPending, onChange: setTrackPage
   } : null;
   const jobsRevision = JSON.stringify((library?.jobs || []).map((job) => [job.id, job.updatedAt, job.songCount]));
+  const playlistSelection = entries.filter((entry) => entry.type === 'playlist' && selectedPlaylists.has(entry.id));
+  const songSelection = (tracks || []).filter((track) => selectedSongs.has(songKey(track)));
 
   useEffect(() => {
     if (trackSearch === debouncedTrackSearch) return;
@@ -313,6 +321,8 @@ export default function MusicLibrary({ user, request, confirm }) {
   }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, debouncedTrackSearch, searchPending]);
 
   function selectEntry(id) {
+    setSelectedSongs(new Set());
+    setSelectingSongs(false);
     setSelectedId(id);
     setTrackPage(1);
     setSidebarOpen(false);
@@ -357,16 +367,16 @@ export default function MusicLibrary({ user, request, confirm }) {
   }
 
   async function removeSong(track) {
-    if (songState(track).disabled) return;
+    if (songState(track).disabled || savingRef.current) return;
     const key = songKey(track);
     songMutations.current.add(key);
     try {
-      if (!await confirm({ title: 'Delete song?', message: `Permanently delete ${track.name} from its source job and all libraries?`, action: 'delete', label: 'Delete song' })) return;
+      if (!await confirm({ title: 'Remove song?', message: `Remove ${track.name} from ${track.playlistTitle || 'this playlist'}? The file is kept while other playlist links exist, including other users' libraries. Removing the last link permanently deletes the file.`, action: 'delete', label: 'Remove song' })) return;
       setDeletingFiles((current) => ({ ...current, [key]: true }));
       setActionError('');
-      await request(`/api/jobs/${encodeURIComponent(track.jobId)}/files/${encodeURIComponent(track.name)}`, { method: 'DELETE' });
-      setRemovedSong({ key });
-      setTrackResult((current) => current ? { ...current, files: current.files.filter((file) => songKey(file) !== key) } : current);
+      await persistLibrary('/api/library/songs/remove', 'POST', {
+        version: library.version, jobId: track.jobId, name: track.name, playlistId: track.playlistId
+      }, (result) => { if (result.fileDeleted) setRemovedSong({ key }); });
     } catch (requestError) { setActionError(requestError.message); }
     finally {
       songMutations.current.delete(key);
@@ -375,7 +385,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     }
   }
 
-  async function persistLibrary(endpoint, method, body) {
+  async function persistLibrary(endpoint, method, body, onSaved) {
     if (savingRef.current || !library) return 'A library change is already being saved.';
     savingRef.current = true;
     mutationRef.current += 1;
@@ -387,6 +397,7 @@ export default function MusicLibrary({ user, request, confirm }) {
         method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       });
       setLibrary((current) => ({ ...current, ...result }));
+      onSaved?.(result);
       setSaved(true);
       setRefresh((value) => value + 1);
       return true;
@@ -447,6 +458,30 @@ export default function MusicLibrary({ user, request, confirm }) {
     return persistLibrary('/api/library/songs/move', 'POST', {
       version: library.version, jobId: track.jobId, name: track.name, sourcePlaylistId: track.playlistId, playlistId
     });
+  }
+
+  function toggleSongs(keys, checked) {
+    setSelectedSongs((current) => {
+      const next = new Set(current);
+      for (const key of keys) { if (checked) next.add(key); else next.delete(key); }
+      return next;
+    });
+  }
+
+  async function saveBulk(destination) {
+    const playlists = bulkDialog.type === 'playlists';
+    const result = await persistLibrary(playlists ? '/api/library/playlists/move' : '/api/library/songs/transfer', 'POST', {
+      version: bulkDialog.version,
+      ...(playlists ? { ids: bulkDialog.ids, parentId: destination }
+        : { keys: bulkDialog.keys, sourcePlaylistId: bulkDialog.sourcePlaylistId, playlistId: destination, action: bulkDialog.action })
+    });
+    if (result === true) {
+      if (playlists) { setSelectedPlaylists(new Set()); setSelectingPlaylists(false); setCollapsed(new Set()); }
+      else { setSelectedSongs(new Set()); setSelectingSongs(false); }
+    } else {
+      setBulkDialog(null);
+    }
+    return result;
   }
 
   function insideFolder(id, folderId) {
@@ -544,7 +579,7 @@ export default function MusicLibrary({ user, request, confirm }) {
       };
       return <li key={entry.id}>
         <div className={`library-entry ${selectedId === entry.id ? 'is-selected' : ''}`} style={{ paddingLeft: 8 + Math.min(depth, 4) * 12 }}
-          draggable={!saving} onDragStart={(event) => { event.currentTarget.dataset.dragging = 'true'; event.dataTransfer.setData('application/x-ssmusic-entry', entry.id); event.dataTransfer.effectAllowed = 'move'; }}
+          draggable={!saving && !selectingPlaylists} onDragStart={(event) => { event.currentTarget.dataset.dragging = 'true'; event.dataTransfer.setData('application/x-ssmusic-entry', entry.id); event.dataTransfer.effectAllowed = 'move'; }}
           onDragEnter={acceptEntry} onDragOver={acceptEntry} onDragLeave={leaveDrop}
           onDrop={(event) => {
             event.preventDefault();
@@ -562,7 +597,8 @@ export default function MusicLibrary({ user, request, confirm }) {
           }}>
           {folder ? <button className="folder-expander" type="button" aria-label={`${open ? 'Collapse' : 'Expand'} ${entry.name}`} aria-expanded={open} title={open ? 'Collapse folder' : 'Expand folder'} onClick={() => setCollapsed((current) => {
             const updated = new Set(current); if (updated.has(entry.id)) updated.delete(entry.id); else updated.add(entry.id); return updated;
-          })}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button> : <span className="folder-expander" />}
+          })}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button> : selectingPlaylists ? <input className="library-select-checkbox" type="checkbox" aria-label={`Select playlist ${entryTitle(entry)}`} checked={selectedPlaylists.has(entry.id)} disabled={saving}
+            onChange={(event) => { const checked = event.target.checked; setSelectedPlaylists((current) => { const next = new Set(current); if (checked) next.add(entry.id); else next.delete(entry.id); return next; }); }} /> : <span className="folder-expander" />}
           <button className="library-entry-select" type="button" aria-current={selectedId === entry.id ? 'true' : undefined} title={entryTitle(entry)} onClick={() => { if (!reordering) selectEntry(entry.id); }}>
             {folder ? open ? <FolderOpen size={18} /> : <Folder size={18} /> : <ListMusic size={18} />}<span>{entryTitle(entry)}</span>{entry.protected && <LockKeyhole size={12} aria-label="Permanent playlist" />}<small>{count}</small>
           </button>
@@ -585,11 +621,22 @@ export default function MusicLibrary({ user, request, confirm }) {
 
   const sidebar = <aside className="library-sidebar" aria-label="Playlists">
     <div className="library-sidebar-heading"><h2>Playlists <small>{jobs.length}</small></h2>
-      <div className="library-sidebar-tools"><button className="music-icon-button" type="button" title="Reorder playlists" aria-label="Reorder playlists" aria-pressed={reordering}
-        disabled={!library || saving} onClick={() => setReordering((current) => !current)}><GripVertical size={19} /></button>
+      <div className="library-sidebar-tools"><button className="music-icon-button" type="button" title="Select playlists" aria-label="Select playlists" aria-pressed={selectingPlaylists}
+        disabled={!library || saving} onClick={() => { setSelectingPlaylists(!selectingPlaylists); setSelectedPlaylists(new Set()); setReordering(false); }}><ListChecks size={19} /></button>
+      <button className="music-icon-button" type="button" title="Reorder playlists" aria-label="Reorder playlists" aria-pressed={reordering}
+        disabled={!library || saving} onClick={() => { setReordering(!reordering); setSelectingPlaylists(false); setSelectedPlaylists(new Set()); }}><GripVertical size={19} /></button>
       <button className="music-icon-button" type="button" title="New playlist folder" aria-label="New playlist folder" disabled={!library || saving}
         onClick={() => setFolderDialog({ folder: null, parentId: selected?.type === 'folder' ? selected.id : selected?.parentId || null })}><FolderPlus size={19} /></button></div></div>
     <label className="queue-search"><Search size={15} /><input type="search" aria-label="Search playlists" placeholder="Find a playlist" value={search} disabled={reordering} onChange={(event) => setSearch(event.target.value)} /></label>
+    {selectingPlaylists && <div className="library-bulk-toolbar">
+      <label><input className="library-select-checkbox" type="checkbox" aria-label="Select all matching playlists" disabled={saving}
+        ref={(element) => { if (element) { const matching = entries.filter((entry) => entry.type === 'playlist' && matches(entry)); const count = matching.filter((entry) => selectedPlaylists.has(entry.id)).length; element.indeterminate = count > 0 && count < matching.length; } }}
+        checked={entries.some((entry) => entry.type === 'playlist' && matches(entry)) && entries.filter((entry) => entry.type === 'playlist' && matches(entry)).every((entry) => selectedPlaylists.has(entry.id))}
+        onChange={(event) => { const checked = event.target.checked; setSelectedPlaylists((current) => { const next = new Set(current); for (const entry of entries.filter((item) => item.type === 'playlist' && matches(item))) { if (checked) next.add(entry.id); else next.delete(entry.id); } return next; }); }} /><span>{playlistSelection.length} selected</span></label>
+      <button className="music-icon-button" type="button" title="Move selected playlists to folder" aria-label="Move selected playlists to folder" disabled={saving || !playlistSelection.length}
+        onClick={() => setBulkDialog({ type: 'playlists', version: library.version, ids: playlistSelection.map((entry) => entry.id) })}><FolderOpen size={18} /></button>
+      <button className="music-icon-button" type="button" title="Clear playlist selection" aria-label="Clear playlist selection" disabled={saving} onClick={() => setSelectedPlaylists(new Set())}><X size={18} /></button>
+    </div>}
     <button className={`all-music ${selectedId === null ? 'is-selected' : ''}`} type="button" aria-current={selectedId === null ? 'true' : undefined} onClick={() => selectEntry(null)}><Library size={18} /><span>All music</span><small>{jobs.reduce((total, job) => total + job.songCount, 0)}</small></button>
     <div className="library-tree-scroll">{!library && !error ? <p className="music-empty" role="status">Loading playlists...</p> : renderEntries()}
       {library && !entries.length && <p className="music-empty">No playlists yet.</p>}
@@ -624,6 +671,9 @@ export default function MusicLibrary({ user, request, confirm }) {
     <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, loading: (tracksLoading || searchPending) && !trackError,
       pagination, error: trackError, queueScope: allMusic ? JSON.stringify(['all', trackPage, debouncedTrackSearch]) : selectedId,
       search: allMusic ? trackSearch : undefined, onSearch: allMusic ? setTrackSearch : undefined,
+      songSelection: selected?.type === 'playlist' ? { active: selectingSongs, keys: selectedSongs, count: songSelection.length,
+        toggle: () => { setSelectingSongs(!selectingSongs); setSelectedSongs(new Set()); }, change: toggleSongs, clear: () => setSelectedSongs(new Set()),
+        transfer: (action) => setBulkDialog({ type: 'songs', action, version: library.version, sourcePlaylistId: selectedId, keys: songSelection.map(songKey) }) } : null,
       songState, onTranscribe: setTranscribingFile, onDelete: removeSong, removedSong, onEditMetadata: setEditingMetadata,
       saving: saving || tracksLoading || searchPending, onReorder: reorderSong, onSelect: selectEntry, onMove: moveSong, onAdd: () => setAddingPlaylist(true) }} />
     {transcribingFile && <TranscriptionDialog file={transcribingFile} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
@@ -638,8 +688,16 @@ export default function MusicLibrary({ user, request, confirm }) {
     {addingPlaylist && <AddPlaylistDialog user={user} request={request} confirm={confirm} onAdded={playlistAdded} onClose={() => setAddingPlaylist(false)} />}
     {importing && <ImportMusic request={request} initialPlaylistId={selected?.type === 'playlist' ? selectedId : ''} onClose={() => setImporting(false)} onImported={() => setRefresh((value) => value + 1)} />}
     {exportingLibrary && <ExportLibraryDialog onClose={() => setExportingLibrary(false)} />}
-    {movingSong && <MoveSongDialog track={movingSong} playlists={entries.filter((entry) => entry.type === 'playlist' && entry.id !== movingSong.playlistId).map((entry) => ({
+    {movingSong && <LibraryDestinationDialog title="Move song" summary={movingSong.name} label="Move song" destinations={entries.filter((entry) => entry.type === 'playlist' && entry.id !== movingSong.playlistId).map((entry) => ({
       id: entry.id, title: `${entry.parentId ? `${folderPath(entryMap.get(entry.parentId))} / ` : ''}${entryTitle(entry)}`
-    }))} onSave={moveSong} onClose={() => setMovingSong(null)} />}
+    }))} onSave={(destination) => moveSong(movingSong, destination)} onClose={() => setMovingSong(null)} />}
+    {bulkDialog && <LibraryDestinationDialog folder={bulkDialog.type === 'playlists'}
+      title={bulkDialog.type === 'playlists' ? 'Move playlists' : bulkDialog.action === 'link' ? 'Link songs' : 'Move songs'}
+      summary={`${bulkDialog.ids?.length || bulkDialog.keys?.length} ${bulkDialog.type === 'playlists' ? 'playlists' : 'songs'} selected`}
+      label={bulkDialog.action === 'link' ? 'Link songs' : bulkDialog.type === 'playlists' ? 'Move playlists' : 'Move songs'}
+      destinations={bulkDialog.type === 'playlists' ? folders.map((folder) => ({ id: folder.id, title: folder.path }))
+        : entries.filter((entry) => entry.type === 'playlist' && entry.id !== bulkDialog.sourcePlaylistId).map((entry) => ({ id: entry.id,
+          title: `${entry.parentId ? `${folderPath(entryMap.get(entry.parentId))} / ` : ''}${entryTitle(entry)}` }))}
+      onSave={saveBulk} onClose={() => setBulkDialog(null)} />}
   </div>;
 }

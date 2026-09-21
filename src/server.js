@@ -12,7 +12,7 @@ import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata } from './music.js';
 import { findNoVocals, getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey } from './library.js';
-import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme } from './libraryStore.js';
+import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { exportOptions, prepareLibraryExport, streamLibraryExport } from './libraryExport.js';
 import { getImportProgress, handleLibraryImport, listLocalImportFiles } from './libraryImport.js';
 import { getSystemHealth } from './health.js';
@@ -72,6 +72,7 @@ const authLimiters = {
 
 app.use('/api', apiLimiter);
 app.use('/api/jobs/:id/files/:name/metadata', express.json({ limit: '3mb' }));
+app.use(['/api/library/playlists/move', '/api/library/songs/transfer'], express.json({ limit: '3mb' }));
 app.use(express.json({ limit: '128kb' }));
 app.use(helmet({
   contentSecurityPolicy: {
@@ -256,6 +257,26 @@ app.get('/api/library/tracks', async (req, res) => {
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
+});
+
+app.post('/api/library/playlists/move', (req, res) => {
+  try { res.json(moveLibraryPlaylists(req.user.id, req.body, getLibraryJobs(req.user))); }
+  catch (error) { res.status(error.statusCode || 500).json({ error: error.message }); }
+});
+
+app.post('/api/library/songs/transfer', (req, res) => {
+  try { res.json(transferLibrarySongs(req.user.id, req.body, getLibraryJobs(req.user))); }
+  catch (error) { res.status(error.statusCode || 500).json({ error: error.message }); }
+});
+
+app.post('/api/library/songs/remove', async (req, res) => {
+  try {
+    if (typeof req.body?.jobId !== 'string' || typeof req.body?.name !== 'string'
+      || typeof req.body?.playlistId !== 'string') return res.status(400).json({ error: 'Invalid song membership' });
+    const result = await deleteJobFile(req.body.jobId, req.body.name, req.user, req.body);
+    if (!result) return res.status(404).json({ error: 'Job not found' });
+    return res.json({ ...getLibrary(req.user.id, getLibraryJobs(req.user)), fileDeleted: result.fileDeleted });
+  } catch (error) { return res.status(error.statusCode || 500).json({ error: error.message }); }
 });
 
 app.post('/api/jobs/import', handleLibraryImport);

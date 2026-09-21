@@ -634,6 +634,11 @@ or onto the upper/lower half of another playlist to place it before/after that
 playlist. Folders can be renamed; deleting a folder moves its
 immediate contents to its parent without deleting any music.
 
+Use **Select playlists** beside the Playlists heading to select several playlists,
+then **Move selected playlists to folder** to move them together to a folder or
+the library root. The select-all checkbox applies to matching playlists, including
+those inside collapsed folders. The operation preserves their saved relative order.
+
 Folder creation, editing, deletion, and playlist/folder moves use compact,
 version-checked actions at `POST /api/library/entries`: `create-folder`,
 `update-folder`, `delete-folder`, and `move`. Requests contain the affected entry
@@ -672,8 +677,22 @@ buttons for volume on touch devices.
 
 Song rows offer the same transcription dialog, status, and delete confirmation as
 job details. These actions use the source job's owner/contributor permissions and
-busy state, including for moved songs. Deleting a song removes the source file
-from every user's library, not just the current personal playlist.
+busy state, including for moved songs. Removing a song in the library removes only
+that playlist membership. Its source file stays intact while another playlist
+link exists, including in another owner's or contributor's library. Removing the
+last link deletes the source file; download archives remain unchanged. Direct
+file deletion from job details returns `409` while multiple links exist; remove
+the unwanted memberships from the library first. Whole-job deletion remains a
+separate destructive operation.
+
+Inside a playlist, use **Select songs**, select the songs, then **Move selected
+songs** or **Link selected songs** and choose a destination playlist. Move removes
+only the selected source memberships; link retains them. Existing destination
+memberships are not duplicated, and new memberships append in source playlist
+order. Select-all applies to songs matching the current search, including the
+NoVocals group. Selection is cleared when switching playlists or after a successful
+bulk operation; failed saves retain the selection for retry. These controls also
+work in the mobile Songs and Playlists views.
 
 Use a song's **Move to playlist** button, or drag it onto a playlist in the
 sidebar, to move it between playlists. Songs cannot be placed directly in
@@ -699,7 +718,8 @@ Authenticated library APIs (sessions and PATs):
     Theme IDs are `light`, `midnight`, `royal-purple`, `gold`, `green`, `pink`, and `black`.
     Either field can be updated independently; mode is `light` or `dark`.
 - `GET /api/library`: returns `version`, `entries`, `songOrder`, `playlistSongOrder`,
-    `songMoves`, `singleJobIds`, visible `playlists`, and source `jobs` summaries.
+    `songMoves`, `songAdds`, server-managed `songRemovals`, `singleJobIds`, visible
+    `playlists`, and source `jobs` summaries.
 - `PUT /api/library`: saves `version`, `entries`, and `songOrder`. Playlist entries
     have `{ "id": "JOB_ID", "type": "playlist", "parentId": null }`; folder entries
     add `"name"` and use a unique `folder-`-prefixed ID. A `parentId` references a folder.
@@ -716,6 +736,18 @@ Authenticated library APIs (sessions and PATs):
 - `POST /api/library/songs/move` with `{ "version": 1, "jobId": "SOURCE_JOB_ID", "name": "song.mp3", "playlistId": "DESTINATION_ID" }`:
     move a song to a playlist, appending it after that playlist's current songs.
     Folder and unavailable destinations are rejected; stale versions return `409`.
+- `POST /api/library/playlists/move` with `{ "version": 1, "ids": ["PLAYLIST_A", "PLAYLIST_B"], "parentId": "folder-example" }`:
+    atomically move selected playlists into a folder; use `null` for the library root.
+- `POST /api/library/songs/transfer` with `{ "version": 1, "action": "link", "sourcePlaylistId": "SOURCE", "playlistId": "DESTINATION", "keys": ["[\"JOB_ID\",\"song.mp3\"]"] }`:
+    atomically link or move selected songs. Set `action` to `move` to remove source
+    memberships. Keys are `JSON.stringify([jobId, filename])`, not row indexes.
+    Both bulk endpoints accept at most 5,000 unique identities with a scoped 3 MB
+    request limit, validate the entire selection, and reject stale versions with
+    `409`. They never require a full library snapshot.
+- `POST /api/library/songs/remove` with `{ "version": 1, "jobId": "JOB_ID", "name": "song.mp3", "playlistId": "PLAYLIST_ID" }`:
+    remove one membership, deleting the physical file only for the last link.
+    Returns the updated library and `fileDeleted`. Owner/contributor file permissions,
+    busy checks, and version checks apply. Failed file deletion retains the last link.
 - `GET /api/library/tracks?entryId=ENTRY_ID`: returns ordered playable files for a
     playlist or folder, including each file's source `jobId`, current `playlistId`, and `playlistTitle`. Omit
     `entryId` to retrieve all music in library order.

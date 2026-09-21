@@ -7,6 +7,7 @@ import { openDatabase, writeJob } from './database.js';
 import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
 import { isPlayableFile } from './media.js';
 import { updateSongMetadata } from './music.js';
+import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
 
 const jobs = new Map();
 const jobMutations = new Set();
@@ -717,7 +718,7 @@ export async function setSongMetadata(id, fileName, value, user = null) {
   } finally { jobMutations.delete(id); }
 }
 
-export async function deleteJobFile(id, fileName, user = null) {
+export async function deleteJobFile(id, fileName, user = null, membership = null) {
   const job = getJob(id);
   if (!job) return null;
 
@@ -746,8 +747,19 @@ export async function deleteJobFile(id, fileName, user = null) {
   const pending = deletingFiles.get(id) || new Set();
   pending.add(fileName);
   deletingFiles.set(id, pending);
+  let unlock = () => {};
   try {
     return await mutateJobFiles(id, async () => {
+      const allJobs = getJobs();
+      if (membership) {
+        const available = allJobs.filter((item) => item.initiatedBy?.id === user.id || item.contributors?.some((contributor) => contributor.id === user.id));
+        if (removeLibrarySongLink(user.id, { ...membership, jobId: id, name: fileName }, available, allJobs)) {
+          return { job: getJob(id), fileDeleted: false };
+        }
+      } else if (countLibraryFileLinks(job, fileName, allJobs) > 1) {
+        throw Object.assign(new Error('This song has other playlist links. Remove it from a playlist first.'), { statusCode: 409 });
+      }
+      unlock = lockLibraryFile(job, fileName, allJobs);
       await fs.unlink(filePath).catch((error) => {
         if (error.code !== 'ENOENT') throw error;
       });
@@ -757,9 +769,10 @@ export async function deleteJobFile(id, fileName, user = null) {
       if (currentJob.songMetadata) delete currentJob.songMetadata[fileName];
       currentJob.updatedAt = new Date().toISOString();
       await persistJob(currentJob);
-      return currentJob;
+      return membership ? { job: currentJob, fileDeleted: true } : currentJob;
     });
   } finally {
+    unlock();
     pending.delete(fileName);
     if (pending.size === 0) deletingFiles.delete(id);
   }

@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Search, Shuffle, SkipBack, SkipForward, Trash2, Volume2, VolumeX, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Link, ListChecks, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Search, Shuffle, SkipBack, SkipForward, Trash2, Volume2, VolumeX, X } from 'lucide-react';
 import { SongActions, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { navigationHistory } from './navigation.js';
@@ -355,6 +355,8 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
     const trackSearch = libraryView?.search ?? search;
     const visibleTracks = libraryView?.pagination ? tracks : tracks.filter((track) => `${track.title || ''} ${track.artist || ''} ${track.name} ${track.playlistTitle}`.toLowerCase().includes(trackSearch.toLowerCase()));
     const totalTracks = libraryView?.pagination?.total ?? tracks.length;
+    const selection = libraryView?.songSelection;
+    const selectedVisible = visibleTracks.filter((track) => selection?.keys.has(songKey(track))).length;
     return <div className={dockOnly ? 'global-player' : 'library-player'}>
       {libraryView && <div className="library-layout">
         {libraryView.sidebar}
@@ -368,7 +370,17 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           </header>
           <div className="songs-toolbar"><h3>Tracks</h3>
             <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search tracks" placeholder="Search tracks" maxLength={libraryView.pagination ? 200 : undefined} value={trackSearch} onChange={(event) => (libraryView.onSearch || setSearch)(event.target.value)} /></label>
+            {selection && <button className="music-icon-button" type="button" title="Select songs" aria-label="Select songs" aria-pressed={selection.active} disabled={libraryView.saving} onClick={selection.toggle}><ListChecks size={19} /></button>}
           </div>
+          {selection?.active && <div className="library-bulk-toolbar song-bulk-toolbar">
+            <label><input className="library-select-checkbox" type="checkbox" aria-label="Select all matching songs" disabled={libraryView.saving || !visibleTracks.length}
+              checked={visibleTracks.length > 0 && selectedVisible === visibleTracks.length}
+              ref={(element) => { if (element) element.indeterminate = selectedVisible > 0 && selectedVisible < visibleTracks.length; }}
+              onChange={(event) => selection.change(visibleTracks.map(songKey), event.target.checked)} /><span>{selection.count} selected</span></label>
+            <button className="music-icon-button" type="button" title="Move selected songs" aria-label="Move selected songs" disabled={libraryView.saving || !selection.count} onClick={() => selection.transfer('move')}><ArrowRightLeft size={18} /></button>
+            <button className="music-icon-button" type="button" title="Link selected songs" aria-label="Link selected songs" disabled={libraryView.saving || !selection.count} onClick={() => selection.transfer('link')}><Link size={18} /></button>
+            <button className="music-icon-button" type="button" title="Clear song selection" aria-label="Clear song selection" disabled={libraryView.saving} onClick={selection.clear}><X size={18} /></button>
+          </div>}
           {libraryView.pagination && <TrackPagination pagination={libraryView.pagination} position="top" />}
           {libraryView.loading && <div className="loading" role="status"><RefreshCw className="spin" size={20} />Loading songs</div>}
           {!libraryView.loading && <SongGroups key={libraryView.selectedId || 'all'} tracks={visibleTracks}>{(group) => <ol className="library-song-list" aria-label={group.length && isNoVocals(group[0]) ? 'NoVocals songs' : 'Songs'}>{group.map((track) => {
@@ -377,7 +389,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
             const current = songKey(track) === selected;
             const action = libraryView.songState(track);
             const acceptSong = (event) => allowDrop(event, !libraryView.saving && !libraryView.pagination && event.dataTransfer.types.includes('application/x-ssmusic-song'));
-            return <li className={`library-song-row ${current ? 'is-current' : ''}`} key={songKey(track)}
+            return <li className={`library-song-row ${current ? 'is-current' : ''} ${selection?.active && selection.keys.has(songKey(track)) ? 'is-checked' : ''}`} key={songKey(track)}
               onDragEnter={acceptSong} onDragOver={acceptSong} onDragLeave={leaveDrop}
               onDrop={(event) => {
                 event.preventDefault();
@@ -388,14 +400,15 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                   else libraryView.onMove(moved, track.playlistId);
                 } catch {}
               }}>
-              <button className="music-icon-button song-drag" type="button" draggable={!libraryView.saving} disabled={libraryView.saving}
+              {selection?.active ? <label className="library-row-check"><input className="library-select-checkbox" type="checkbox" aria-label={`Select song ${track.name}`} checked={selection.keys.has(songKey(track))} disabled={libraryView.saving}
+                onChange={(event) => selection.change([songKey(track)], event.target.checked)} /></label> : <button className="music-icon-button song-drag" type="button" draggable={!libraryView.saving} disabled={libraryView.saving}
                 title={`Drag ${track.name}`} aria-label={`Drag ${track.name}`} onDragStart={(event) => {
                   const row = event.currentTarget.closest('.library-song-row');
                   row.dataset.dragging = 'true';
                   event.dataTransfer.setData('application/x-ssmusic-song', JSON.stringify({ jobId: track.jobId, name: track.name, playlistId: track.playlistId }));
                   event.dataTransfer.effectAllowed = 'move';
                   event.dataTransfer.setDragImage(row, 24, 24);
-                }}><GripVertical size={16} /></button>
+                }}><GripVertical size={16} /></button>}
               <div className="song-title-actions"><button className="song-select" type="button" title={track.name} aria-label={`Play ${track.name}`} aria-current={current ? 'true' : undefined}
                 onClick={() => selectSong(track, tracks, libraryScope)}>
                 <span className="song-number">{mediaType(track.name) === 'video' ? <Film size={15} aria-label="Movie" /> : current && playing ? <Music2 size={15} /> : trackIndex + 1}</span>
@@ -405,7 +418,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
               <SongActions name={track.name} className="song-order-actions">
                 {action.canModify && /\.mp3$/i.test(track.name) && <button className="music-icon-button" type="button" title="Edit song metadata" aria-label={`Edit metadata ${track.name}`} disabled={action.disabled || action.metadataBusy} onClick={() => libraryView.onEditMetadata(track)}><Pencil size={16} /></button>}
                 {mediaType(track.name) === 'audio' && !track.name.toLowerCase().startsWith('[novocals]/') && <button className="music-icon-button" type="button" title="Transcribe song" aria-label={`Transcribe ${track.name}`} disabled={action.disabled} onClick={() => libraryView.onTranscribe(track)}><Mic size={16} /></button>}
-                {action.canModify && <button className="music-icon-button" type="button" title="Delete song" aria-label={`Delete song ${track.name}`} disabled={action.disabled} onClick={() => libraryView.onDelete(track)}>{action.deleting ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}</button>}
+                {action.canModify && <button className="music-icon-button" type="button" title="Remove song from playlist" aria-label={`Delete song ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onDelete(track)}>{action.deleting ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}</button>}
                 <button className="music-icon-button" type="button" title="Move to playlist" aria-label={`Move ${track.name} to playlist`} disabled={libraryView.saving} onClick={() => libraryView.onMove(track)}><ArrowRightLeft size={15} /></button>
                 <a className="music-icon-button" href={track.downloadUrl} title="Download song" aria-label={`Download ${track.name}`}><ArrowDownToLine size={15} /></a>
               </SongActions>

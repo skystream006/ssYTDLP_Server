@@ -3,9 +3,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test, { beforeEach } from 'node:test';
-import { closeDatabases, openDatabase, writeUser } from '../src/database.js';
+import { closeDatabases, openDatabase, writeJob, writeUser } from '../src/database.js';
 import { getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey, themes } from '../src/library.js';
-import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme } from '../src/libraryStore.js';
+import { addLibraryJobFiles, countLibraryFileLinks, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, removeLibrarySongLink, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from '../src/libraryStore.js';
 import { submitJobUrl } from '../frontend/src/jobSubmission.js';
 
 const jobs = [
@@ -171,6 +171,126 @@ test('entry mutations reject invalid changes atomically and keep the tree and ve
   assert.throws(() => mutateLibraryEntry('alice', { version: full.version, action: 'create-folder', id: 'folder-overflow', name: 'Overflow', parentId: null }, jobs), { statusCode: 400 });
   const renamed = mutateLibraryEntry('alice', { version: full.version, action: 'update-folder', id: 'folder-0', name: 'Renamed', parentId: null }, jobs);
   assert.equal(renamed.entries.length, 5000);
+});
+
+test('bulk playlist moves are atomic, versioned and preserve tree and song order', () => {
+  const initial = mutateLibraryEntry('alice', { version: 0, action: 'create-folder', id: 'folder-bulk', name: 'Bulk', parentId: null }, jobs);
+  const value = { version: initial.version, ids: ['soul', 'jazz'], parentId: 'folder-bulk' };
+  const moved = moveLibraryPlaylists('alice', value, jobs);
+  assert.deepEqual(getPlaylistIds(moved.entries, 'folder-bulk'), ['jazz', 'soul']);
+  assert.deepEqual(moved.songOrder, initial.songOrder);
+  assert.throws(() => moveLibraryPlaylists('alice', value, jobs), { statusCode: 409 });
+  for (const ids of [[], ['jazz', 'jazz'], ['missing'], [null], [42], ['folder-bulk']]) {
+    assert.throws(() => moveLibraryPlaylists('alice', { ...value, version: moved.version, ids }, jobs), { statusCode: 400 });
+  }
+  assert.deepEqual(getLibrary('alice', jobs), moved);
+  assert.deepEqual(getLibrary('bob', jobs).entries.map((entry) => entry.parentId), [null, null, null]);
+});
+
+test('bulk songs link and move only selected memberships in source order without duplicates', () => {
+  const keys = ['Third.mp3', 'First.mp3'].map((name) => songKey({ jobId: 'jazz', name }));
+  const value = { version: 0, sourcePlaylistId: 'jazz', playlistId: 'soul', keys, action: 'link' };
+  const linked = transferLibrarySongs('alice', value, jobs);
+  assert.deepEqual(getPlaylistTracks(linked, jobs).get('soul').map((track) => track.name), ['Soul.mp3', 'First.mp3', 'Third.mp3']);
+  assert.equal(getPlaylistTracks(linked, jobs).get('jazz').length, 4);
+  const again = transferLibrarySongs('alice', { ...value, version: linked.version }, jobs);
+  assert.equal(again.songAdds.length, 2);
+  const moved = transferLibrarySongs('alice', { version: again.version, sourcePlaylistId: 'soul', playlistId: 'live', keys, action: 'move' }, jobs);
+  assert.deepEqual(getPlaylistTracks(moved, jobs).get('soul').map((track) => track.name), ['Soul.mp3']);
+  assert.deepEqual(getPlaylistTracks(moved, jobs).get('live').map((track) => track.name), ['Live.mp3', 'First.mp3', 'Third.mp3']);
+  assert.equal(getPlaylistTracks(moved, jobs).get('jazz').length, 4);
+  const primary = transferLibrarySongs('alice', { ...value, version: moved.version, action: 'move', playlistId: 'live' }, jobs);
+  assert.deepEqual(getPlaylistTracks(primary, jobs).get('jazz').map((track) => track.name), ['Second.mp3', 'notes.txt']);
+  assert.equal(getPlaylistTracks(primary, jobs).get('live').length, 3);
+  assert.throws(() => transferLibrarySongs('alice', value, jobs), { statusCode: 409 });
+  for (const changes of [{ keys: [keys[0], 'missing'] }, { playlistId: 'missing' }, { keys: [keys[0], keys[0]] }, { action: 'delete' }]) {
+    assert.throws(() => transferLibrarySongs('alice', { ...value, version: primary.version, ...changes }, jobs), { statusCode: 400 });
+  }
+  assert.deepEqual(getLibrary('alice', jobs), primary);
+  assert.equal(getPlaylistTracks(getLibrary('bob', jobs), jobs).get('jazz').length, 4);
+  closeDatabases();
+  assert.deepEqual(getLibrary('alice', jobs), primary);
+});
+
+test('unlinking preserves other memberships and accounts until the final link', () => {
+  const available = jobs.map((job) => ({ ...job, initiatedBy: { id: 'alice' }, contributors: [{ id: 'bob' }] }));
+  const track = { jobId: 'jazz', name: 'First.mp3' };
+  let library = transferLibrarySongs('alice', { version: 0, sourcePlaylistId: 'jazz', playlistId: 'soul', action: 'link', keys: [songKey(track)] }, available);
+  assert.equal(countLibraryFileLinks(available[0], track.name, available), 3);
+  assert.equal(removeLibrarySongLink('alice', { ...track, version: library.version, playlistId: 'jazz' }, available, available), true);
+  library = getLibrary('alice', available);
+  assert.equal(getPlaylistTracks(library, available).get('jazz').some((item) => item.name === track.name), false);
+  assert.equal(getPlaylistTracks(library, available).get('soul').some((item) => item.name === track.name), true);
+  const saved = setLibrary('alice', { ...library, songRemovals: [] }, available);
+  assert.equal(saved.songRemovals.length, 1);
+  assert.equal(removeLibrarySongLink('alice', { ...track, version: saved.version, playlistId: 'soul' }, available, available), true);
+  closeDatabases();
+  assert.equal([...getPlaylistTracks(getLibrary('alice', available), available).values()].flat().some((item) => songKey(item) === songKey(track)), false);
+  assert.equal(countLibraryFileLinks(available[0], track.name, available), 1);
+  assert.equal(removeLibrarySongLink('bob', { ...track, version: 0, playlistId: 'jazz' }, available, available), false);
+  assert.equal(getLibrary('bob', available).version, 0);
+  assert.throws(() => removeLibrarySongLink('alice', { ...track, version: 0, playlistId: 'jazz' }, available, available), { statusCode: 409 });
+  const relinked = addLibraryJobFiles('alice', { version: getLibrary('alice', available).version, jobId: 'jazz', playlistId: 'jazz' }, available);
+  assert.equal(getPlaylistTracks(relinked, available).get('jazz').filter((item) => songKey(item) === songKey(track)).length, 1);
+  const moved = moveLibrarySong('alice', { ...track, version: relinked.version, sourcePlaylistId: 'jazz', playlistId: 'live' }, available);
+  const movedAgain = transferLibrarySongs('alice', { version: moved.version, sourcePlaylistId: 'live', playlistId: 'soul', action: 'move', keys: [songKey(track)] }, available);
+  const memberships = [...getPlaylistTracks(movedAgain, available).values()].flat().filter((item) => songKey(item) === songKey(track));
+  assert.deepEqual(memberships.map((item) => item.playlistId), ['soul']);
+});
+
+test('bulk transfers keep mixed source identities and preserve an existing destination membership', () => {
+  const available = jobs.map((job) => ({ ...job, files: ['Same.mp3'] }));
+  const jazzKey = songKey({ jobId: 'jazz', name: 'Same.mp3' });
+  const soulKey = songKey({ jobId: 'soul', name: 'Same.mp3' });
+  const linked = transferLibrarySongs('alice', { version: 0, sourcePlaylistId: 'jazz', playlistId: 'soul', action: 'link', keys: [jazzKey] }, available);
+  const moved = transferLibrarySongs('alice', { version: linked.version, sourcePlaylistId: 'soul', playlistId: 'jazz', action: 'move', keys: [jazzKey, soulKey] }, available);
+  const memberships = getPlaylistTracks(moved, available);
+  assert.deepEqual(memberships.get('soul'), []);
+  assert.deepEqual(memberships.get('jazz').map(songKey), [jazzKey, soulKey]);
+  assert.equal(moved.songAdds.length, 0);
+});
+
+test('file removal retains linked audio, rolls back failures and blocks links during final deletion', async (context) => {
+  const outputDir = path.join(path.dirname(process.env.DATABASE_PATH), 'audio');
+  await fs.mkdir(outputDir);
+  const name = 'First.mp3';
+  const filePath = path.join(outputDir, name);
+  await fs.writeFile(filePath, 'original audio');
+  const available = jobs.map((job) => ({ ...job, outputDir: job.id === 'jazz' ? outputDir : null,
+    url: `https://music.youtube.com/playlist?list=${job.id}`, playlistTitle: job.id,
+    status: 'completed', initiatedBy: { id: 'alice' }, createdAt: new Date().toISOString() }));
+  for (const job of available) writeJob(openDatabase(), job);
+  const manager = await import(`../src/jobManager.js?library-delete=${Date.now()}`);
+  const owner = { id: 'alice', role: 'user' };
+  const key = songKey({ jobId: 'jazz', name });
+  const linked = transferLibrarySongs('alice', { version: 0, action: 'link', sourcePlaylistId: 'jazz', playlistId: 'soul', keys: [key] }, available);
+  await assert.rejects(manager.deleteJobFile('jazz', name, owner), { statusCode: 409 });
+  await assert.rejects(manager.deleteJobFile('jazz', name, { id: 'bob', role: 'user' }, { version: 0, playlistId: 'jazz' }), { statusCode: 403 });
+  const removed = await manager.deleteJobFile('jazz', name, owner, { version: linked.version, playlistId: 'jazz' });
+  assert.equal(removed.fileDeleted, false);
+  assert.equal(await fs.readFile(filePath, 'utf8'), 'original audio');
+  const current = getLibrary('alice', available);
+  await assert.rejects(manager.deleteJobFile('jazz', name, owner, { version: linked.version, playlistId: 'soul' }), { statusCode: 409 });
+  const originalUnlink = fs.unlink;
+  const failure = context.mock.method(fs, 'unlink', async () => { throw Object.assign(new Error('File is locked'), { code: 'EACCES' }); });
+  await assert.rejects(manager.deleteJobFile('jazz', name, owner, { version: current.version, playlistId: 'soul' }), { code: 'EACCES' });
+  failure.mock.restore();
+  assert.deepEqual(getLibrary('alice', available), current);
+  assert.equal(await fs.readFile(filePath, 'utf8'), 'original audio');
+  let release;
+  let started;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const entered = new Promise((resolve) => { started = resolve; });
+  const delayed = context.mock.method(fs, 'unlink', async (target) => { started(); await gate; return originalUnlink(target); });
+  const deletion = manager.deleteJobFile('jazz', name, owner, { version: current.version, playlistId: 'soul' });
+  await entered;
+  try {
+    assert.throws(() => transferLibrarySongs('alice', { version: current.version, action: 'link', sourcePlaylistId: 'soul', playlistId: 'live', keys: [key] }, available), { statusCode: 409 });
+  } finally { release(); }
+  assert.equal((await deletion).fileDeleted, true);
+  delayed.mock.restore();
+  assert.equal(await fs.stat(filePath).catch(() => null), null);
+  assert.equal(manager.getJob('jazz').files.includes(name), false);
 });
 
 test('compact song reordering handles large playlists, preserves hidden songs and persists per account', () => {

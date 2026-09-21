@@ -40,6 +40,7 @@ export function findNoVocals(track, tracks) {
 export function getPlaylistTracks(library, jobs) {
   const playlists = new Map(library.entries.filter((entry) => entry.type === 'playlist').map((entry) => [entry.id, []]));
   const singles = new Set(library.singleJobIds || []);
+  const removed = new Set((library.songRemovals || []).map(songKey));
   const moves = new Map((library.songMoves || []).map((track) => [songKey(track), track.playlistId]));
   const additions = new Map();
   for (const track of library.songAdds || []) {
@@ -51,9 +52,9 @@ export function getPlaylistTracks(library, jobs) {
     for (const name of orderFiles(job.files || [], library.songOrder[job.id])) {
       const track = { jobId: job.id, name };
       const playlistId = moves.get(songKey(track)) || (singles.has(job.id) ? individualSongsId : job.id);
-      playlists.get(playlistId)?.push({ ...track, playlistId });
+      if (!removed.has(songKey(track))) playlists.get(playlistId)?.push({ ...track, playlistId });
       for (const addedId of additions.get(songKey(track)) || []) {
-        if (addedId !== playlistId) playlists.get(addedId)?.push({ ...track, playlistId: addedId });
+        if (addedId !== playlistId || removed.has(songKey(track))) playlists.get(addedId)?.push({ ...track, playlistId: addedId });
       }
     }
   }
@@ -104,7 +105,8 @@ export function reconcileLibrary(library, jobs) {
   const playlistIds = new Set(entries.filter((entry) => entry.type === 'playlist').map((entry) => entry.id));
   const songMoves = (library.songMoves || []).filter((track) => files.get(track.jobId)?.has(track.name) && playlistIds.has(track.playlistId));
   const songAdds = (library.songAdds || []).filter((track) => files.get(track.jobId)?.has(track.name) && playlistIds.has(track.playlistId));
-  const result = { entries, songOrder, singleJobIds, songMoves, songAdds, playlistSongOrder: {} };
+  const songRemovals = (library.songRemovals || []).filter((track) => files.get(track.jobId)?.has(track.name));
+  const result = { entries, songOrder, singleJobIds, songMoves, songAdds, songRemovals, playlistSongOrder: {} };
   const playlistTracks = getPlaylistTracks(result, jobs);
   result.playlistSongOrder = Object.fromEntries(Object.entries(library.playlistSongOrder || {}).filter(([id]) => playlistIds.has(id)).map(([id, order]) => {
     const keys = new Set(playlistTracks.get(id).map(songKey));

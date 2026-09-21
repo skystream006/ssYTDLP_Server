@@ -231,6 +231,33 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     [songName, 'keep.mp3', `[NoVocals]/${songName}`]);
   assert.equal((await call('/api/library/tracks?entryId=folder-mixes', 'GET', credentials.Other[0])).status, 404);
   assert.equal((await call('/api/library/tracks?entryId=missing', 'GET', credentials.Owner[0])).status, 404);
+  const beforePagination = once(server, 'exit');
+  server.kill();
+  await beforePagination;
+  await startServer();
+  const allTracks = (await call('/api/library/tracks', 'GET', credentials.Owner[0])).body;
+  assert.equal(allTracks.page, 1);
+  assert.equal(allTracks.pageSize, 50);
+  assert.equal(allTracks.total, 7);
+  const pageTracks = await call('/api/library/tracks?page=2&pageSize=2', 'GET', credentials.Owner[0]);
+  assert.equal(pageTracks.status, 200);
+  assert.equal(pageTracks.body.totalPages, 4);
+  assert.deepEqual(pageTracks.body.files.map((track) => [track.jobId, track.name]), allTracks.files.slice(2, 4).map((track) => [track.jobId, track.name]));
+  assert.ok(pageTracks.body.files.find((track) => track.name === songName).noVocalsVersion.streamUrl);
+  const lastPage = (await call('/api/library/tracks?page=999&pageSize=2', 'GET', credentials.Owner[0])).body;
+  assert.equal(lastPage.page, 4);
+  assert.equal(lastPage.files.length, 1);
+  const foundTracks = (await call('/api/library/tracks?search=KEEP&pageSize=1&page=2', 'GET', credentials.Owner[0])).body;
+  assert.equal(foundTracks.total, 3);
+  assert.equal(foundTracks.files.length, 1);
+  assert.equal(foundTracks.files[0].name, 'keep.mp3');
+  const noTracks = (await call('/api/library/tracks?search=not-found&page=99', 'GET', credentials.Owner[0])).body;
+  assert.deepEqual(noTracks.files, []);
+  assert.equal(noTracks.total, 0);
+  assert.equal(noTracks.page, 1);
+  for (const query of ['page=0', 'page=-1', 'page=1.5', 'pageSize=101', 'pageSize=0', 'page=1&page=2', 'search[]=bad']) {
+    assert.equal((await call(`/api/library/tracks?${query}`, 'GET', credentials.Owner[0])).status, 400);
+  }
   const encodedSong = encodeURIComponent(`[NoVocals]/${songName}`);
   const streamRoute = `/api/jobs/music/stream/${encodedSong}`;
   const lyricsRoute = `/api/jobs/music/lyrics/${encodedSong}`;
@@ -458,6 +485,44 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(contributorAdd.body.addedCount, 3);
   assert.equal((await call('/api/jobs/music/contributors', 'PUT', credentials.Owner[0], { userIds: [] })).status, 200);
   assert.deepEqual((await call('/api/library/tracks?entryId=individual-songs', 'GET', credentials.Other[0])).body.files, []);
+
+  const largeDirectory = path.join(outputRoot, 'pagination');
+  await fs.mkdir(largeDirectory);
+  const largeFiles = Array.from({ length: 1205 }, (_, index) => `Track ${String(index).padStart(4, '0')}.mp3`);
+  await Promise.all(largeFiles.map((name) => fs.writeFile(path.join(largeDirectory, name), 'audio')));
+  writeJob(openDatabase(), { id: 'pagination', status: 'completed', isPlaylist: true, playlistTitle: 'Pagination Fixture',
+    url: 'https://music.youtube.com/playlist?list=pagination-fixture',
+    initiatedBy: { id: users.Owner.id, name: 'Owner' }, outputDir: largeDirectory, files: largeFiles,
+    songMetadata: { [largeFiles[1204]]: { title: 'Distant title', artist: 'Beyond page one' } },
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  closeDatabases();
+  const boundedDefault = (await call('/api/library/tracks', 'GET', credentials.Owner[0])).body;
+  assert.equal(boundedDefault.files.length, 50);
+  assert.equal(boundedDefault.total, 1208);
+  const largeFirst = (await call('/api/library/tracks?search=Pagination%20Fixture', 'GET', credentials.Owner[0])).body;
+  assert.equal(largeFirst.total, 1205);
+  assert.equal(largeFirst.totalPages, 25);
+  assert.deepEqual(largeFirst.files.map((track) => track.name), largeFiles.slice(0, 50));
+  const largeSecond = (await call('/api/library/tracks?search=Pagination%20Fixture&page=2', 'GET', credentials.Owner[1])).body;
+  assert.deepEqual(largeSecond.files.map((track) => track.name), largeFiles.slice(50, 100));
+  const largeLast = (await call('/api/library/tracks?search=Pagination%20Fixture&page=999', 'GET', credentials.Owner[0])).body;
+  assert.equal(largeLast.page, 25);
+  assert.deepEqual(largeLast.files.map((track) => track.name), largeFiles.slice(1200));
+  for (const search of ['Distant title', 'Beyond page one']) {
+    const found = (await call(`/api/library/tracks?${new URLSearchParams({ search })}`, 'GET', credentials.Owner[0])).body;
+    assert.equal(found.total, 1);
+    assert.equal(found.files[0].name, largeFiles[1204]);
+  }
+  assert.equal((await call('/api/library/tracks?search=Pagination%20Fixture', 'GET', credentials.Other[0])).body.total, 0);
+  assert.equal((await call('/api/library/tracks?entryId=pagination', 'GET', credentials.Owner[0])).body.files.length, 1205);
+  for (const name of largeFiles.slice(1200)) {
+    assert.equal((await call(`/api/jobs/pagination/files/${encodeURIComponent(name)}`, 'DELETE', credentials.Owner[0])).status, 200);
+  }
+  const clamped = (await call('/api/library/tracks?search=Pagination%20Fixture&page=25', 'GET', credentials.Owner[0])).body;
+  assert.equal(clamped.page, 24);
+  assert.equal(clamped.total, 1200);
+  assert.equal(clamped.files.length, 50);
+  assert.equal((await call('/api/jobs/pagination', 'DELETE', credentials.Owner[0])).status, 204);
 
   const metadataUrl = 'https://music.youtube.com/playlist?list=metadata-only';
   for (const metadataOnly of ['true', 1, null]) {

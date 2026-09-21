@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, Copy, Disc3, Folder, GripVertical, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Search, Shuffle, SkipBack, SkipForward, Trash2, Volume2, VolumeX, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Search, Shuffle, SkipBack, SkipForward, Trash2, Volume2, VolumeX, X } from 'lucide-react';
 import { SongActions, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { navigationHistory } from './navigation.js';
@@ -40,6 +40,20 @@ function KaraokeButton({ track, tracks, onPlay }) {
   const version = track && mediaType(track.name) !== 'video' && !isNoVocals(track) && (track.noVocalsVersion || findNoVocals(track, tracks || []));
   return version ? <button className="music-icon-button karaoke-button" type="button" title="Play karaoke (NoVocals)"
     aria-label={`Play karaoke version of ${track.title || track.name}`} onClick={() => onPlay(version)}><MicVocal size={18} /></button> : null;
+}
+
+function TrackPagination({ pagination, position }) {
+  const { page, pageSize, total, totalPages, loading, onChange } = pagination;
+  return <nav className="track-pagination" aria-label={`Track pages ${position}`}>
+    <span role="status">{total ? `${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, total)} of ${total}` : '0 tracks'}</span>
+    <div>
+      <button className="music-icon-button" type="button" title="Previous page" aria-label="Previous track page" disabled={loading || page <= 1} onClick={() => onChange(page - 1)}><ChevronLeft size={18} /></button>
+      <label>Page<select aria-label="Track page" value={page} disabled={loading || totalPages <= 1} onChange={(event) => onChange(Number(event.target.value))}>
+        {Array.from({ length: totalPages }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
+      </select><span>of {totalPages}</span></label>
+      <button className="music-icon-button" type="button" title="Next page" aria-label="Next track page" disabled={loading || page >= totalPages} onClick={() => onChange(page + 1)}><ChevronRight size={18} /></button>
+    </div>
+  </nav>;
 }
 
 export function usePlayback() { return useContext(PlaybackContext); }
@@ -224,6 +238,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const activeLine = lines.findLastIndex((line) => line.time <= position);
   const requestedSong = new URLSearchParams(window.location.search).get('song');
   const requestedPlay = new URLSearchParams(window.location.search).get('play') === '1';
+  const libraryScope = libraryView?.queueScope ?? libraryView?.selectedId;
 
   useEffect(() => {
     if (isVideo && panel === 'lyrics') setPanel(null);
@@ -257,15 +272,15 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
     const tracks = libraryView?.tracks;
     if (!tracks) return;
     if (queueScopeRef.current === undefined && tracks.length) {
-      queueScopeRef.current = libraryView.selectedId;
+      queueScopeRef.current = libraryScope;
       setSongs(tracks);
       setSelected(songKey(tracks[0]));
-    } else if (queueScopeRef.current === libraryView.selectedId) {
+    } else if (queueScopeRef.current === libraryScope && (!libraryView.pagination || tracks.some((track) => songKey(track) === selected))) {
       setSongs((current) => tracks.map((track) => songKey(track) === selected
         ? { ...track, streamUrl: current?.find((item) => songKey(item) === selected)?.streamUrl || track.streamUrl } : track));
       setSelected((current) => tracks.some((track) => songKey(track) === current) ? current : tracks[0] ? songKey(tracks[0]) : null);
     }
-  }, [libraryView?.tracks, libraryView?.selectedId]);
+  }, [libraryView?.tracks, libraryScope]);
 
   useEffect(() => {
     if (libraryView?.removedSong) {
@@ -337,7 +352,9 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
 
   if (libraryView || dockOnly) {
     const tracks = libraryView?.tracks || [];
-    const visibleTracks = tracks.filter((track) => `${track.title || ''} ${track.artist || ''} ${track.name} ${track.playlistTitle}`.toLowerCase().includes(search.toLowerCase()));
+    const trackSearch = libraryView?.search ?? search;
+    const visibleTracks = libraryView?.pagination ? tracks : tracks.filter((track) => `${track.title || ''} ${track.artist || ''} ${track.name} ${track.playlistTitle}`.toLowerCase().includes(trackSearch.toLowerCase()));
+    const totalTracks = libraryView?.pagination?.total ?? tracks.length;
     return <div className={dockOnly ? 'global-player' : 'library-player'}>
       {libraryView && <div className="library-layout">
         {libraryView.sidebar}
@@ -345,25 +362,26 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <header className="library-selection-heading">
             <span className="selection-art">{libraryView.type === 'folder' ? <Folder size={30} /> : <Disc3 size={32} />}</span>
             <div><p className="eyebrow">{libraryView.type === 'folder' ? 'Playlist folder' : libraryView.selectedId ? 'Playlist' : 'Your collection'}</p>
-              <h2>{libraryView.title}</h2><p>{tracks.length} track{tracks.length === 1 ? '' : 's'}</p></div>
-            <button className="round-play" type="button" aria-label="Play selection" title="Play selection" disabled={!tracks.length}
-              onClick={() => selectSong(tracks[0], tracks, libraryView.selectedId)}><Play size={22} fill="currentColor" /></button>
+              <h2>{libraryView.title}</h2><p>{totalTracks} track{totalTracks === 1 ? '' : 's'}</p></div>
+            <button className="round-play" type="button" aria-label={libraryView.pagination ? 'Play page' : 'Play selection'} title={libraryView.pagination ? 'Play page' : 'Play selection'} disabled={!tracks.length || libraryView.loading}
+              onClick={() => selectSong(tracks[0], tracks, libraryScope)}><Play size={22} fill="currentColor" /></button>
           </header>
           <div className="songs-toolbar"><h3>Tracks</h3>
-            <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search tracks" placeholder="Search tracks" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+            <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search tracks" placeholder="Search tracks" maxLength={libraryView.pagination ? 200 : undefined} value={trackSearch} onChange={(event) => (libraryView.onSearch || setSearch)(event.target.value)} /></label>
           </div>
+          {libraryView.pagination && <TrackPagination pagination={libraryView.pagination} position="top" />}
           {libraryView.loading && <div className="loading" role="status"><RefreshCw className="spin" size={20} />Loading songs</div>}
           {!libraryView.loading && <SongGroups key={libraryView.selectedId || 'all'} tracks={visibleTracks}>{(group) => <ol className="library-song-list" aria-label={group.length && isNoVocals(group[0]) ? 'NoVocals songs' : 'Songs'}>{group.map((track) => {
             const playlistTracks = tracks.filter((item) => item.playlistId === track.playlistId);
             const trackIndex = playlistTracks.findIndex((item) => songKey(item) === songKey(track));
             const current = songKey(track) === selected;
             const action = libraryView.songState(track);
-            const acceptSong = (event) => allowDrop(event, !libraryView.saving && event.dataTransfer.types.includes('application/x-ssmusic-song'));
+            const acceptSong = (event) => allowDrop(event, !libraryView.saving && !libraryView.pagination && event.dataTransfer.types.includes('application/x-ssmusic-song'));
             return <li className={`library-song-row ${current ? 'is-current' : ''}`} key={songKey(track)}
               onDragEnter={acceptSong} onDragOver={acceptSong} onDragLeave={leaveDrop}
               onDrop={(event) => {
                 event.preventDefault();
-                if (libraryView.saving) return;
+                if (libraryView.saving || libraryView.pagination) return;
                 try {
                   const moved = JSON.parse(event.dataTransfer.getData('application/x-ssmusic-song'));
                   if (moved.playlistId === track.playlistId) libraryView.onReorder(moved, songKey(track));
@@ -379,7 +397,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                   event.dataTransfer.setDragImage(row, 24, 24);
                 }}><GripVertical size={16} /></button>
               <div className="song-title-actions"><button className="song-select" type="button" title={track.name} aria-label={`Play ${track.name}`} aria-current={current ? 'true' : undefined}
-                onClick={() => selectSong(track, tracks, libraryView.selectedId)}>
+                onClick={() => selectSong(track, tracks, libraryScope)}>
                 <span className="song-number">{mediaType(track.name) === 'video' ? <Film size={15} aria-label="Movie" /> : current && playing ? <Music2 size={15} /> : trackIndex + 1}</span>
                 <span><strong>{track.title || track.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</strong><small>{track.artist || (track.name.startsWith('[NoVocals]/') ? 'Instrumental' : track.playlistTitle || 'Original')}</small><TranscriptionStatus transcription={action.transcription} /></span>
               </button><KaraokeButton track={track} tracks={tracks} onPlay={playKaraoke} /></div>
@@ -393,8 +411,9 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
               </SongActions>
             </li>;
           })}</ol>}</SongGroups>}
-          {!libraryView.loading && !visibleTracks.length && <div className="library-empty"><Music2 size={32} /><h3>{search ? 'No matching songs' : 'No songs yet'}</h3>
-            {!search && <button className="secondary-button compact-button" type="button" onClick={libraryView.onAdd}><Plus size={16} />Add Playlist</button>}</div>}
+          {!libraryView.loading && !libraryView.error && !visibleTracks.length && <div className="library-empty"><Music2 size={32} /><h3>{trackSearch ? 'No matching songs' : 'No songs yet'}</h3>
+            {!trackSearch && <button className="secondary-button compact-button" type="button" onClick={libraryView.onAdd}><Plus size={16} />Add Playlist</button>}</div>}
+          {libraryView.pagination && <TrackPagination pagination={libraryView.pagination} position="bottom" />}
         </section>
       </div>}
       {dockOnly && <>

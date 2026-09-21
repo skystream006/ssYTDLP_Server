@@ -596,6 +596,12 @@ code { font: 400 11px 'DM Mono', monospace; }
 .playback-queue button > span { font-size: 11px; overflow-wrap: anywhere; min-width: 0; }
 .playback-queue small { display: block; color: var(--muted); margin-top: 5px; }
 .playback-queue [aria-current="true"] { color: var(--royal); background: color-mix(in srgb, var(--royal) 10%, transparent); }
+.track-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; min-height: 56px; padding: 10px 0; color: var(--muted); font-size: 12px; }
+.track-pagination > div, .track-pagination label { display: flex; align-items: center; gap: 8px; }
+.track-pagination > span { font-variant-numeric: tabular-nums; }
+.track-pagination select { width: 64px; min-height: 36px; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--field); font: inherit; }
+.track-pagination select:focus-visible { outline: 2px solid var(--royal); outline-offset: 2px; }
+.track-pagination .music-icon-button { flex: none; width: 36px; height: 36px; }
 .folder-dialog-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 24px; }
 .folder-dialog-heading h2 { overflow-wrap: anywhere; }
 .folder-dialog label { display: block; font-size: 12px; margin: 18px 0 8px; }

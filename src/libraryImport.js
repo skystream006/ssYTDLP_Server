@@ -116,18 +116,28 @@ export async function validateImportMedia(file, { local = false } = {}) {
   return { ...file, size };
 }
 
-export async function extractImportMedia(zipPath, directory, { local = false } = {}) {
+export async function extractImportMedia(zipPath, directory, { local = false, report = () => {} } = {}) {
+  report('extract', 'Opening media ZIP');
   const archive = await new Promise((resolve, reject) => yauzl.open(zipPath,
     { lazyEntries: true, strictFileNames: true, validateEntrySizes: true }, (error, zip) => error ? reject(failure('Invalid media ZIP')) : resolve(zip)));
   return new Promise((resolve, reject) => {
     const files = [];
     let count = 0;
     let total = 0;
-    const fail = (error) => { archive.close(); reject(error.statusCode ? error : failure('Invalid or damaged media ZIP')); };
+    let currentEntry;
+    const fail = (error) => {
+      report('extract', 'Media ZIP extraction failed', { entry: currentEntry, entries: count, files: files.length, error: error.message }, 'error');
+      archive.close();
+      reject(error.statusCode ? error : failure('Invalid or damaged media ZIP'));
+    };
     archive.on('error', fail);
-    archive.on('end', () => resolve(files));
+    archive.on('end', () => {
+      report('extract', 'Media ZIP extracted', { entries: count, files: files.length, bytes: total, skipped: count - files.length });
+      resolve(files);
+    });
     archive.on('entry', (entry) => {
       void (async () => {
+        currentEntry = entry.fileName;
         count += 1;
         if (!local && count > 10000) throw failure('The ZIP contains too many entries', 413);
         if (entry.fileName.length > 2048 || entry.fileName.split('/').length > 32
@@ -144,6 +154,9 @@ export async function extractImportMedia(zipPath, directory, { local = false } =
           await pipeline(stream, createWriteStream(filePath, { flags: 'wx' }));
           files.push(await validateImportMedia({ name: entry.fileName, path: filePath }, { local }));
         }
+        if (count === 1 || count % 100 === 0) {
+          report('extract', 'Extracting media ZIP', { entries: count, files: files.length, bytes: total, entry: entry.fileName });
+        }
         archive.readEntry();
       })().catch(fail);
     });
@@ -151,13 +164,15 @@ export async function extractImportMedia(zipPath, directory, { local = false } =
   });
 }
 
-export function parseItunesImport(xml, media, { local = false } = {}) {
+export function parseItunesImport(xml, media, { local = false, report = () => {} } = {}) {
+  report('parse', 'Reading iTunes library XML', { bytes: Buffer.byteLength(xml), mediaFiles: media.length });
   if (!local && Buffer.byteLength(xml) > maxXmlBytes) throw failure('The XML exceeds the 20 MB limit', 413);
   if (/<!ENTITY|<!DOCTYPE[^>]*\[/i.test(xml)) throw failure('XML entity declarations are not supported');
   let library;
   try { library = plist.parse(xml); } catch { throw failure('Invalid iTunes library XML'); }
   if (!library?.Tracks || typeof library.Tracks !== 'object' || Array.isArray(library.Tracks)
     || (library.Playlists !== undefined && !Array.isArray(library.Playlists))) throw failure('Select an iTunes library XML export');
+  report('match', 'Matching library tracks to media', { tracks: Object.keys(library.Tracks).length, playlists: library.Playlists?.length || 0 });
   const suffixes = new Map();
   for (const file of media) {
     const parts = file.name.normalize('NFC').toLowerCase().split('/');
@@ -167,8 +182,9 @@ export function parseItunesImport(xml, media, { local = false } = {}) {
     }
   }
   const tracks = new Map();
+  let skipped = 0;
   for (const [key, track] of Object.entries(library.Tracks)) {
-    if (track?.['Track Type'] === 'URL') continue;
+    if (track?.['Track Type'] === 'URL') { skipped += 1; continue; }
     if (!local && tracks.size >= 2000) throw failure('The library contains too many tracks', 413);
     let location;
     try {
@@ -176,7 +192,10 @@ export function parseItunesImport(xml, media, { local = false } = {}) {
       const url = new URL(track.Location);
       if (url.protocol !== 'file:') throw new Error();
       location = decodeURIComponent(url.pathname).replaceAll('\\', '/').normalize('NFC').toLowerCase();
-    } catch { throw failure(`Missing local media location for track ${key}`); }
+    } catch {
+      report('match', 'Track has no valid local media location', { trackId: key, track: track?.Name }, 'error');
+      throw failure(`Missing local media location for track ${key}`);
+    }
     const parts = location.split('/').filter(Boolean);
     let match;
     for (let index = 0; index < parts.length; index++) {
@@ -186,11 +205,17 @@ export function parseItunesImport(xml, media, { local = false } = {}) {
         break;
       }
     }
-    if (!match) throw failure(`Missing or ambiguous media for ${track.Name || key}`);
+    if (!match) {
+      report('match', match === null ? 'Multiple media files match this track' : 'No media file matches this track',
+        { trackId: key, track: track.Name, location }, 'error');
+      throw failure(`Missing or ambiguous media for ${track.Name || key}`);
+    }
     const id = String(track['Track ID'] ?? key);
     if (tracks.has(id)) throw failure('Duplicate iTunes track ID');
     tracks.set(id, { ...match, name: path.posix.basename(match.name) });
+    if (tracks.size % 100 === 0) report('match', 'Matching library tracks', { matched: tracks.size, skipped });
   }
+  report('match', 'Library tracks matched', { matched: tracks.size, skipped });
   if (!tracks.size) throw failure('No local media tracks found in the iTunes library');
   const playlists = [];
   const included = new Set();
@@ -208,6 +233,7 @@ export function parseItunesImport(xml, media, { local = false } = {}) {
     || playlists.reduce((total, playlist) => total + playlist.files.reduce((size, file) => size + file.size, 0), 0) > maxExpandedBytes)) {
     throw failure('The imported playlists exceed the import limits', 413);
   }
+  report('plan', 'Playlists ready to import', { playlists: playlists.length, files: playlists.reduce((total, playlist) => total + playlist.files.length, 0) });
   return playlists;
 }
 
@@ -233,19 +259,29 @@ export async function importUploadedFiles(files, options, user) {
   return { jobs: [job], importedFiles: files.length };
 }
 
-export async function importItunesLibrary(xml, media, user, { local = false } = {}) {
-  const plans = parseItunesImport(xml, media, { local });
+export async function importItunesLibrary(xml, media, user, { local = false, report = () => {} } = {}) {
+  const plans = parseItunesImport(xml, media, { local, report });
   if (getLibrary(user.id, libraryJobs(user)).entries.length + plans.length > 5000) throw failure('The library contains too many entries', 413);
   const created = [];
   try {
-    for (const plan of plans) created.push(await importJobFiles({ ...plan, source: 'itunes' }, user));
+    for (const plan of plans) {
+      report('copy', 'Importing playlist', { playlist: plan.playlistTitle, files: plan.files.length, index: created.length + 1, total: plans.length });
+      const job = await importJobFiles({ ...plan, source: 'itunes' }, user);
+      created.push(job);
+      report('copy', 'Playlist imported', { playlist: plan.playlistTitle, jobId: job.id, files: job.files.length });
+    }
+    report('save', 'Saving library order', { playlists: created.length });
     const jobs = libraryJobs(user);
     const library = getLibrary(user.id, jobs);
     for (const job of created) library.songOrder[job.id] = job.files;
     setLibrary(user.id, library, jobs);
     return { jobs: created, importedFiles: created.reduce((total, job) => total + job.files.length, 0) };
   } catch (error) {
-    for (const job of created) await deleteJob(job.id, user);
+    report('rollback', 'Import failed; removing created playlists', { playlists: created.length, error: error.message }, 'error');
+    for (const job of created) {
+      await deleteJob(job.id, user);
+      report('rollback', 'Removed imported playlist', { jobId: job.id });
+    }
     throw error;
   }
 }
@@ -253,8 +289,17 @@ export async function importItunesLibrary(xml, media, user, { local = false } = 
 export async function handleLibraryImport(req, res) {
   if (activeImports.has(req.user.id) || activeImports.size >= 2) return res.status(409).json({ error: 'Another import is in progress. Try again shortly.' });
   activeImports.add(req.user.id);
+  const importId = randomUUID();
+  const started = Date.now();
+  let stage = 'receive';
+  const report = (nextStage, message, details = {}, level = 'info') => {
+    stage = nextStage;
+    const entry = { time: new Date().toISOString(), importId, userId: req.user.id, elapsedMs: Date.now() - started, stage, level, message, ...details };
+    console[level === 'error' ? 'error' : 'info'](`[library-import] ${JSON.stringify(entry)}`);
+  };
   let result;
   let status = 201;
+  report('receive', 'Import started', { source: req.is('application/json') ? 'local' : 'upload' });
   try {
     req.importDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-import-'));
     let itunesFiles;
@@ -273,9 +318,11 @@ export async function handleLibraryImport(req, res) {
       }
     }
     if (itunesFiles) {
+      report('read', 'Reading import files', { xml: itunesFiles.xml.name || itunesFiles.xml.originalname,
+        xmlBytes: itunesFiles.xml.size, zip: itunesFiles.media.name || itunesFiles.media.originalname, zipBytes: itunesFiles.media.size });
       const xml = await fs.readFile(itunesFiles.xml.path, 'utf8');
-      const media = await extractImportMedia(itunesFiles.media.path, req.importDirectory, { local });
-      result = await importItunesLibrary(xml, media, req.user, { local });
+      const media = await extractImportMedia(itunesFiles.media.path, req.importDirectory, { local, report });
+      result = await importItunesLibrary(xml, media, req.user, { local, report });
     } else if (req.body?.mode === 'files' && !req.files?.xml && !req.files?.media) {
       const files = (req.files?.files || []).map((file) => {
         const bytes = Buffer.from(file.originalname, 'latin1');
@@ -289,9 +336,15 @@ export async function handleLibraryImport(req, res) {
       ? (['LIMIT_FILE_SIZE', 'LIMIT_FILE_COUNT', 'LIMIT_PART_COUNT'].includes(error.code) ? 413 : 400)
       : error.statusCode || 500;
     result = { error: status === 500 ? 'Unable to import music' : error.message };
+    report(stage, 'Import failed', { status, error: error.message, code: error.code, stack: error.stack }, 'error');
   } finally {
-    if (req.importDirectory) await fs.rm(req.importDirectory, { recursive: true, force: true }).catch(() => {});
+    report('cleanup', 'Removing temporary import files');
+    if (req.importDirectory) await fs.rm(req.importDirectory, { recursive: true, force: true }).catch((error) => {
+      report('cleanup', 'Unable to remove temporary import files', { error: error.message }, 'error');
+    });
     activeImports.delete(req.user.id);
   }
+  report('complete', status === 201 ? 'Import completed' : 'Import ended with errors', { status,
+    ...(status === 201 ? { playlists: result.jobs.length, files: result.importedFiles } : {}) });
   if (!res.destroyed) res.status(status).json(result);
 }

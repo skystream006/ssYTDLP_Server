@@ -198,6 +198,14 @@ app.get('/api/library/tracks', async (req, res) => {
     if (selectedId !== null && !library.entries.some((entry) => entry.id === selectedId)) {
       return res.status(404).json({ error: 'Library selection not found' });
     }
+    const paginated = selectedId === null || req.query.page !== undefined || req.query.pageSize !== undefined;
+    const positiveInteger = (value) => typeof value === 'string' && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value));
+    if ((req.query.page !== undefined && !positiveInteger(req.query.page))
+      || (req.query.pageSize !== undefined && (!positiveInteger(req.query.pageSize) || Number(req.query.pageSize) > 100))
+      || (req.query.search !== undefined && (typeof req.query.search !== 'string' || req.query.search.length > 200))) {
+      return res.status(400).json({ error: 'Invalid track pagination or search' });
+    }
+    const search = (req.query.search || '').trim().toLowerCase();
     const jobMap = new Map(jobs.map((job) => [job.id, job]));
     const playlistTracks = getPlaylistTracks(library, jobs);
     const seen = new Set();
@@ -206,16 +214,29 @@ app.get('/api/library/tracks', async (req, res) => {
       if (!isPlayableFile(track.name) || seen.has(key)) return false;
       seen.add(key);
       return true;
+    }).filter((track) => {
+      const metadata = jobMap.get(track.jobId)?.songMetadata?.[track.name];
+      const playlistTitle = track.playlistId === individualSongsId ? 'Individual Songs' : jobMap.get(track.playlistId)?.playlistTitle;
+      return `${metadata?.title || ''} ${metadata?.artist || ''} ${track.name} ${playlistTitle || ''}`.toLowerCase().includes(search);
     });
-    const sourceFiles = await Promise.all([...new Set(tracks.map((track) => track.jobId))].map(async (id) => {
-      const files = await listJobFiles(jobMap.get(id));
+    const pageSize = Number(req.query.pageSize || 50);
+    const totalPages = Math.max(1, Math.ceil(tracks.length / pageSize));
+    const page = Math.min(Number(req.query.page || 1), totalPages);
+    const selectedTracks = paginated ? tracks.slice((page - 1) * pageSize, page * pageSize) : tracks;
+    const sourceNames = new Map();
+    for (const track of selectedTracks) {
+      if (!sourceNames.has(track.jobId)) sourceNames.set(track.jobId, []);
+      sourceNames.get(track.jobId).push(track.name);
+    }
+    const sourceFiles = await Promise.all([...sourceNames].map(async ([id, names]) => {
+      const files = await listJobFiles(jobMap.get(id), undefined, names);
       return files.filter((file) => file.isPlayable).map((file) => [songKey({ jobId: id, name: file.name }), file]);
     }));
     const files = new Map(sourceFiles.flat());
-    return res.json({ files: tracks.filter((track) => files.has(songKey(track))).map((track) => ({
+    return res.json({ files: selectedTracks.filter((track) => files.has(songKey(track))).map((track) => ({
       ...files.get(songKey(track)), ...track,
       playlistTitle: track.playlistId === individualSongsId ? 'Individual Songs' : jobMap.get(track.playlistId)?.playlistTitle
-    })), version: library.version });
+    })), version: library.version, ...(paginated ? { page, pageSize, total: tracks.length, totalPages } : {}) });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -267,10 +288,20 @@ app.get('/api/jobs/:id/files', async (req, res) => {
   }
 });
 
-async function listJobFiles(job, order) {
+async function listJobFiles(job, order, names) {
   if (!job.outputDir) return [];
   const files = [];
-  for (const fileName of orderFiles(job.files || [], order)) {
+  let selectedNames = job.files || [];
+  if (names) {
+    const available = (job.files || []).map((name) => ({ name, jobId: job.id }));
+    const required = new Set(names);
+    for (const name of names) {
+      const version = findNoVocals({ name, jobId: job.id, noVocalsName: job.transcriptions?.[name]?.noVocalsName }, available);
+      if (version) required.add(version.name);
+    }
+    selectedNames = [...required];
+  }
+  for (const fileName of orderFiles(selectedNames, order)) {
     if (!isValidJobFileName(fileName)) continue;
     const absoluteFilePath = getFilePath(job, fileName);
     const stat = await fs.stat(absoluteFilePath).catch(() => null);

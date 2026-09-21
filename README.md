@@ -3,6 +3,22 @@
 ssMusic Player is a personal music library backed by ssYTDLP download jobs from
 `music.youtube.com` URLs.
 
+## All Music Pagination
+
+**All music** loads 50 tracks per page. Use the page controls above or below the
+list to browse. Search matches filenames, saved titles, artists, and playlist
+names across the whole library and returns to page one when changed.
+**Play page** queues the displayed page; browsing other pages does not replace
+the active queue. Open an individual playlist to reorder its tracks.
+
+`GET /api/library/tracks` defaults to page 1 with 50 tracks. It accepts `page`,
+`pageSize` (1-100), and `search` (up to 200 characters), and returns `files`,
+`version`, `page`, `pageSize`, `total`, and `totalPages`. Out-of-range pages are
+clamped after library changes. File details are loaded only for the requested
+page and its instrumental companions. Totals use the saved media inventory.
+Requests with `entryId` retain the full playlist/folder response unless paging
+parameters are supplied.
+
 ## Metadata-only jobs
 
 On **Jobs**, enter a YouTube Music URL and check **Download metadata only**

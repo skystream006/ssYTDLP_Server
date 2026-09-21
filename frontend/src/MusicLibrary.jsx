@@ -216,6 +216,9 @@ export default function MusicLibrary({ user, request, confirm }) {
   const [library, setLibrary] = useState(null);
   const [selectedId, setSelectedId] = useState(new URLSearchParams(window.location.search).get('playlist'));
   const [trackResult, setTrackResult] = useState(null);
+  const [trackPage, setTrackPage] = useState(1);
+  const [trackSearch, setTrackSearch] = useState('');
+  const [debouncedTrackSearch, setDebouncedTrackSearch] = useState('');
   const [tracksLoading, setTracksLoading] = useState(true);
   const [error, setError] = useState('');
   const [trackError, setTrackError] = useState('');
@@ -249,8 +252,25 @@ export default function MusicLibrary({ user, request, confirm }) {
   const selected = entryMap.get(selectedId);
   const selectedJob = sourceJobMap.get(selectedId);
   const title = selected?.type === 'folder' ? selected.name : selectedId ? jobMap.get(selectedId)?.playlistTitle || 'Preparing playlist' : 'All music';
-  const tracks = trackResult?.selectedId === selectedId ? trackResult.files : null;
+  const allMusic = selectedId === null;
+  const searchPending = allMusic && trackSearch !== debouncedTrackSearch;
+  const tracks = trackResult?.selectedId === selectedId && (!allMusic
+    || (trackResult.page === trackPage && trackResult.search === debouncedTrackSearch)) ? trackResult.files : null;
+  const pagination = allMusic ? {
+    page: trackPage, pageSize: 50, total: trackResult?.selectedId === null ? trackResult.total : 0,
+    totalPages: trackResult?.selectedId === null ? trackResult.totalPages : 1,
+    loading: tracksLoading || searchPending, onChange: setTrackPage
+  } : null;
   const jobsRevision = JSON.stringify((library?.jobs || []).map((job) => [job.id, job.updatedAt, job.songCount]));
+
+  useEffect(() => {
+    if (trackSearch === debouncedTrackSearch) return;
+    const timer = window.setTimeout(() => {
+      setDebouncedTrackSearch(trackSearch);
+      setTrackPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [trackSearch, debouncedTrackSearch]);
 
   useEffect(() => {
     let active = true;
@@ -273,21 +293,28 @@ export default function MusicLibrary({ user, request, confirm }) {
     if (!library) return;
     if (selectedId && !library.entries.some((entry) => entry.id === selectedId)) {
       setSelectedId(null);
+      setTrackPage(1);
       return;
     }
+    if (searchPending) return;
     let active = true;
+    const controller = new AbortController();
     setTracksLoading(true);
     setTrackError('');
-    const query = selectedId ? `?${new URLSearchParams({ entryId: selectedId })}` : '';
-    request(`/api/library/tracks${query}`).then((result) => {
-      if (active) setTrackResult({ selectedId, files: result.files });
+    const query = new URLSearchParams(selectedId ? { entryId: selectedId } : { page: trackPage, pageSize: 50, search: debouncedTrackSearch });
+    request(`/api/library/tracks?${query}`, { signal: controller.signal }).then((result) => {
+      if (active) {
+        setTrackResult({ ...result, selectedId, search: debouncedTrackSearch });
+        if (selectedId === null && result.page !== trackPage) setTrackPage(result.page);
+      }
     }).catch((loadError) => { if (active) setTrackError(loadError.message); })
       .finally(() => { if (active) setTracksLoading(false); });
-    return () => { active = false; };
-  }, [request, selectedId, library?.version, jobsRevision, refresh]);
+    return () => { active = false; controller.abort(); };
+  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, debouncedTrackSearch, searchPending]);
 
   function selectEntry(id) {
     setSelectedId(id);
+    setTrackPage(1);
     setSidebarOpen(false);
     const params = id ? `?${new URLSearchParams({ playlist: id })}` : '';
     replaceURL(`/${params}`);
@@ -488,7 +515,7 @@ export default function MusicLibrary({ user, request, confirm }) {
   }
 
   function reorderSong(track, target) {
-    if (!tracks || tracksLoading) return;
+    if (!tracks || tracksLoading || allMusic) return;
     const playlistTracks = tracks.filter((item) => item.playlistId === track.playlistId);
     const names = playlistTracks.map(songKey);
     const from = names.indexOf(songKey(track));
@@ -611,9 +638,11 @@ export default function MusicLibrary({ user, request, confirm }) {
     {actionError && <div className="notice error library-notice" role="alert">{actionError}<button className="music-icon-button" type="button" title="Dismiss error" aria-label="Dismiss song error" onClick={() => setActionError('')}><X size={16} /></button></div>}
     {transcriptionNotice && <div className="notice success library-notice" role="status">{transcriptionNotice}<button className="music-icon-button" type="button" title="Dismiss" aria-label="Dismiss transcription notice" onClick={() => setTranscriptionNotice('')}><X size={16} /></button></div>}
     <div className="library-mobile-tabs" role="group" aria-label="Library view"><button type="button" aria-pressed={sidebarOpen} onClick={() => setSidebarOpen(true)}><Library size={16} />Playlists</button><button type="button" aria-pressed={!sidebarOpen} onClick={() => setSidebarOpen(false)}><Music2 size={16} />Songs</button></div>
-    <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, loading: tracksLoading && !trackError,
+    <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, loading: (tracksLoading || searchPending) && !trackError,
+      pagination, error: trackError, queueScope: allMusic ? JSON.stringify(['all', trackPage, debouncedTrackSearch]) : selectedId,
+      search: allMusic ? trackSearch : undefined, onSearch: allMusic ? setTrackSearch : undefined,
       songState, onTranscribe: setTranscribingFile, onDelete: removeSong, removedSong, onEditMetadata: setEditingMetadata,
-      saving: saving || tracksLoading, onReorder: reorderSong, onSelect: selectEntry, onMove: moveSong, onAdd: () => setAddingPlaylist(true) }} />
+      saving: saving || tracksLoading || searchPending, onReorder: reorderSong, onSelect: selectEntry, onMove: moveSong, onAdd: () => setAddingPlaylist(true) }} />
     {transcribingFile && <TranscriptionDialog file={transcribingFile} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
     {editingMetadata && <MetadataDialog file={editingMetadata} jobId={editingMetadata.jobId} request={request} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
       playback.updateMetadata(editingMetadata.jobId, editingMetadata.name, result);

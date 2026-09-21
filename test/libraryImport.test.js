@@ -107,8 +107,12 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   zip.addFile('Library.xml', Buffer.from('ignored'));
   const zipPath = path.join(directory, 'media.zip');
   await fs.writeFile(zipPath, zip.toBuffer());
-  const media = await imports.extractImportMedia(zipPath, directory);
+  const logs = [];
+  const report = (stage, message, details = {}, level = 'info') => logs.push({ stage, message, ...details, level });
+  const media = await imports.extractImportMedia(zipPath, directory, { report });
   assert.equal(media.length, 2);
+  assert.ok(logs.some((entry) => entry.message === 'Extracting media ZIP'));
+  assert.ok(logs.some((entry) => entry.message === 'Media ZIP extracted' && entry.files === 2 && entry.skipped === 1));
   const document = { Tracks: {
     1: { 'Track ID': 1, Name: 'Song', Location: 'file://localhost/C:/Music/Artist/Album/Song.wav' },
     2: { 'Track ID': 2, Name: 'Second', Location: 'file:///Users/me/Music/Artist/Album/Second.wav' }
@@ -175,15 +179,23 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     assert.equal((await imports.validateImportAudio(file, { local: true })).size, 3 * 1024 ** 3);
   }
   finally { statMock.mock.restore(); }
-  const imported = await imports.importItunesLibrary(xml, media, owner);
+  const imported = await imports.importItunesLibrary(xml, media, owner, { report });
   assert.equal(imported.importedFiles, 3);
   assert.equal(imported.jobs[0].source, 'itunes');
   assert.deepEqual(getLibrary(owner.id, manager.getJobs()).songOrder[imported.jobs[0].id], ['Second.wav', 'Song.wav']);
-  assert.throws(() => imports.parseItunesImport(xml, media.slice(1)), /Missing or ambiguous/);
+  assert.equal(logs.filter((entry) => entry.message === 'Playlist imported').length, 2);
+  assert.ok(logs.some((entry) => entry.message === 'Library tracks matched' && entry.matched === 2));
+  assert.equal(logs.at(-1).stage, 'save');
+  assert.throws(() => imports.parseItunesImport(xml, media.slice(1), { report }), /Missing or ambiguous/);
+  assert.equal(logs.at(-1).message, 'No media file matches this track');
+  assert.equal(logs.at(-1).level, 'error');
+  assert.equal(logs.at(-1).trackId, '2');
   assert.throws(() => imports.parseItunesImport('<not-plist/>', media), /Invalid iTunes/);
   assert.throws(() => imports.parseItunesImport('<!DOCTYPE plist [<!ENTITY name "bad">]><plist/>', media), /entity declarations/);
   const ambiguous = [...media, { ...media[0], name: 'Other/Artist/Album/Song.wav' }];
-  assert.throws(() => imports.parseItunesImport(xml, ambiguous), /Missing or ambiguous/);
+  assert.throws(() => imports.parseItunesImport(xml, ambiguous, { report }), /Missing or ambiguous/);
+  assert.equal(logs.at(-1).message, 'Multiple media files match this track');
+  assert.equal(logs.at(-1).trackId, '1');
   const ungrouped = imports.parseItunesImport(plist.build({ Tracks: document.Tracks }), media);
   assert.equal(ungrouped[0].playlistTitle, 'iTunes Library');
   const encoded = plist.build({ Tracks: { 1: { 'Track ID': 1, Location: 'file:///Music/A%20song%20%231.wav' } } });
@@ -191,7 +203,9 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   const deepZip = new AdmZip();
   deepZip.addFile(`${'folder/'.repeat(33)}Song.wav`, audio);
   await fs.writeFile(zipPath, deepZip.toBuffer());
-  await assert.rejects(imports.extractImportMedia(zipPath, directory), /unsafe/);
+  await assert.rejects(imports.extractImportMedia(zipPath, directory, { report }), /unsafe/);
+  assert.equal(logs.at(-1).message, 'Media ZIP extraction failed');
+  assert.equal(logs.at(-1).entry, `${'folder/'.repeat(33)}Song.wav`);
   const linkedZip = new AdmZip();
   linkedZip.addFile('Link.wav', audio);
   linkedZip.getEntry('Link.wav').attr = 0xa1ff0000;

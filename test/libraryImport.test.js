@@ -403,10 +403,16 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     assert.deepEqual(completed.result, { importedFiles: response.importedFiles,
       jobs: response.jobs.map((job) => ({ id: job.id, playlistTitle: job.playlistTitle })) });
     assert.equal(completed.entries.at(-1).message, 'Import completed');
+    const completedStorage = path.join(directory, 'import-storage-completed');
+    assert.equal(await readFile(path.join(completedStorage, 'Library.XML'), 'utf8'), xml);
+    assert.equal((await fs.stat(path.join(completedStorage, 'Media.zip'))).size, localFiles.zipFiles[0].size);
+    assert.deepEqual(await imports.listLocalImportFiles(), { xmlFiles: [], zipFiles: [] });
     assert.ok(serverLogs.every((entry) => entry.importId === importId && entry.userId === owner.id
       && Number.isFinite(Date.parse(entry.time)) && entry.elapsedMs >= 0));
     readMock.mock.restore();
     await diagnostics.test('background local import acknowledges before processing and reports completion after cleanup', async (background) => {
+      await fs.copyFile(path.join(completedStorage, 'Library.XML'), path.join(storage, 'Library.XML'));
+      await fs.copyFile(path.join(completedStorage, 'Media.zip'), path.join(storage, 'Media.zip'));
       let releaseRead;
       let readStarted;
       const started = new Promise((resolve) => { readStarted = resolve; });
@@ -431,6 +437,9 @@ test('music imports validate media, preserve playlists and enforce ownership', a
         assert.equal(imports.getImportProgress('other', importId), null);
         await imports.handleLibraryImport(request, reply);
         assert.equal(reply.statusCode, 409);
+        await imports.handleLibraryImport({ ...request, user: { id: 'another-user', name: 'Other' } }, reply);
+        assert.equal(reply.statusCode, 409);
+        assert.match(response.error, /already being imported/);
       } finally { releaseRead(); await pending; }
       assert.equal(replies.length, 1);
       const finished = imports.getImportProgress(owner.id, importId);
@@ -438,7 +447,30 @@ test('music imports validate media, preserve playlists and enforce ownership', a
       assert.equal(finished.result.importedFiles, 3);
       assert.ok(finished.result.jobs.every((job) => Object.keys(job).sort().join(',') === 'id,playlistTitle'));
       assert.equal(finished.entries.at(-2).stage, 'cleanup');
+      assert.equal((await fs.readdir(completedStorage)).length, 4);
+      assert.equal(await readFile(path.join(completedStorage, 'Library.XML'), 'utf8'), xml);
+      assert.deepEqual(await imports.listLocalImportFiles(), { xmlFiles: [], zipFiles: [] });
     });
+    await fs.copyFile(path.join(completedStorage, 'Library.XML'), path.join(storage, 'Library.XML'));
+    await fs.copyFile(path.join(completedStorage, 'Media.zip'), path.join(storage, 'Media.zip'));
+    for (const operation of ['copyFile', 'unlink']) {
+      await diagnostics.test(`archive ${operation} failures restore sources and roll back imported playlists`, async (archive) => {
+        const beforeJobs = manager.getJobs().map((job) => job.id).sort();
+        const beforeArchived = (await fs.readdir(completedStorage)).sort();
+        const original = fs[operation];
+        archive.mock.method(fs, operation, async (...args) => {
+          const target = operation === 'copyFile' ? args[1] : args[0];
+          if (path.extname(target) === '.zip') throw Object.assign(new Error('Archive unavailable'), { code: 'EACCES' });
+          return original(...args);
+        });
+        await imports.handleLibraryImport(request, reply);
+        assert.equal(reply.statusCode, 500);
+        assert.deepEqual(manager.getJobs().map((job) => job.id).sort(), beforeJobs);
+        assert.deepEqual((await fs.readdir(completedStorage)).sort(), beforeArchived);
+        assert.equal(await fs.readFile(path.join(storage, 'Library.XML'), 'utf8'), xml);
+        assert.equal((await fs.stat(path.join(storage, 'Media.zip'))).size, localFiles.zipFiles[0].size);
+      });
+    }
     const failureMock = diagnostics.mock.method(fs, 'readFile', async (...args) => {
       if (path.basename(args[0]) === 'Library.XML') throw new Error('Private filesystem detail');
       return readFile(...args);
@@ -451,6 +483,8 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     assert.equal(failed.status, 'failed');
     assert.equal(failed.error, 'Unable to import music');
     assert.equal(JSON.stringify(failed).includes('Private filesystem detail'), false);
+    assert.equal((await imports.listLocalImportFiles()).xmlFiles.length, 1);
+    assert.equal((await imports.listLocalImportFiles()).zipFiles.length, 1);
     assert.ok(serverLogs.some((entry) => entry.stage === 'read' && entry.level === 'error'
       && entry.error === 'Private filesystem detail' && entry.stack.includes('Private filesystem detail')));
     const backgroundReplies = [];

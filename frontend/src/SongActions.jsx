@@ -1,5 +1,5 @@
 import { Children, cloneElement, useEffect, useId, useRef, useState } from 'react';
-import { Check, CircleAlert, Clock3, FileAudio, ImagePlus, Info, Mic, MoreVertical, Music2, RefreshCw, Save, Trash2, X } from 'lucide-react';
+import { Check, CircleAlert, Clock3, FileAudio, ImagePlus, Info, Mic, MoreVertical, Music2, RefreshCw, Save, Star, Trash2, X } from 'lucide-react';
 import { transcriptionLanguages } from '../../src/transcriptionLanguages.js';
 
 export function SongActions({ name, className, children }) {
@@ -85,11 +85,26 @@ export function formatBytes(value) {
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
+export function SongRating({ value = 0, onChange }) {
+  const name = useId();
+  const label = value ? `${value} of 5 stars` : 'Unrated';
+  if (!onChange) return <span className="song-rating" role="img" aria-label={label} title={label}>
+    {[1, 2, 3, 4, 5].map((rating) => <Star key={rating} size={13} aria-hidden="true" fill={rating <= value ? 'currentColor' : 'none'} />)}
+  </span>;
+  return <fieldset className="rating-editor"><legend>Rating</legend><div>
+    {[0, 1, 2, 3, 4, 5].map((rating) => <label key={rating} title={rating ? `${rating} of 5 stars` : 'No rating'}>
+      <input type="radio" name={name} value={rating} checked={value === rating} aria-label={rating ? `${rating} of 5 stars` : 'No rating'} onChange={() => onChange(rating)} />
+      {rating === 0 ? <X size={20} aria-hidden="true" /> : <Star size={22} aria-hidden="true" fill={rating <= value ? 'currentColor' : 'none'} />}
+    </label>)}
+  </div></fieldset>;
+}
+
 export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
   const dialogRef = useRef(null);
   const uploadRef = useRef(null);
   const headingId = useId();
   const [values, setValues] = useState(null);
+  const [initialRating, setInitialRating] = useState(0);
   const [artwork, setArtwork] = useState(null);
   const [artworkChanged, setArtworkChanged] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -107,7 +122,8 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
     request(`/api/jobs/${encodeURIComponent(jobId)}/lyrics/${encodeURIComponent(file.name)}`)
       .then((result) => {
         if (!active) return;
-        setValues(Object.fromEntries(fields.map(([field]) => [field, result[field] || ''])));
+        setValues({ ...Object.fromEntries(fields.map(([field]) => [field, result[field] || ''])), rating: result.rating || 0 });
+        setInitialRating(result.rating || 0);
         setArtwork(result.artwork);
       }).catch((loadError) => { if (active) setError(loadError.message); })
       .finally(() => { if (active) setLoading(false); });
@@ -148,9 +164,10 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
     setSaving(true);
     setError('');
     try {
+      const { rating, ...metadata } = values;
       const result = await request(`/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(file.name)}/metadata`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...values, ...(artworkChanged ? { artwork } : {}) })
+        body: JSON.stringify({ ...metadata, ...(rating !== initialRating ? { rating } : {}), ...(artworkChanged ? { artwork } : {}) })
       });
       onSaved(result);
       onClose();
@@ -165,6 +182,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
       <p className="metadata-filename">{file.name}</p>
       {loading && <p role="status">Loading metadata...</p>}
       {values && <fieldset disabled={saving || readingImage} className="metadata-fields">
+        <SongRating value={values.rating} onChange={(rating) => setValues((current) => ({ ...current, rating }))} />
         <div className="metadata-artwork"><div className="metadata-artwork-preview">{artwork ? <img src={artwork} alt="Song artwork preview" /> : <Music2 size={40} />}</div>
           <div><input ref={uploadRef} type="file" accept="image/jpeg,image/png,image/webp" aria-label="Artwork file" hidden onChange={chooseArtwork} />
             <button className="secondary-button compact-button" type="button" onClick={() => uploadRef.current.click()}><ImagePlus size={17} />Choose artwork</button>

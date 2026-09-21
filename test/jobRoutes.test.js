@@ -13,6 +13,37 @@ import AdmZip from 'adm-zip';
 import { build as buildPlist } from 'plist';
 import { fileTypeFromBuffer } from 'file-type';
 import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
+import { readSongMetadata, readSongSummary, updateSongMetadata } from '../src/music.js';
+
+test('MP3 ratings round-trip all stars and refresh cached file metadata', async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-ratings-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'Song.mp3');
+  const audio = Buffer.from('audio bytes');
+  await fs.writeFile(filePath, audio);
+  assert.equal((await readSongSummary(filePath, await fs.stat(filePath))).rating, 0);
+  const bytes = [0, 1, 64, 128, 196, 255];
+  for (const rating of [5, 4, 3, 2, 1, 0]) {
+    const metadata = await updateSongMetadata(filePath, { rating });
+    assert.equal(metadata.rating, rating);
+    const saved = await fs.readFile(filePath);
+    assert.equal(NodeID3.read(saved).popularimeter.rating, bytes[rating]);
+    assert.deepEqual(NodeID3.removeTagsFromBuffer(saved), audio);
+    const stat = await fs.stat(filePath);
+    const summary = await readSongSummary(filePath, stat);
+    assert.equal(summary.rating, rating);
+    assert.equal(await readSongSummary(filePath, stat), summary);
+  }
+  for (const [rating, stars] of [[0, 0], [1, 1], [31, 1], [32, 2], [95, 2], [96, 3], [159, 3], [160, 4], [223, 4], [224, 5], [255, 5]]) {
+    await fs.writeFile(filePath, NodeID3.write({ title: `External ${rating}`, popularimeter: { email: 'external', rating, counter: 7 } }, audio));
+    const changed = new Date(Date.now() + rating * 1000);
+    await fs.utimes(filePath, changed, changed);
+    const summary = await readSongSummary(filePath, await fs.stat(filePath));
+    assert.equal(summary.title, `External ${rating}`);
+    assert.equal(summary.rating, stars);
+    assert.equal((await readSongMetadata(filePath)).rating, stars);
+  }
+});
 
 test('job HTTP mutations enforce owner, contributor and admin access for sessions and PATs', { timeout: 60_000 }, async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-job-http-'));
@@ -70,6 +101,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const musicDir = path.join(outputRoot, 'music');
   await fs.mkdir(path.join(musicDir, '[NoVocals]'));
   const taggedAudio = NodeID3.write({ title: 'A song', artist: 'An artist',
+    popularimeter: { email: 'listener@example.com', rating: 128, counter: 12 },
     unsynchronisedLyrics: { language: 'eng', text: 'First line\nSecond line' },
     synchronisedLyrics: [{ language: 'eng', timeStampFormat: 2, contentType: 1,
       synchronisedText: [{ text: 'First line', timeStamp: 1000 }, { text: 'Second line', timeStamp: 2500 }] }]
@@ -274,6 +306,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const lyrics = await call(lyricsRoute, 'GET', credentials.Other[1]);
   assert.equal(lyrics.status, 200);
   assert.equal(lyrics.body.title, 'A song');
+  assert.equal(lyrics.body.rating, 3);
+  assert.equal(allTracks.files.find((file) => file.name === `[NoVocals]/${songName}`).rating, 3);
   assert.equal(lyrics.body.uslt, 'First line\nSecond line');
   assert.deepEqual(lyrics.body.sylt, [{ time: 1, text: 'First line' }, { time: 2.5, text: 'Second line' }]);
   const metadataRoute = `/api/jobs/music/files/${encodedSong}/metadata`;
@@ -281,26 +315,37 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal((await call(metadataRoute, 'PATCH', {}, { title: 'Denied' })).status, 401);
   assert.equal((await call(metadataRoute, 'PATCH', credentials.Other[0], { title: 'Denied' })).status, 403);
   for (const body of [{ title: 7 }, { artist: 'bad\u0000tag' }, { unknown: 'field' }, { artwork: 'https://example.com/image.png' },
-    { artwork: 'data:image/png;base64,aW52YWxpZA==' }, { artwork: artwork.replace('image/png', 'image/jpeg') }, { title: 'x'.repeat(501) }]) {
+    { artwork: 'data:image/png;base64,aW52YWxpZA==' }, { artwork: artwork.replace('image/png', 'image/jpeg') }, { title: 'x'.repeat(501) },
+    { rating: -1 }, { rating: 6 }, { rating: 2.5 }, { rating: '3' }, { rating: null }]) {
     assert.equal((await call(metadataRoute, 'PATCH', credentials.Owner[0], body)).status, 400);
   }
   const edited = await call(metadataRoute, 'PATCH', credentials.Owner[0], {
     title: 'Edited song', artist: 'Edited artist', album: 'New album', performerInfo: 'Album artist',
-    genre: 'Jazz', year: '2026', trackNumber: '2/9', partOfSet: '1/2', artwork
+    genre: 'Jazz', year: '2026', trackNumber: '2/9', partOfSet: '1/2', artwork, rating: 5
   });
   assert.equal(edited.status, 200);
   assert.equal(edited.body.title, 'Edited song');
   assert.equal(edited.body.artwork, artwork);
+  assert.equal(edited.body.rating, 5);
   assert.deepEqual(edited.body.sylt, lyrics.body.sylt);
   assert.equal(edited.body.uslt, lyrics.body.uslt);
   assert.equal((await call(lyricsRoute, 'GET', credentials.Owner[0])).body.performerInfo, 'Album artist');
   const changedFile = await fs.readFile(path.join(musicDir, '[NoVocals]', songName));
   assert.deepEqual(NodeID3.removeTagsFromBuffer(changedFile), NodeID3.removeTagsFromBuffer(taggedAudio));
   assert.equal(NodeID3.read(changedFile).trackNumber, '2/9');
+  assert.deepEqual(NodeID3.read(changedFile).popularimeter, { email: 'listener@example.com', rating: 255, counter: 12 });
+  assert.equal((await call('/api/jobs/music/files', 'GET', credentials.Owner[0])).body.files.find((file) => file.name === `[NoVocals]/${songName}`).rating, 5);
+  assert.equal((await call('/api/library/tracks', 'GET', credentials.Owner[0])).body.files.find((file) => file.name === `[NoVocals]/${songName}`).rating, 5);
   assert.equal((await call('/api/jobs/music/files', 'GET', credentials.Owner[0])).body.files.find((file) => file.name === `[NoVocals]/${songName}`).title, 'Edited song');
   const retainedArtwork = await call(metadataRoute, 'PATCH', credentials.Admin[1], { artist: '' });
   assert.equal(retainedArtwork.body.artist, '');
   assert.equal(retainedArtwork.body.artwork, artwork);
+  assert.equal(retainedArtwork.body.rating, 5);
+  const clearedRating = await call(metadataRoute, 'PATCH', credentials.Owner[1], { rating: 0 });
+  assert.equal(clearedRating.body.rating, 0);
+  assert.equal(clearedRating.body.artwork, artwork);
+  assert.deepEqual(clearedRating.body.sylt, lyrics.body.sylt);
+  assert.equal(NodeID3.read(await fs.readFile(path.join(musicDir, '[NoVocals]', songName))).popularimeter.rating, 0);
   assert.equal((await call(metadataRoute, 'PATCH', credentials.Owner[1], { artwork: null })).body.artwork, null);
   assert.equal((await call('/api/jobs/music/files/..%2Foutside.mp3/metadata', 'PATCH', credentials.Owner[0], { title: 'Bad' })).status, 400);
   assert.equal((await call('/api/jobs/music/files/missing.mp3/metadata', 'PATCH', credentials.Owner[0], { title: 'Missing' })).status, 404);
@@ -786,10 +831,10 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(localImport.body.jobs[0].initiatedBy.id, users.Owner.id);
   assert.equal(localImport.body.jobs[0].playlistTitle, 'iTunes favorites');
   assert.deepEqual((await call(`/api/jobs/${localImport.body.jobs[0].id}/stream/Uploaded.mp3`, 'GET', credentials.Owner[0])).buffer, importedAudio.buffer);
-  assert.equal(await fs.readFile(localXmlPath, 'utf8'), xml);
-  assert.deepEqual(await fs.readFile(localZipPath), originalZip);
-  await fs.rm(localZipPath);
-  assert.deepEqual((await call('/api/jobs/import/local', 'GET', credentials.Owner[0])).body.zipFiles, []);
+  const completedStorage = path.join(directory, 'import-storage-completed');
+  assert.equal(await fs.readFile(path.join(completedStorage, localXmlName), 'utf8'), xml);
+  assert.deepEqual(await fs.readFile(path.join(completedStorage, localZipName)), originalZip);
+  assert.deepEqual((await call('/api/jobs/import/local', 'GET', credentials.Owner[0])).body, { xmlFiles: [], zipFiles: [] });
   const manyFiles = Array.from({ length: 1001 }, (_, index) => ({ ...uploadFile, name: `Track ${index}.wav` }));
   const bulkImport = await upload({ ...importOptions, playlistTitle: 'Large import' }, manyFiles);
   assert.equal(bulkImport.status, 413, bulkImport.text);

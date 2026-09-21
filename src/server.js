@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setSongMetadata, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
-import { readSongMetadata } from './music.js';
+import { readSongMetadata, readSongSummary } from './music.js';
 import { findNoVocals, getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { exportOptions, prepareLibraryExport, streamLibraryExport } from './libraryExport.js';
@@ -333,6 +333,8 @@ app.get('/api/jobs/:id/files', async (req, res) => {
 
 async function listJobFiles(job, order, names) {
   if (!job.outputDir) return [];
+  const outputDir = await fs.realpath(job.outputDir).catch(() => null);
+  if (!outputDir) return [];
   const files = [];
   let selectedNames = job.files || [];
   if (names) {
@@ -349,8 +351,12 @@ async function listJobFiles(job, order, names) {
     const absoluteFilePath = getFilePath(job, fileName);
     const stat = await fs.stat(absoluteFilePath).catch(() => null);
     if (stat?.isFile()) {
+      const realPath = await fs.realpath(absoluteFilePath).catch(() => null);
+      if (!realPath || !isFileInsideJobFolder({ outputDir }, realPath)) continue;
+      const metadata = await readSongSummary(realPath, stat).catch(() => ({}));
       files.push({
         ...job.songMetadata?.[fileName],
+        ...metadata,
         name: fileName,
         noVocalsName: job.transcriptions?.[fileName]?.noVocalsName,
         sizeBytes: stat.size,

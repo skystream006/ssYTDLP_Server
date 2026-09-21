@@ -22,6 +22,7 @@ const maxAudioBytes = 512 * 1024 ** 2;
 const maxXmlBytes = 20 * 1024 ** 2;
 const maxExpandedBytes = 4 * 1024 ** 3;
 const activeImports = new Set();
+const activeLocalFiles = new Set();
 const importProgress = new Map();
 const importLogLifetime = 60 * 60 * 1000;
 const failure = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
@@ -29,6 +30,35 @@ const libraryJobs = (user) => getJobs().filter((job) => job.initiatedBy?.id === 
   || job.contributors?.some((contributor) => contributor.id === user.id));
 
 const importStorageRoot = () => path.resolve(process.env.IMPORT_STORAGE_ROOT || path.join(process.cwd(), 'import-storage'));
+
+async function archiveLocalImportFiles(files) {
+  const destination = path.resolve(process.env.IMPORT_STORAGE_COMPLETED_ROOT || path.join(importStorageRoot(), '..', 'import-storage-completed'));
+  await fs.mkdir(destination, { recursive: true });
+  if (await fs.realpath(destination) === await fs.realpath(importStorageRoot())) throw failure('Completed import storage must be a separate folder');
+  const copied = [];
+  const removed = [];
+  try {
+    for (const file of files) {
+      let target = path.join(destination, file.name);
+      try { await fs.copyFile(file.path, target, fs.constants.COPYFILE_EXCL); }
+      catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        const extension = path.extname(file.name);
+        target = path.join(destination, `${path.basename(file.name, extension)}-${randomUUID()}${extension}`);
+        await fs.copyFile(file.path, target, fs.constants.COPYFILE_EXCL);
+      }
+      copied.push({ source: file.path, target });
+    }
+    for (const file of copied) {
+      await fs.unlink(file.source);
+      removed.push(file);
+    }
+  } catch (error) {
+    for (const file of removed) await fs.copyFile(file.target, file.source, fs.constants.COPYFILE_EXCL);
+    for (const file of copied) await fs.rm(file.target, { force: true });
+    throw error;
+  }
+}
 
 export function getImportProgress(userId, importId) {
   const progress = importProgress.get(userId);
@@ -336,7 +366,7 @@ export async function importUploadedFiles(files, options, user) {
   return { jobs: [job], importedFiles: files.length };
 }
 
-export async function importItunesLibrary(xml, media, user, { local = false, report = () => {} } = {}) {
+export async function importItunesLibrary(xml, media, user, { local = false, report = () => {}, complete = async () => {} } = {}) {
   const plans = parseItunesImport(xml, media, { local, report });
   if (getLibrary(user.id, libraryJobs(user)).entries.length + plans.length > 5000) throw failure('The library contains too many entries', 413);
   const created = [];
@@ -364,6 +394,7 @@ export async function importItunesLibrary(xml, media, user, { local = false, rep
     const library = getLibrary(user.id, jobs);
     for (const job of created) library.songOrder[job.id] = job.files;
     setLibrary(user.id, library, jobs);
+    await complete();
     return { jobs: created, importedFiles: created.reduce((total, job) => total + job.files.length, 0) };
   } catch (error) {
     report('rollback', 'Import failed; removing created playlists', { playlists: created.length, error: error.message }, 'error');
@@ -408,6 +439,7 @@ export async function handleLibraryImport(req, res) {
   let result;
   let status = 201;
   let acknowledged = false;
+  const lockedFiles = [];
   report('receive', 'Import started', { source: req.is('application/json') ? 'local' : 'upload' });
   try {
     req.importDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-import-'));
@@ -419,6 +451,9 @@ export async function handleLibraryImport(req, res) {
         xml: await resolveLocalImportFile(req.body.xmlName, '.xml'),
         media: await resolveLocalImportFile(req.body.zipName, '.zip')
       };
+      const paths = Object.values(itunesFiles).map((file) => file.path);
+      if (paths.some((file) => activeLocalFiles.has(file))) throw failure('These local files are already being imported', 409);
+      for (const file of paths) { activeLocalFiles.add(file); lockedFiles.push(file); }
       if (req.query?.background === 'true') {
         acknowledged = true;
         res.status(202).json({ importId, status: 'running' });
@@ -435,7 +470,12 @@ export async function handleLibraryImport(req, res) {
         xmlBytes: itunesFiles.xml.size, zip: itunesFiles.media.name || itunesFiles.media.originalname, zipBytes: itunesFiles.media.size });
       const xml = await fs.readFile(itunesFiles.xml.path, 'utf8');
       const media = await extractImportMedia(itunesFiles.media.path, req.importDirectory, { local, report });
-      result = await importItunesLibrary(xml, media, req.user, { local, report });
+      result = await importItunesLibrary(xml, media, req.user, { local, report, complete: async () => {
+        if (!local) return;
+        report('archive', 'Moving XML and ZIP to completed import storage');
+        await archiveLocalImportFiles(Object.values(itunesFiles));
+        report('archive', 'Import source files moved to completed storage');
+      } });
     } else if (req.body?.mode === 'files' && !req.files?.xml && !req.files?.media) {
       const files = (req.files?.files || []).map((file) => {
         const bytes = Buffer.from(file.originalname, 'latin1');
@@ -455,6 +495,7 @@ export async function handleLibraryImport(req, res) {
     if (req.importDirectory) await fs.rm(req.importDirectory, { recursive: true, force: true }).catch((error) => {
       report('cleanup', 'Unable to remove temporary import files', { error: error.message }, 'error');
     });
+    for (const file of lockedFiles) activeLocalFiles.delete(file);
     activeImports.delete(req.user.id);
   }
   report('complete', status === 201 ? 'Import completed' : 'Import ended with errors', { status,

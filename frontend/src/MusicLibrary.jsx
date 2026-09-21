@@ -680,7 +680,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     {editingMetadata && <MetadataDialog file={editingMetadata} jobId={editingMetadata.jobId} request={request} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
       playback.updateMetadata(editingMetadata.jobId, editingMetadata.name, result);
       setTrackResult((current) => current ? { ...current, files: current.files.map((track) => songKey(track) === songKey(editingMetadata)
-        ? { ...track, title: result.title, artist: result.artist, album: result.album } : track) } : current);
+        ? { ...track, title: result.title, artist: result.artist, album: result.album, rating: result.rating } : track) } : current);
       setRefresh((value) => value + 1);
     }} />}
     {folderDialog && <FolderDialog folder={folderDialog.folder} parentId={folderDialog.parentId} folders={possibleFolders(folderDialog.folder?.id)} saving={saving} onSave={saveFolder} onClose={() => setFolderDialog(null)} />}

@@ -6,6 +6,7 @@ import { createServer } from 'vite';
 
 let server;
 let SongActions;
+let SongRating;
 let TranscriptionDialog;
 let SongGroups;
 let findNoVocals;
@@ -15,7 +16,7 @@ let ImportMusic;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ SongActions, TranscriptionDialog } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ SongActions, SongRating, TranscriptionDialog } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ SongGroups, findNoVocals, queueSongNext } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
@@ -26,6 +27,19 @@ after(async () => { await server?.close(); });
 function renderExportDialog() {
   return renderToStaticMarkup(createElement(ExportLibraryDialog, { onClose() {} }));
 }
+
+test('song ratings show embedded stars and provide an accessible editable and clearable choice', () => {
+  const display = renderToStaticMarkup(createElement(SongRating, { value: 3 }));
+  assert.match(display, /role="img" aria-label="3 of 5 stars"/);
+  assert.equal((display.match(/fill="currentColor"/g) || []).length, 3);
+  assert.equal((display.match(/fill="none"/g) || []).length, 2);
+  assert.match(renderToStaticMarkup(createElement(SongRating)), /aria-label="Unrated"/);
+  const editor = renderToStaticMarkup(createElement(SongRating, { value: 4, onChange() {} }));
+  assert.match(editor, /<legend>Rating<\/legend>/);
+  assert.equal((editor.match(/type="radio"/g) || []).length, 6);
+  assert.match(editor, /aria-label="No rating"/);
+  assert.match(editor.match(/<input[^>]*aria-label="4 of 5 stars"[^>]*>/)[0], /checked=""/);
+});
 
 test('media import offers audio and movie uploads to playlists', () => {
   const html = renderToStaticMarkup(createElement(ImportMusic, { request() {}, onClose() {}, onImported() {} }));

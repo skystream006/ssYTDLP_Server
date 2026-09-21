@@ -54,7 +54,7 @@ import { navigate, useNavigation } from './navigation.js';
 import { initializeTouchControls } from './touchControls.js';
 import { countDownloadedFiles, themes } from '../../src/library.js';
 import { isPlayableFile } from '../../src/media.js';
-import { canManageJob, canModifyJob, isContributor, formatBytes, formatDate, MetadataDialog, SongActions, TranscriptionDialog, TranscriptionStatus } from './SongActions.jsx';
+import { canManageJob, canModifyJob, isContributor, formatBytes, formatDate, MetadataDialog, SongActions, SongRating, TranscriptionDialog, TranscriptionStatus } from './SongActions.jsx';
 
 const POLL_INTERVAL = 5000;
 const AuthContext = createContext(null);
@@ -745,9 +745,13 @@ function JobPage({ id }) {
             {job.warning && <div className="notice warning"><CircleAlert size={16} />{job.warning}</div>}
             {job.error && <div className="notice error"><CircleAlert size={16} />{job.error}</div>}
           </section>
+          <section className="output-panel">
+            <div className="section-title"><div><span>02</span><h2>Process output</h2></div></div>
+            <pre>{job.output || (isActive ? 'Waiting for process output...' : 'No process output was captured.')}</pre>
+          </section>
           <section className="files-panel">
             <div className="section-title">
-              <div><span>02</span><h2>Files</h2>
+              <div><span>03</span><h2>Files</h2>
                 {firstSong && <a className="icon-link files-play" href={`/job/${encodeURIComponent(id)}/player?${new URLSearchParams({ song: firstSong.name, play: '1' })}`} aria-label="Play all songs" title="Play all songs"><Play size={17} /></a>}
               </div>
               <div className="files-actions">
@@ -760,13 +764,16 @@ function JobPage({ id }) {
                 <li key={file.name}>
                   {file.isPlayable ? <a className="song-file-link" href={`/job/${encodeURIComponent(id)}/player?${new URLSearchParams({ song: file.name, play: '1' })}`} aria-label={`Play ${file.name}`} title="Play media">
                     <span className="file-icon">{file.mediaType === 'video' ? <Play size={19} /> : <FileAudio size={19} />}</span>
-                    <span><strong>{file.title || file.name}</strong><small>{file.title ? `${file.name} / ` : ''}{formatBytes(file.sizeBytes)}</small>
+                    <span className="file-song-info"><strong>{file.title || file.name}</strong>
+                      {(file.artist || file.album) && <span className="file-song-credit">{[file.artist, file.album].filter(Boolean).join(' / ')}</span>}
+                      <small>{file.title ? `${file.name} / ` : ''}{formatBytes(file.sizeBytes)}</small>
                       <TranscriptionStatus transcription={pendingTranscriptions[file.name] || job.transcriptions?.[file.name]} />
                     </span>
                   </a> : <>
                     <span className="file-icon"><FileAudio size={19} /></span>
                     <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div>
                   </>}
+                  <span className="song-rating-cell">{/\.mp3$/i.test(file.name) && <SongRating value={file.rating} />}</span>
                   <SongActions name={file.name} className="file-row-actions">
                     {canModify && /\.mp3$/i.test(file.name) && <button className="icon-link" type="button" title="Edit song metadata" aria-label={`Edit metadata ${file.name}`} disabled={mutationDisabled} onClick={() => setEditingMetadata(file)}><Pencil size={18} /></button>}
                     {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" title="Transcribe song" aria-label={`Transcribe ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
@@ -780,10 +787,6 @@ function JobPage({ id }) {
             )}
           </section>
         </div>
-        <section className="output-panel">
-          <div className="section-title"><div><span>03</span><h2>Process output</h2></div></div>
-          <pre>{job.output || (isActive ? 'Waiting for process output...' : 'No process output was captured.')}</pre>
-        </section>
       </>}
     </AppShell>
   );

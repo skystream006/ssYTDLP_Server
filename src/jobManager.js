@@ -710,7 +710,7 @@ export async function setSongMetadata(id, fileName, value, user = null) {
         throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
       }
       const metadata = await updateSongMetadata(realPath, value);
-      job.songMetadata = { ...job.songMetadata, [fileName]: { title: metadata.title, artist: metadata.artist, album: metadata.album } };
+      job.songMetadata = { ...job.songMetadata, [fileName]: { title: metadata.title, artist: metadata.artist, album: metadata.album, rating: metadata.rating } };
       job.updatedAt = new Date().toISOString();
       await persistJob(job);
       return metadata;

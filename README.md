@@ -156,7 +156,7 @@ the job's **Download all** archive.
 ### Import from a Windows folder
 
 Docker Compose mounts `./import-storage` beside this project into the container
-at `/app/import-storage`, read-only. For a checkout at `C:\DATA\ssYTDLP_Server`,
+at `/app/import-storage`, with write access. For a checkout at `C:\DATA\ssYTDLP_Server`,
 copy your ZIP and XML from USB directly into
 `C:\DATA\ssYTDLP_Server\import-storage`. No access to Docker volumes is needed.
 The folder is excluded from Git and from the Docker build context.
@@ -166,6 +166,7 @@ work with Docker Compose):
 
 ```dotenv
 IMPORT_STORAGE_PATH=C:/MusicImports
+IMPORT_STORAGE_COMPLETED_PATH=C:/MusicImportsCompleted
 ```
 
 Rebuild/recreate the app after updating the code or mount:
@@ -178,18 +179,26 @@ In **Jobs > Import media > iTunes library > Import from local**, refresh the
 file list, select the XML and ZIP, then choose **Import**. Only regular files
 directly in the folder are listed; subfolders and symbolic links are excluded.
 Finish copying both files before importing, and do not replace them while an
-import is running. The original ZIP and XML are never modified or removed.
+import is running. After a successful local import, both source files move to
+`./import-storage-completed` (or `IMPORT_STORAGE_COMPLETED_PATH` in Compose).
+Existing completed files are never overwritten; name collisions receive a unique
+suffix. Failed imports leave the source files available to retry. An archive
+failure rolls back the imported playlists. Both folders must be writable.
 
 Local import sends only filenames to the server, so an 18 GB ZIP does not pass
 through the browser or incur an extra uploaded ZIP copy. Extraction and playlist
 copies still need server disk space and processing time; keep the page open
 until completion. Reverse proxies may need longer response timeouts. All approved
 users can list and import from this shared folder, so place only intended music
-imports there. The container user must have read access to the host folder.
+imports there. Archiving across separate volumes temporarily needs space for a
+second copy of the XML and ZIP.
 
 For native Node execution, `IMPORT_STORAGE_ROOT` chooses the folder; its default
 is `./import-storage`. In Compose, `IMPORT_STORAGE_ROOT` stays at the container
-path and `IMPORT_STORAGE_PATH` selects the host folder.
+path and `IMPORT_STORAGE_PATH` selects the host folder. Native execution can set
+`IMPORT_STORAGE_COMPLETED_ROOT`; it defaults to `import-storage-completed` beside
+the source folder. Compose mounts the completed folder at
+`/app/import-storage-completed`. The completed folder must differ from the source.
 
 `GET /api/jobs/import/local` returns `xmlFiles` and `zipFiles` with names and
 sizes. For local imports, `POST /api/jobs/import` accepts JSON:
@@ -757,6 +766,11 @@ Authenticated library APIs (sessions and PATs):
 The pencil beside an MP3 song opens **Edit song metadata** in the library or job
 details. Edit title, artist, album, album artist, genre, year, track number, and disc
 number. Choose or remove artwork; uploads must be JPEG, PNG, or WebP, at most 2 MB.
+MP3 ratings appear as zero to five stars in playlist songs and job files. Choose
+stars or **No rating** in the same editor to update the file's ID3 `POPM` tag.
+The existing rating owner and play count are retained. Ratings are read from the
+song file, not the separate iTunes XML database. Job details, process output, and
+files are stacked full-width; song files also show artist and album metadata.
 Other audio formats remain playable but do not offer the MP3 tag editor.
 
 Edits update the source MP3, including for personally moved songs, and therefore
@@ -770,7 +784,10 @@ idle jobs; active downloads and conflicting file mutations return `409`.
 `trackNumber`, and `partOfSet` (disc number). Text fields are limited to 500
 characters. Include `artwork` as a base64 image data URL to replace it, `null` to
 remove it, or omit it to preserve the current cover. The response contains the
-updated song metadata. URL-encode the full filename, including `[NoVocals]/`.
+updated song metadata, including `rating`. Include integer `rating` from `0`
+(unrated) to `5`, or omit it to retain the original rating. Both job-file and
+library-track responses include MP3 ratings. URL-encode the full filename,
+including `[NoVocals]/`.
 
 ## Transcription and job player
 

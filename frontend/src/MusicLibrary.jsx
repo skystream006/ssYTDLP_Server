@@ -342,6 +342,12 @@ export default function MusicLibrary({ user, request, confirm }) {
         || songMutations.current.has(key) || transcription?.status === 'sent' };
   }
 
+  function metadataSaved(file, result) {
+    playback.updateMetadata(file.jobId, file.name, result);
+    setTrackResult((current) => current ? { ...current, files: current.files.map((track) => songKey(track) === songKey(file)
+      ? { ...track, title: result.title, artist: result.artist, album: result.album, rating: result.rating } : track) } : current);
+  }
+
   async function transcribe(track, options) {
     setTranscribingFile(null);
     if (songState(track).disabled) { setActionError('This song cannot be changed right now. Refresh and try again.'); return; }
@@ -675,12 +681,11 @@ export default function MusicLibrary({ user, request, confirm }) {
         toggle: () => { setSelectingSongs(!selectingSongs); setSelectedSongs(new Set()); }, change: toggleSongs, clear: () => setSelectedSongs(new Set()),
         transfer: (action) => setBulkDialog({ type: 'songs', action, version: library.version, sourcePlaylistId: selectedId, keys: songSelection.map(songKey) }) } : null,
       songState, onTranscribe: setTranscribingFile, onDelete: removeSong, removedSong, onEditMetadata: setEditingMetadata,
+      onMetadataSaved: metadataSaved, onRatingError: setActionError,
       saving: saving || tracksLoading || searchPending, onReorder: reorderSong, onSelect: selectEntry, onMove: moveSong, onAdd: () => setAddingPlaylist(true) }} />
     {transcribingFile && <TranscriptionDialog file={transcribingFile} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
     {editingMetadata && <MetadataDialog file={editingMetadata} jobId={editingMetadata.jobId} request={request} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
-      playback.updateMetadata(editingMetadata.jobId, editingMetadata.name, result);
-      setTrackResult((current) => current ? { ...current, files: current.files.map((track) => songKey(track) === songKey(editingMetadata)
-        ? { ...track, title: result.title, artist: result.artist, album: result.album, rating: result.rating } : track) } : current);
+      metadataSaved(editingMetadata, result);
       setRefresh((value) => value + 1);
     }} />}
     {folderDialog && <FolderDialog folder={folderDialog.folder} parentId={folderDialog.parentId} folders={possibleFolders(folderDialog.folder?.id)} saving={saving} onSave={saveFolder} onClose={() => setFolderDialog(null)} />}

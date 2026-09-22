@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Link, ListChecks, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Search, Shuffle, SkipBack, SkipForward, Trash2, Volume2, VolumeX, X } from 'lucide-react';
-import { SongActions, SongRating, TranscriptionStatus } from './SongActions.jsx';
+import { ListSongRating, SongActions, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { navigationHistory } from './navigation.js';
 import { findNoVocals, isNoVocals } from '../../src/library.js';
@@ -416,7 +416,9 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                   <TranscriptionStatus transcription={action.transcription} /></span>
               </button><KaraokeButton track={track} tracks={tracks} onPlay={playKaraoke} /></div>
               <button className="song-playlist" type="button" title={track.playlistTitle} onClick={() => libraryView.onSelect(track.playlistId)}>{track.playlistTitle}</button>
-              <span className="song-rating-cell">{/\.mp3$/i.test(track.name) && <SongRating value={track.rating} />}</span>
+              <ListSongRating file={track} jobId={track.jobId} request={request} canModify={action.canModify}
+                disabled={action.disabled || action.metadataBusy || libraryView.saving}
+                onSaved={(result) => libraryView.onMetadataSaved(track, result)} onError={libraryView.onRatingError} />
               <SongActions name={track.name} className="song-order-actions">
                 {action.canModify && /\.mp3$/i.test(track.name) && <button className="music-icon-button" type="button" title="Edit song metadata" aria-label={`Edit metadata ${track.name}`} disabled={action.disabled || action.metadataBusy} onClick={() => libraryView.onEditMetadata(track)}><Pencil size={16} /></button>}
                 {mediaType(track.name) === 'audio' && !track.name.toLowerCase().startsWith('[novocals]/') && <button className="music-icon-button" type="button" title="Transcribe song" aria-label={`Transcribe ${track.name}`} disabled={action.disabled} onClick={() => libraryView.onTranscribe(track)}><Mic size={16} /></button>}

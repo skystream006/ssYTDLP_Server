@@ -54,7 +54,7 @@ import { navigate, useNavigation } from './navigation.js';
 import { initializeTouchControls } from './touchControls.js';
 import { countDownloadedFiles, themes } from '../../src/library.js';
 import { isPlayableFile } from '../../src/media.js';
-import { canManageJob, canModifyJob, isContributor, formatBytes, formatDate, MetadataDialog, SongActions, SongRating, TranscriptionDialog, TranscriptionStatus } from './SongActions.jsx';
+import { canManageJob, canModifyJob, isContributor, formatBytes, formatDate, ListSongRating, MetadataDialog, SongActions, TranscriptionDialog, TranscriptionStatus } from './SongActions.jsx';
 
 const POLL_INTERVAL = 5000;
 const AuthContext = createContext(null);
@@ -724,7 +724,7 @@ function JobPage({ id }) {
             </>}
           </div>
         </section>
-        {actionError && <div className="notice error page-notice"><CircleAlert size={16} />{actionError}</div>}
+        {actionError && <div className="notice error page-notice" role="alert"><CircleAlert size={16} />{actionError}</div>}
         {transcriptionNotice && <div className="notice success page-notice" role="status"><Check size={16} />{transcriptionNotice}</div>}
         <div className="detail-grid">
           <section className="info-panel">
@@ -782,7 +782,12 @@ function JobPage({ id }) {
                     <span className="file-icon"><FileAudio size={19} /></span>
                     <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div>
                   </>}
-                  <span className="song-rating-cell">{/\.mp3$/i.test(file.name) && <SongRating value={file.rating} />}</span>
+                  <ListSongRating file={file} jobId={id} request={request} canModify={canModify}
+                    disabled={mutationDisabled || editingMetadata !== null} onError={setActionError}
+                    onSaved={(result) => {
+                      playback.updateMetadata(id, file.name, result);
+                      setFileRevision((revision) => revision + 1);
+                    }} />
                   <SongActions name={file.name} className="file-row-actions">
                     {canModify && /\.mp3$/i.test(file.name) && <button className="icon-link" type="button" title="Edit song metadata" aria-label={`Edit metadata ${file.name}`} disabled={mutationDisabled} onClick={() => setEditingMetadata(file)}><Pencil size={18} /></button>}
                     {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" title="Transcribe song" aria-label={`Transcribe ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}

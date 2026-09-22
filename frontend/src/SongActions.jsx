@@ -85,11 +85,19 @@ export function formatBytes(value) {
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
-export function SongRating({ value = 0, onChange }) {
+export function SongRating({ value = 0, onChange, inline = false, disabled = false, songName = '' }) {
   const name = useId();
   const label = value ? `${value} of 5 stars` : 'Unrated';
   if (!onChange) return <span className="song-rating" role="img" aria-label={label} title={label}>
     {[1, 2, 3, 4, 5].map((rating) => <Star key={rating} size={13} aria-hidden="true" fill={rating <= value ? 'currentColor' : 'none'} />)}
+  </span>;
+  if (inline) return <span className="song-rating-inline" role="group" aria-label={`Rating for ${songName}`}>
+    {[1, 2, 3, 4, 5].map((rating) => <button key={rating} type="button" disabled={disabled}
+      aria-label={`${rating} of 5 stars`} aria-pressed={value === rating}
+      title={value === rating ? 'Clear rating' : `Rate ${rating} of 5 stars`}
+      onClick={() => onChange(value === rating ? 0 : rating)}>
+      <Star size={15} aria-hidden="true" fill={rating <= value ? 'currentColor' : 'none'} />
+    </button>)}
   </span>;
   return <fieldset className="rating-editor"><legend>Rating</legend><div>
     {[0, 1, 2, 3, 4, 5].map((rating) => <label key={rating} title={rating ? `${rating} of 5 stars` : 'No rating'}>
@@ -97,6 +105,35 @@ export function SongRating({ value = 0, onChange }) {
       {rating === 0 ? <X size={20} aria-hidden="true" /> : <Star size={22} aria-hidden="true" fill={rating <= value ? 'currentColor' : 'none'} />}
     </label>)}
   </div></fieldset>;
+}
+
+export function ListSongRating({ file, jobId, request, canModify, disabled, onSaved, onError }) {
+  const [rating, setRating] = useState(file.rating || 0);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+
+  useEffect(() => { setRating(file.rating || 0); }, [file.rating, file.name, jobId]);
+
+  async function save(nextRating) {
+    if (!canModify || disabled || savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    onError('');
+    try {
+      const result = await request(`/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(file.name)}/metadata`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rating: nextRating })
+      });
+      setRating(result.rating);
+      onSaved(result);
+    } catch (saveError) { onError(`Rating for ${file.name}: ${saveError.message}`); }
+    finally { savingRef.current = false; setSaving(false); }
+  }
+
+  return <span className="song-rating-cell" aria-busy={saving}>
+    {/\.mp3$/i.test(file.name) && <SongRating value={rating} inline songName={file.name}
+      disabled={disabled || saving} onChange={canModify ? save : undefined} />}
+    {saving && <span className="sr-only" role="status">Saving rating for {file.name}</span>}
+  </span>;
 }
 
 export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {

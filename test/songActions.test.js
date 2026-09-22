@@ -7,6 +7,7 @@ import { createServer } from 'vite';
 let server;
 let SongActions;
 let SongRating;
+let ListSongRating;
 let TranscriptionDialog;
 let SongGroups;
 let findNoVocals;
@@ -16,7 +17,7 @@ let ImportMusic;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ SongActions, SongRating, TranscriptionDialog } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ SongActions, SongRating, ListSongRating, TranscriptionDialog } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ SongGroups, findNoVocals, queueSongNext } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
@@ -39,6 +40,39 @@ test('song ratings show embedded stars and provide an accessible editable and cl
   assert.equal((editor.match(/type="radio"/g) || []).length, 6);
   assert.match(editor, /aria-label="No rating"/);
   assert.match(editor.match(/<input[^>]*aria-label="4 of 5 stars"[^>]*>/)[0], /checked=""/);
+});
+
+test('inline song ratings use five labeled buttons with a clearable selection and disabled state', () => {
+  const props = { value: 3, onChange() {}, inline: true, songName: 'Song.mp3' };
+  const html = renderToStaticMarkup(createElement(SongRating, props));
+  assert.match(html, /role="group" aria-label="Rating for Song.mp3"/);
+  assert.equal((html.match(/type="button"/g) || []).length, 5);
+  assert.equal((html.match(/fill="currentColor"/g) || []).length, 3);
+  assert.match(html, /aria-label="3 of 5 stars" aria-pressed="true" title="Clear rating"/);
+  assert.match(html, /aria-label="4 of 5 stars" aria-pressed="false" title="Rate 4 of 5 stars"/);
+  const disabled = renderToStaticMarkup(createElement(SongRating, { ...props, disabled: true }));
+  assert.equal((disabled.match(/disabled=""/g) || []).length, 5);
+  const unrated = renderToStaticMarkup(createElement(SongRating, { ...props, value: 0 }));
+  assert.doesNotMatch(unrated, /aria-pressed="true"|title="Clear rating"/);
+  const readOnly = renderToStaticMarkup(createElement(SongRating, { inline: true, value: 3 }));
+  assert.match(readOnly, /role="img" aria-label="3 of 5 stars"/);
+  assert.doesNotMatch(readOnly, /<button/);
+});
+
+test('list song ratings respect edit permission, busy files and supported formats', () => {
+  const props = { file: { name: 'Song.mp3', rating: 2 }, jobId: 'job', canModify: true };
+  const html = renderToStaticMarkup(createElement(ListSongRating, props));
+  assert.equal((html.match(/type="button"/g) || []).length, 5);
+  assert.match(html, /aria-label="2 of 5 stars" aria-pressed="true"/);
+  const readOnly = renderToStaticMarkup(createElement(ListSongRating, { ...props, canModify: false }));
+  assert.match(readOnly, /role="img" aria-label="2 of 5 stars"/);
+  assert.doesNotMatch(readOnly, /<button/);
+  const busy = renderToStaticMarkup(createElement(ListSongRating, { ...props, disabled: true }));
+  assert.equal((busy.match(/disabled=""/g) || []).length, 5);
+  for (const name of ['movie.mp4', 'song.wav', 'cover.jpg']) {
+    const unsupported = renderToStaticMarkup(createElement(ListSongRating, { ...props, file: { name } }));
+    assert.doesNotMatch(unsupported, /<button|<svg/);
+  }
 });
 
 test('media import offers audio and movie uploads to playlists', () => {

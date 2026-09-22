@@ -260,6 +260,7 @@ function JobsPage() {
   const [revision, setRevision] = useState(0);
   const { data: jobs, error: loadError } = usePolling(loadJobs, POLL_INTERVAL, revision);
   const [url, setUrl] = useState('');
+  const [downloadType, setDownloadType] = useState('audio');
   const [metadataOnly, setMetadataOnly] = useState(false);
   const [message, setMessage] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -310,7 +311,7 @@ function JobsPage() {
     setSubmitting(true);
     setMessage(null);
     try {
-      const result = await submitJobUrl(url, { request, user, confirm, metadataOnly });
+      const result = await submitJobUrl(url, { request, user, confirm, metadataOnly, downloadType });
       if (!result) return;
       const { job, created } = result;
       if (!created) {
@@ -355,8 +356,8 @@ function JobsPage() {
       <section className="page-heading">
         <div>
           <p className="eyebrow">Download queue</p>
-          <h1>Music, ready when you are.</h1>
-          <p>Send a YouTube Music track or playlist to your local archive.</p>
+          <h1>Music and video.</h1>
+          <p>Your local media archive.</p>
         </div>
         <div className="jobs-heading-actions">
           <button className="secondary-button" type="button" onClick={() => setImporting(true)}><Upload size={17} />Import media</button>
@@ -372,28 +373,36 @@ function JobsPage() {
         <div className="panel-index">01</div>
         <div className="create-copy">
           <h2 id="create-heading">Start a download</h2>
-          <p>Tracks become MP3 files. Playlist links download the complete list.</p>
         </div>
         <form onSubmit={submitJob}>
           <div className="url-field">
             <Music2 size={19} />
             <input
-              aria-label="YouTube Music URL"
+              aria-label="YouTube URL"
               type="url"
               required
               value={url}
               onChange={(event) => setUrl(event.target.value)}
-              placeholder="https://music.youtube.com/watch?v=..."
+              placeholder={downloadType === 'video' ? 'https://www.youtube.com/watch?v=...' : 'https://music.youtube.com/watch?v=...'}
             />
           </div>
           <button className="primary-button" disabled={submitting} type="submit">
             {submitting ? <RefreshCw className="spin" size={18} /> : <Plus size={18} />}
             {submitting ? 'Adding' : 'Add job'}
           </button>
-          <label className="job-metadata-only">
-            <input type="checkbox" checked={metadataOnly} disabled={submitting} onChange={(event) => setMetadataOnly(event.target.checked)} />
-            Download metadata only
-          </label>
+          <div className="job-download-options">
+            <label className="job-download-type">
+              Format
+              <select value={downloadType} disabled={submitting} onChange={(event) => setDownloadType(event.target.value)}>
+                <option value="audio">Audio (MP3)</option>
+                <option value="video">Video (MP4)</option>
+              </select>
+            </label>
+            <label className="job-metadata-only">
+              <input type="checkbox" checked={metadataOnly} disabled={submitting} onChange={(event) => setMetadataOnly(event.target.checked)} />
+              Download metadata only
+            </label>
+          </div>
         </form>
         {message && <div className={`notice ${message.type}`} role="status">{message.text}</div>}
       </section>

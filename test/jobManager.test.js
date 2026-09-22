@@ -250,6 +250,70 @@ for (const isPlaylist of [false, true]) {
   });
 }
 
+for (const metadataOnly of [false, true]) {
+  test(`video jobs preserve their format on rerun with metadataOnly=${metadataOnly}`, async (t) => {
+    const calls = [];
+    const spawnMock = t.mock.method(childProcess, 'spawn', (command, args) => {
+      calls.push(args);
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      process.nextTick(() => {
+        child.stdout.end(JSON.stringify({ title: 'My video' }));
+        child.emit('close', 0);
+      });
+      return child;
+    });
+    syncBuiltinESMExports();
+    t.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
+    process.env.YTDLP_OUTPUT_ROOT = path.dirname(process.env.DATABASE_PATH);
+    const manager = await import(`../src/jobManager.js?video=${metadataOnly}`);
+    const owner = { id: 'owner', role: 'user' };
+    const url = 'https://www.youtube.com/watch?v=video';
+    for (const downloadType of ['mp4', '', null, true, {}]) {
+      await assert.rejects(manager.createJob(url, owner, { downloadType }), { statusCode: 400 });
+    }
+    const audio = await manager.createJob(url, owner);
+    await waitForJobToFinish(audio);
+    assert.equal(audio.downloadType, 'audio');
+    assert.ok(calls.at(-1).includes('--extract-audio'));
+    delete audio.downloadType;
+    writeJob(openDatabase(), audio);
+    await assert.rejects(manager.createJob(url, owner), (error) => {
+      assert.equal(error.code, 'JOB_ALREADY_EXISTS');
+      assert.equal(error.existingJob.id, audio.id);
+      return true;
+    });
+    calls.length = 0;
+    const job = await manager.createJob(url, owner, { downloadType: 'video', metadataOnly });
+    await waitForJobToFinish(job);
+    assert.equal(job.status, 'completed');
+    assert.equal(manager.getJob(job.id).downloadType, 'video');
+    assert.notEqual(job.outputDir, audio.outputDir);
+    assert.equal(calls.length, metadataOnly ? 1 : 2);
+    await assert.rejects(manager.createJob(url, owner, { downloadType: 'video' }), (error) => {
+      assert.equal(error.code, 'JOB_ALREADY_EXISTS');
+      assert.equal(error.existingJob.id, job.id);
+      return true;
+    });
+    const rerun = await manager.rerunJob(job.id, owner);
+    await waitForJobToFinish(rerun);
+    assert.equal(rerun.downloadType, 'video');
+    assert.equal(rerun.metadataOnly, false);
+    assert.equal(rerun.outputDir, job.outputDir);
+    for (const args of calls.filter((args) => !args.includes('--dump-single-json'))) {
+      assert.equal(args[args.indexOf('--format') + 1], 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best');
+      assert.equal(args[args.indexOf('--merge-output-format') + 1], 'mp4');
+      assert.equal(args[args.indexOf('--remux-video') + 1], 'mp4');
+      assert.ok(!args.includes('--extract-audio'));
+      assert.ok(!args.includes('--audio-format'));
+      assert.ok(args.includes('--no-overwrites'));
+      assert.ok(args.includes('--download-archive'));
+      assert.equal(args.at(-1), url);
+    }
+  });
+}
+
 test('metadata-only lookup failures fail without starting a media download', async (t) => {
   const spawnMock = t.mock.method(childProcess, 'spawn', () => {
     const child = new EventEmitter();

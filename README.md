@@ -1,7 +1,22 @@
 # ssYTDLP_Server
 
-ssMusic Player is a personal music library backed by ssYTDLP download jobs from
-`music.youtube.com` URLs.
+ssMusic Player is a personal music and video library backed by ssYTDLP download
+jobs from YouTube and YouTube Music URLs.
+
+## Audio and video downloads
+
+On **Jobs > Start a download**, choose **Audio (MP3)** or **Video (MP4)** in
+**Format**, paste a YouTube URL, and choose **Add job**. Audio remains the default.
+Standard YouTube, mobile YouTube, YouTube Music, and `youtu.be` links are accepted.
+Links containing a `list` query parameter download the complete playlist.
+
+Video jobs download video with audio, preferring MP4/M4A streams, and use FFmpeg
+to merge or remux the result to MP4. Reruns keep the original format. The same URL
+can have separate audio and video jobs; duplicates within a format offer the
+existing job's normal rerun or details action.
+
+`POST /api/jobs` accepts `downloadType: "audio"` (default) or `"video"`, for example
+`{ "url": "https://www.youtube.com/watch?v=VIDEO_ID", "downloadType": "video" }`.
 
 ## All Music Pagination
 
@@ -21,16 +36,17 @@ parameters are supplied.
 
 ## Metadata-only jobs
 
-On **Jobs**, enter a YouTube Music URL and check **Download metadata only**
+On **Jobs**, enter a YouTube URL and check **Download metadata only**
 before choosing **Add job**. The initial run retrieves the title and playlist
 song count, creates the output folder, and adds the job to your library without
-downloading audio. yt-dlp is still used for metadata lookup with `--skip-download`.
+downloading media. yt-dlp is still used for metadata lookup with `--skip-download`.
 For playlists, use **Import media > Files** and select the new playlist to upload
 your own audio or movies into its folder.
 
-**Rerun** downloads media normally, keeping existing files and downloading missing
-songs. Metadata-only applies only to the initial run. Submitting an existing URL
-still offers a normal media-downloading rerun, even with the checkbox selected.
+**Rerun** downloads media in the selected format, keeping existing files and
+downloading missing ones. Metadata-only applies only to the initial run. Submitting
+an existing URL with the same format still offers a normal media-downloading
+rerun, even with the checkbox selected.
 The API accepts the optional boolean `metadataOnly` on `POST /api/jobs`; it defaults
 to `false`.
 
@@ -905,7 +921,8 @@ Use HTTPS with a trusted certificate. For local testing with the generated self-
 certificate only, curl accepts `--insecure` and PowerShell 7 accepts `-SkipCertificateCheck`.
 Successful submission returns `202 Accepted` and the job, including its ID. The job is
 attributed to the PAT owner. Missing or invalid credentials return `401`, invalid URLs
-return `400`, and duplicate URLs return `409` with the existing job.
+return `400`, and duplicate URLs with the same download format return `409` with
+the existing job.
 
 PATs inherit their owner's current API permissions and do not expire automatically.
 Use the trash button in **User settings** to delete a PAT immediately. Administrators

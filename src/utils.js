@@ -2,6 +2,17 @@ import crypto from 'node:crypto';
 
 const INVALID_FOLDER_CHARS = /[<>:"/\\|?*\x00-\x1F]/g;
 
+export function isYouTubeUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return ['http:', 'https:'].includes(parsed.protocol)
+      && ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'].includes(parsed.hostname)
+      && !parsed.username && !parsed.password;
+  } catch {
+    return false;
+  }
+}
+
 export function isYouTubeMusicUrl(value) {
   try {
     const parsed = new URL(value);
@@ -12,7 +23,7 @@ export function isYouTubeMusicUrl(value) {
 }
 
 export function isPlaylistUrl(value) {
-  if (!isYouTubeMusicUrl(value)) {
+  if (!isYouTubeUrl(value)) {
     return false;
   }
 

@@ -16,7 +16,7 @@ import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLib
 import { exportOptions, prepareLibraryExport, streamLibraryExport } from './libraryExport.js';
 import { getImportProgress, handleLibraryImport, listLocalImportFiles } from './libraryImport.js';
 import { getSystemHealth } from './health.js';
-import { isYouTubeMusicUrl } from './utils.js';
+import { isYouTubeUrl } from './utils.js';
 import { scheduleDailyMaintenance } from './scheduler.js';
 import { attachUser, registerAuthRoutes, requireAuth } from './auth.js';
 import { loadHttpsOptions } from './tls.js';
@@ -487,14 +487,14 @@ app.get('/api/jobs/:id/download-all', async (req, res) => {
 
 app.post('/api/jobs', async (req, res) => {
   const url = String(req.body?.url || '').trim();
-  if (!url || !isYouTubeMusicUrl(url)) {
+  if (!url || !isYouTubeUrl(url)) {
     return res.status(400).json({
-      error: 'Please provide a valid https://music.youtube.com URL'
+      error: 'Please provide a valid YouTube or YouTube Music URL'
     });
   }
 
   try {
-    const job = await createJob(url, req.user, { metadataOnly: req.body?.metadataOnly });
+    const job = await createJob(url, req.user, { metadataOnly: req.body?.metadataOnly, downloadType: req.body?.downloadType });
     linkLibraryJob(req.user.id, job, getLibraryJobs(req.user));
     return res.status(202).json(job);
   } catch (error) {

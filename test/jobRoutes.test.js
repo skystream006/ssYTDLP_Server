@@ -697,6 +697,32 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(mediaResult.body.outputDir, metadataResult.body.outputDir);
   assert.equal((await call(`/api/jobs/${metadataId}`, 'DELETE', credentials.Owner[0])).status, 204);
 
+  const videoUrl = 'https://www.youtube.com/watch?v=video&list=video-playlist';
+  const invalidFormat = await call('/api/jobs', 'POST', credentials.Owner[0], { url: videoUrl, downloadType: 'unknown' });
+  assert.equal(invalidFormat.status, 400);
+  assert.match(invalidFormat.body.error, /downloadType/);
+  assert.equal((await call('/api/jobs', 'POST', credentials.Owner[0], { url: 'https://example.com/video', downloadType: 'video' })).status, 400);
+  const videoJob = await call('/api/jobs', 'POST', credentials.Owner[0], { url: videoUrl, downloadType: 'video' });
+  assert.equal(videoJob.status, 202, videoJob.text);
+  assert.equal(videoJob.body.downloadType, 'video');
+  assert.equal(videoJob.body.isPlaylist, true);
+  const videoResult = await waitForJob(videoJob.body.id, credentials.Owner[0]);
+  assert.match(videoResult.body.command, /--merge-output-format mp4/);
+  assert.doesNotMatch(videoResult.body.command, /--extract-audio/);
+  assert.equal((await call('/api/jobs', 'POST', credentials.Owner[0], { url: videoUrl, downloadType: 'video' })).status, 409);
+  const audioJob = await call('/api/jobs', 'POST', credentials.Owner[0], { url: videoUrl });
+  assert.equal(audioJob.status, 202, audioJob.text);
+  assert.equal(audioJob.body.downloadType, 'audio');
+  await waitForJob(audioJob.body.id, credentials.Owner[0]);
+  for (const job of [videoJob.body, audioJob.body]) {
+    assert.equal((await call(`/api/jobs/${job.id}`, 'DELETE', credentials.Owner[0])).status, 204);
+  }
+  const shortJob = await call('/api/jobs', 'POST', credentials.Owner[0], { url: 'https://youtu.be/short-video', downloadType: 'video' });
+  assert.equal(shortJob.status, 202, shortJob.text);
+  assert.equal(shortJob.body.isPlaylist, false);
+  await waitForJob(shortJob.body.id, credentials.Owner[0]);
+  assert.equal((await call(`/api/jobs/${shortJob.body.id}`, 'DELETE', credentials.Owner[0])).status, 204);
+
   const upload = async (fields, files, headers = credentials.Owner[0]) => {
     const form = new FormData();
     for (const [key, value] of Object.entries(fields)) form.set(key, value);

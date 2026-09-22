@@ -130,7 +130,11 @@ h1 { margin: 0; max-width: 780px; font: 600 48px/1.05 'Newsreader', serif; overf
 .create-copy h2, .section-title h2 { margin: 0; font: 600 22px 'Newsreader', serif; }
 .create-copy p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .create-panel form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
-.job-metadata-only { grid-column: 1 / -1; grid-row: 2; display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+.job-download-options { grid-column: 1 / -1; grid-row: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.job-download-type { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.job-download-type select { min-width: 0; max-width: 100%; min-height: 44px; padding: 0 10px; border: 1px solid var(--line); color: var(--ink); background: var(--field); }
+.job-download-type select:focus-visible { outline: 2px solid var(--royal); outline-offset: 2px; }
+.job-metadata-only { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
 .job-metadata-only input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--royal); }
 .url-field { flex: 1; min-width: 0; height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 14px; border: 1px solid var(--line); background: var(--field); }
 .url-field:focus-within { border-color: var(--royal); outline: 2px solid rgba(95, 127, 240, .22); }

@@ -229,7 +229,7 @@ async function listDownloadedFiles(folderPath) {
 function inferPlaylistTitle(job) {
   const folderTitle = (job.folderName || '').replace(/_song_[0-9a-f-]{36}$/i, '');
   if (folderTitle && !/^song_[0-9a-f-]{36}$/i.test(folderTitle)) return folderTitle.replaceAll('_', ' ');
-  const song = (job.files || []).find(isSongFile);
+  const song = (job.files || []).find(isPlayableFile);
   return song ? path.basename(song, path.extname(song)) : 'Untitled playlist';
 }
 
@@ -258,13 +258,14 @@ async function getSourceMetadata(url, denoPath, isPlaylist) {
   return parsePlaylistMetadata(stdout);
 }
 
-function newJob(url, initiatedBy, metadataOnly = false) {
+function newJob(url, initiatedBy, metadataOnly = false, downloadType = 'audio') {
   const id = randomSongFolderName();
   const now = new Date().toISOString();
   const job = {
     id,
     url,
     metadataOnly,
+    downloadType,
     initiatedBy,
     contributors: [],
     isPlaylist: isPlaylistUrl(url),
@@ -378,13 +379,16 @@ async function executeJob(job) {
     '--no-overwrites',
     '--download-archive',
     path.join(job.outputDir, downloadArchiveName),
-    '--format',
-    'bestaudio',
-    '--extract-audio',
-    '--audio-format',
-    'mp3',
-    '--audio-quality',
-    '160K',
+    ...(job.downloadType === 'video' ? [
+      '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best',
+      '--merge-output-format', 'mp4',
+      '--remux-video', 'mp4'
+    ] : [
+      '--format', 'bestaudio',
+      '--extract-audio',
+      '--audio-format', 'mp3',
+      '--audio-quality', '160K'
+    ]),
     '--ffmpeg-location',
     ffmpegLocation,
     '--js-runtimes',
@@ -472,20 +476,25 @@ export function isUpdateInProgress() {
   return updateGate !== null;
 }
 
-export async function createJob(url, user = null, { metadataOnly = false } = {}) {
+export async function createJob(url, user = null, { metadataOnly = false, downloadType = 'audio' } = {}) {
   if (metadataOnly !== undefined && typeof metadataOnly !== 'boolean') {
     throw Object.assign(new Error('metadataOnly must be a boolean'), { statusCode: 400 });
   }
+  if (downloadType !== 'audio' && downloadType !== 'video') {
+    throw Object.assign(new Error('downloadType must be audio or video'), { statusCode: 400 });
+  }
   await ensureOutputRoot();
   const sourceUrl = url.trim();
-  const job = database.transaction(() => createJobRecord(sourceUrl, user, metadataOnly)).immediate();
+  const job = database.transaction(() => createJobRecord(sourceUrl, user, metadataOnly, downloadType)).immediate();
   jobs.set(job.id, job);
   startJob(job);
   return job;
 }
 
-function createJobRecord(sourceUrl, user, metadataOnly) {
-  const existingJob = database.prepare('SELECT id, status, data FROM jobs WHERE url = ? ORDER BY created_at DESC LIMIT 1').get(sourceUrl);
+function createJobRecord(sourceUrl, user, metadataOnly, downloadType) {
+  const existingJob = database.prepare(`SELECT id, status, data FROM jobs WHERE url = ?
+    AND COALESCE(json_extract(data, '$.downloadType'), 'audio') = ?
+    ORDER BY created_at DESC LIMIT 1`).get(sourceUrl, downloadType);
   if (existingJob) {
     const error = new Error('This source URL already has a job');
     error.statusCode = 409;
@@ -500,7 +509,7 @@ function createJobRecord(sourceUrl, user, metadataOnly) {
     };
     throw error;
   }
-  const job = newJob(sourceUrl, user ? { id: user.id, name: user.name } : null, metadataOnly);
+  const job = newJob(sourceUrl, user ? { id: user.id, name: user.name } : null, metadataOnly, downloadType);
   writeJob(database, job);
   return job;
 }

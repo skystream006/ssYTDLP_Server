@@ -1,7 +1,7 @@
-export async function submitJobUrl(url, { request, user, confirm, library = false, metadataOnly = false }) {
+export async function submitJobUrl(url, { request, user, confirm, library = false, metadataOnly = false, downloadType = 'audio' }) {
   try {
     const job = await request('/api/jobs', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: url.trim(), metadataOnly })
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: url.trim(), metadataOnly, downloadType })
     });
     return { job, created: true };
   } catch (error) {
@@ -19,7 +19,7 @@ export async function submitJobUrl(url, { request, user, confirm, library = fals
       return accepted ? { job: previous, created: false } : null;
     }
     if (!await confirm({ title: 'Job already exists',
-      message: `This URL was used in job ${previous.playlistTitle || previous.id}. Rerun it, keeping existing songs and downloading missing ones?`, action: 'rerun' })) return null;
+      message: `This URL was used in job ${previous.playlistTitle || previous.id}. Rerun it, keeping existing files and downloading missing ones?`, action: 'rerun' })) return null;
     const job = await request(`/api/jobs/${encodeURIComponent(previous.id)}/rerun`, { method: 'POST' });
     return { job, created: false };
   }

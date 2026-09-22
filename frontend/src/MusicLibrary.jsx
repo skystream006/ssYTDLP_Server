@@ -1,15 +1,15 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ArrowRightLeft, Check, ChevronDown, ChevronRight, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, Link, ListChecks, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { ArrowRightLeft, CalendarClock, Check, ChevronDown, ChevronRight, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, Link, ListChecks, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Save, Search, Trash2, X } from 'lucide-react';
 import MusicPlayer, { usePlayback } from './MusicPlayer.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import { Upload } from 'lucide-react';
 import { getPlaylistIds, songKey } from '../../src/library.js';
 import { submitJobUrl } from './jobSubmission.js';
-import { canManageJob, canModifyJob, MetadataDialog, TranscriptionDialog } from './SongActions.jsx';
+import { canManageJob, canModifyJob, formatBytes, MetadataDialog, TranscriptionDialog } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { replaceURL } from './navigation.js';
 
-export function ExportLibraryDialog({ onClose }) {
+export function ExportLibraryDialog({ request, onClose }) {
   const dialogRef = useRef(null);
   const headingId = useId();
   const formatId = useId();
@@ -18,20 +18,141 @@ export function ExportLibraryDialog({ onClose }) {
   const destinationHelpId = useId();
   const downloadHelpId = useId();
   const [format, setFormat] = useState('itunes');
+  const [destination, setDestination] = useState('');
+  const [view, setView] = useState('export');
+  const [source, setSource] = useState('new');
+  const [status, setStatus] = useState(null);
+  const [enabled, setEnabled] = useState(false);
+  const [frequency, setFrequency] = useState('daily');
+  const [time, setTime] = useState('03:00');
+  const [weekday, setWeekday] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [notice, setNotice] = useState('');
+  const pendingExport = useRef(false);
+  const operation = useRef(0);
+  const mounted = useRef(false);
+  const settingsNeeded = view === 'schedule' ? enabled : source === 'new';
+  const locked = busy || !status;
+  const running = status?.running;
+  const latest = status?.latest;
+  const tabsId = useId();
 
   useEffect(() => {
     const dialog = dialogRef.current;
     const previousFocus = document.activeElement;
     dialog.showModal();
     dialog.querySelector('select').focus();
-    return () => { dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
+    const closeOnEscape = (event) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('keydown', closeOnEscape);
+      dialog.close();
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    let timer;
+    let initialized = false;
+    mounted.current = true;
+    async function load() {
+      const revision = operation.current;
+      try {
+        const result = await request('/api/library/backup');
+        if (!active || revision !== operation.current) return;
+        setStatus(result);
+        setLoadError('');
+        if (!initialized) {
+          initialized = true;
+          setEnabled(result.schedule.enabled);
+          setFrequency(result.schedule.frequency || 'daily');
+          setTime(result.schedule.time || '03:00');
+          setWeekday(result.schedule.weekday || 0);
+          setFormat(result.schedule.format || result.latest?.format || 'itunes');
+          setDestination(result.schedule.destination || result.latest?.destination || '');
+          setSource(result.latest ? 'latest' : 'new');
+        }
+        if (pendingExport.current && !result.running) {
+          pendingExport.current = false;
+          if (!result.error && result.latest) { setSource('latest'); setNotice('Export ready.'); }
+        }
+      } catch (requestError) { if (active) setLoadError(requestError.message); }
+      finally { if (active) timer = setTimeout(load, 3000); }
+    }
+    void load();
+    return () => { active = false; mounted.current = false; clearTimeout(timer); };
+  }, [request]);
+
+  async function mutate(endpoint, body, exporting = false) {
+    if (busy || !status) return;
+    operation.current += 1;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request(endpoint, { method: endpoint.endsWith('/schedule') ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!mounted.current) return;
+      setStatus(result);
+      pendingExport.current = exporting;
+      if (endpoint.endsWith('/schedule')) setNotice('Schedule saved.');
+    } catch (saveError) { if (mounted.current) setError(saveError.message); }
+    finally { operation.current += 1; if (mounted.current) setBusy(false); }
+  }
+
+  function submit(event) {
+    if (view === 'export' && source === 'latest') return;
+    event.preventDefault();
+    if (view === 'schedule') void mutate('/api/library/backup/schedule', { enabled, frequency, time, weekday, format, destination });
+    else void mutate('/api/library/backup', { format, destination }, true);
+  }
 
   return <dialog ref={dialogRef} className="confirmation-dialog folder-dialog export-library-dialog" aria-labelledby={headingId}
     onCancel={(event) => { event.preventDefault(); onClose(); }}>
-    <form action="/api/library/export" method="get" target="_blank" rel="noopener">
+    <form action="/api/library/export" method="get" target="_blank" rel="noopener" onSubmit={submit}>
       <div className="folder-dialog-heading"><h2 id={headingId}>Export library</h2>
         <button className="music-icon-button" type="button" title="Close" aria-label="Close export library" onClick={onClose}><X size={18} /></button></div>
+      <div className="lyrics-tabs backup-tabs" role="tablist" aria-label="Library export and backups">
+        {['export', 'schedule'].map((tab) => <button key={tab} id={`${tabsId}-${tab}`} type="button" role="tab" aria-selected={view === tab}
+          aria-controls={`${tabsId}-panel`} tabIndex={view === tab ? 0 : -1}
+          onKeyDown={(event) => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            const next = event.key === 'Home' ? 'export' : event.key === 'End' ? 'schedule' : view === 'export' ? 'schedule' : 'export';
+            setView(next);
+            setNotice('');
+            dialogRef.current.querySelector(`[id="${tabsId}-${next}"]`).focus();
+          }} onClick={() => { setView(tab); setNotice(''); }}>
+          {tab === 'export' ? <Download size={16} /> : <CalendarClock size={16} />}{tab === 'export' ? 'Export' : 'Schedule'}</button>)}
+      </div>
+      <div id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${view}`}>
+      {!status && !loadError && <p role="status">Loading backup...</p>}
+      {latest && <dl className="backup-summary"><dt>Latest backup</dt><dd>{new Date(latest.createdAt).toLocaleString()}</dd>
+        <dt>Format</dt><dd>{latest.format === 'itunes' ? 'iTunes XML' : 'Android M3U8'}</dd>
+        <dt>Size</dt><dd>{formatBytes(latest.sizeBytes)}</dd>
+        {latest.destination && <><dt>Extraction folder</dt><dd>{latest.destination}</dd></>}</dl>}
+      {status && !latest && <p>No backup yet.</p>}
+      {running && <p className="backup-progress" role="status"><RefreshCw className="spin" size={17} />Creating backup...</p>}
+      {view === 'export' ? <>
+        <label htmlFor={`${tabsId}-source`}>Export source</label>
+        <select id={`${tabsId}-source`} name="source" value={source} disabled={locked} onChange={(event) => { setSource(event.target.value); setNotice(''); }}>
+          <option value="latest" disabled={!latest}>Latest export (backup)</option><option value="new">New export</option>
+        </select>
+      </> : <>
+        <label className="backup-enabled"><input type="checkbox" checked={enabled} disabled={locked} onChange={(event) => setEnabled(event.target.checked)} />Scheduled backups</label>
+        {enabled && <div className="backup-schedule-fields">
+          <label>Frequency<select value={frequency} disabled={locked} onChange={(event) => setFrequency(event.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label>
+          {frequency === 'weekly' && <label>Day<select value={weekday} disabled={locked} onChange={(event) => setWeekday(Number(event.target.value))}>
+            {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((day, index) => <option key={day} value={index}>{day}</option>)}
+          </select></label>}
+          <label>Time (UTC)<input type="time" required value={time} disabled={locked} onChange={(event) => setTime(event.target.value)} /></label>
+        </div>}
+        {status?.nextRunAt && <p>Next backup: {new Date(status.nextRunAt).toLocaleString()} (local time)</p>}
+      </>}
+      <fieldset className="backup-format-fields" hidden={!settingsNeeded} disabled={!settingsNeeded || locked}>
       <label htmlFor={formatId}>Export format</label>
       <select id={formatId} name="format" value={format} aria-describedby={instructionsId} onChange={(event) => setFormat(event.target.value)}>
         <option value="itunes">iTunes XML</option>
@@ -48,6 +169,7 @@ export function ExportLibraryDialog({ onClose }) {
       <div hidden={format !== 'itunes'}>
         <label htmlFor={destinationId}>Absolute extraction folder on your computer</label>
         <input id={destinationId} name="destination" type="text" required={format === 'itunes'} disabled={format !== 'itunes'}
+          value={destination} onChange={(event) => setDestination(event.target.value)}
           pattern={String.raw`(?:[A-Za-z]:(?:\\|/)|/(?!/))[^\r\n]*`} aria-describedby={destinationHelpId}
           title="Enter an absolute local path, such as C:\Users\YourName\Music\Export or /Users/YourName/Music/Export. File URLs and network paths are not supported."
           placeholder={'C:\\Users\\YourName\\Music\\Export or /Users/YourName/Music/Export'} />
@@ -55,9 +177,18 @@ export function ExportLibraryDialog({ onClose }) {
           This is used to generate the correct file URLs in Library.xml; it does not select or create a folder.
           Do not use file URLs or UNC/network paths. If you move the extracted folder later, export again with the new destination.</p>
       </div>
-      <p id={downloadHelpId}>Your browser downloads the ZIP directly. Export errors open in a separate tab; check that tab if no download starts.</p>
+      </fieldset>
+      </div>
+      {(error || loadError || status?.error) && <p className="notice error" role="alert">{error || loadError || status.error}</p>}
+      {notice && <p role="status">{notice}</p>}
+      <p id={downloadHelpId} hidden={view !== 'export' || source !== 'latest'}>Your browser downloads the ZIP directly. Export errors open in a separate tab; check that tab if no download starts.</p>
       <div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button>
-        <button className="primary-button" type="submit" aria-describedby={downloadHelpId}><Download size={17} />Download ZIP</button></div>
+        {view === 'schedule' && <button className="secondary-button" type="button" disabled={locked || running || !enabled}
+          onClick={(event) => { if (event.currentTarget.form.reportValidity()) void mutate('/api/library/backup', { format, destination }); }}><Save size={17} />Back up now</button>}
+        <button className="primary-button" type="submit" aria-describedby={view === 'export' && source === 'latest' ? downloadHelpId : undefined}
+          disabled={locked || (view === 'export' && (source === 'new' ? running : !latest))}>
+          {busy ? <RefreshCw className="spin" size={17} /> : view === 'schedule' ? <Save size={17} /> : <Download size={17} />}
+          {view === 'schedule' ? 'Save schedule' : source === 'latest' ? 'Download ZIP' : 'Create export'}</button></div>
     </form>
   </dialog>;
 }
@@ -213,6 +344,7 @@ function FolderDialog({ folder, parentId, folders, saving, onSave, onClose }) {
 
 export default function MusicLibrary({ user, request, confirm }) {
   const playback = usePlayback();
+  const sidebarRef = useRef(null);
   const [editingMetadata, setEditingMetadata] = useState(null);
   const [library, setLibrary] = useState(null);
   const [selectedId, setSelectedId] = useState(new URLSearchParams(window.location.search).get('playlist'));
@@ -270,6 +402,21 @@ export default function MusicLibrary({ user, request, confirm }) {
   const jobsRevision = JSON.stringify((library?.jobs || []).map((job) => [job.id, job.updatedAt, job.songCount]));
   const playlistSelection = entries.filter((entry) => entry.type === 'playlist' && selectedPlaylists.has(entry.id));
   const songSelection = (tracks || []).filter((track) => selectedSongs.has(songKey(track)));
+
+  useEffect(() => {
+    const sidebar = sidebarRef.current;
+    const home = sidebar.closest('.music-home');
+    const resize = () => {
+      if (!sidebar.getClientRects().length) return;
+      sidebar.style.setProperty('--playlist-top', `${sidebar.getBoundingClientRect().top + window.scrollY}px`);
+    };
+    const observer = new ResizeObserver(resize);
+    observer.observe(home);
+    observer.observe(document.querySelector('.topbar'));
+    window.addEventListener('resize', resize);
+    resize();
+    return () => { observer.disconnect(); window.removeEventListener('resize', resize); };
+  }, [sidebarOpen]);
 
   useEffect(() => {
     if (trackSearch === debouncedTrackSearch) return;
@@ -625,7 +772,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     })}</ul>;
   }
 
-  const sidebar = <aside className="library-sidebar" aria-label="Playlists">
+  const sidebar = <aside ref={sidebarRef} className="library-sidebar" aria-label="Playlists">
     <div className="library-sidebar-heading"><h2>Playlists <small>{jobs.length}</small></h2>
       <div className="library-sidebar-tools"><button className="music-icon-button" type="button" title="Select playlists" aria-label="Select playlists" aria-pressed={selectingPlaylists}
         disabled={!library || saving} onClick={() => { setSelectingPlaylists(!selectingPlaylists); setSelectedPlaylists(new Set()); setReordering(false); }}><ListChecks size={19} /></button>
@@ -692,7 +839,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     {renamingPlaylist && <RenamePlaylistDialog playlist={renamingPlaylist} saving={saving} onSave={renamePlaylist} onClose={() => setRenamingPlaylist(null)} />}
     {addingPlaylist && <AddPlaylistDialog user={user} request={request} confirm={confirm} onAdded={playlistAdded} onClose={() => setAddingPlaylist(false)} />}
     {importing && <ImportMusic request={request} initialPlaylistId={selected?.type === 'playlist' ? selectedId : ''} onClose={() => setImporting(false)} onImported={() => setRefresh((value) => value + 1)} />}
-    {exportingLibrary && <ExportLibraryDialog onClose={() => setExportingLibrary(false)} />}
+    {exportingLibrary && <ExportLibraryDialog request={request} onClose={() => setExportingLibrary(false)} />}
     {movingSong && <LibraryDestinationDialog title="Move song" summary={movingSong.name} label="Move song" destinations={entries.filter((entry) => entry.type === 'playlist' && entry.id !== movingSong.playlistId).map((entry) => ({
       id: entry.id, title: `${entry.parentId ? `${folderPath(entryMap.get(entry.parentId))} / ` : ''}${entryTitle(entry)}`
     }))} onSave={(destination) => moveSong(movingSong, destination)} onClose={() => setMovingSong(null)} />}

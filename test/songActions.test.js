@@ -94,7 +94,12 @@ test('library export uses a native GET download in a separate tab', () => {
   assert.match(html, /<select [^>]*name="format"/);
   assert.match(html, /<option value="itunes" selected="">iTunes XML<\/option>/);
   assert.match(html, /<option value="android">Android M3U8 \(compatible players\)<\/option>/);
-  assert.match(html, /type="submit"[^>]*>.*Download ZIP<\/button>/);
+  assert.match(html, /type="submit"[^>]*disabled=""[^>]*>.*Create export<\/button>/);
+  assert.match(html, /name="source"/);
+  assert.match(html, /value="latest" disabled="">Latest export \(backup\)/);
+  assert.match(html, /value="new" selected="">New export/);
+  assert.match(html, /role="tab" aria-selected="false"[^>]*>.*Schedule<\/button>/);
+  assert.match(html, /Loading backup/);
   assert.match(html, /Export errors open in a separate tab/);
 });
 

@@ -48,3 +48,20 @@ export function scheduleDailyMaintenance(hour = 3, minute = 0) {
     }
   };
 }
+
+export function scheduleLibraryBackups(service) {
+  let timer;
+  let cancelled = false;
+  async function tick() {
+    try { await service.runDue(); }
+    catch (error) { console.error('Scheduled library backup failed:', error.message); }
+    finally {
+      if (!cancelled) {
+        timer = setTimeout(tick, 60_000);
+        timer.unref?.();
+      }
+    }
+  }
+  void tick();
+  return () => { cancelled = true; clearTimeout(timer); };
+}

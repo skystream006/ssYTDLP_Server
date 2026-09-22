@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
 import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setSongMetadata, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
@@ -13,11 +14,11 @@ import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
 import { findNoVocals, getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from './libraryStore.js';
-import { exportOptions, prepareLibraryExport, streamLibraryExport } from './libraryExport.js';
+import { createLibraryBackupService } from './libraryBackup.js';
 import { getImportProgress, handleLibraryImport, listLocalImportFiles } from './libraryImport.js';
 import { getSystemHealth } from './health.js';
 import { isYouTubeUrl } from './utils.js';
-import { scheduleDailyMaintenance } from './scheduler.js';
+import { scheduleDailyMaintenance, scheduleLibraryBackups } from './scheduler.js';
 import { attachUser, registerAuthRoutes, requireAuth } from './auth.js';
 import { loadHttpsOptions } from './tls.js';
 
@@ -117,6 +118,11 @@ function getLibraryJobs(user) {
     || job.contributors?.some((contributor) => contributor.id === user.id));
 }
 
+const libraryBackups = createLibraryBackupService({ loadLibrary(userId) {
+  const jobs = getLibraryJobs({ id: userId });
+  return { library: getLibrary(userId, jobs), jobs };
+} });
+
 app.get('/api/library', (req, res) => {
   const jobs = getLibraryJobs(req.user);
   const library = getLibrary(req.user.id, jobs);
@@ -151,16 +157,45 @@ app.post('/api/library/entries', (req, res) => {
   }
 });
 
-app.get('/api/library/export', async (req, res) => {
+app.get('/api/library/backup', (req, res) => {
+  res.json(libraryBackups.getStatus(req.user.id));
+});
+
+app.put('/api/library/backup/schedule', (req, res) => {
   try {
-    const options = exportOptions(req.query.format, req.query.destination);
-    const jobs = getLibraryJobs(req.user);
-    const library = getLibrary(req.user.id, jobs);
-    const prepared = await prepareLibraryExport(library, jobs, options);
-    if (!res.destroyed) streamLibraryExport(res, prepared, options.format);
+    res.json(libraryBackups.saveSchedule(req.user.id, req.body));
   } catch (error) {
-    res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Unable to export library.' });
+    res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Unable to save backup schedule.' });
   }
+});
+
+app.post('/api/library/backup', (req, res) => {
+  try {
+    void libraryBackups.start(req.user.id, req.body).catch((error) => console.error('Library backup failed:', error.message));
+    res.status(202).json(libraryBackups.getStatus(req.user.id));
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Unable to start library backup.' });
+  }
+});
+
+app.get('/api/library/export', async (req, res) => {
+  let download;
+  try {
+    const source = req.query.source || 'new';
+    if (!['latest', 'new'].includes(source)) return res.status(400).json({ error: 'Choose the latest backup or a new export.' });
+    if (source === 'new') await libraryBackups.start(req.user.id, req.query);
+    if (res.destroyed) return;
+    download = await libraryBackups.openLatest(req.user.id);
+    res.attachment(`ssMusic-${download.latest.format}.zip`);
+    res.type('application/zip');
+    res.set('Content-Length', String(download.latest.sizeBytes));
+    await pipeline(download.handle.createReadStream(), res);
+  } catch (error) {
+    if (res.destroyed || res.headersSent) return;
+    res.removeHeader('Content-Disposition');
+    res.removeHeader('Content-Length');
+    res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Unable to export library.' });
+  } finally { await download?.release(); }
 });
 
 app.post('/api/library/links', (req, res) => {
@@ -625,3 +660,4 @@ protectServer(https.createServer(httpsOptions, app)).listen(httpsPort, () => {
 });
 
 scheduleDailyMaintenance(3, 0);
+scheduleLibraryBackups(libraryBackups);

@@ -133,6 +133,15 @@ export function openDatabase() {
         CREATE INDEX IF NOT EXISTS jobs_url ON jobs(url, created_at DESC);
         CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created_at DESC);
         CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status);
+        CREATE TABLE IF NOT EXISTS library_backups (
+          user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+          schedule TEXT NOT NULL DEFAULT '{"enabled":false}' CHECK(json_valid(schedule)),
+          next_run_at TEXT,
+          latest TEXT CHECK(latest IS NULL OR json_valid(latest)),
+          running INTEGER NOT NULL DEFAULT 0,
+          last_attempt_at TEXT,
+          last_error TEXT
+        );
       `);
       if (!database.pragma('table_info(user_preferences)').some((column) => column.name === 'theme_mode')) {
         database.exec("ALTER TABLE user_preferences ADD COLUMN theme_mode TEXT CHECK(theme_mode IN ('light', 'dark'))");

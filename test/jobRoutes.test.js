@@ -51,6 +51,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   process.env.AUTH_STORE_PATH = path.join(directory, 'auth.json');
   process.env.JOB_STORE_PATH = path.join(directory, 'jobs.json');
   process.env.IMPORT_STORAGE_ROOT = path.join(directory, 'import-storage');
+  process.env.LIBRARY_BACKUP_ROOT = path.join(directory, 'library-backups');
   await fs.mkdir(path.join(directory, 'public'));
   await fs.writeFile(path.join(directory, 'public', 'index.html'), '<!doctype html><title>Test app shell</title>');
   const store = await import('../src/authStore.js');
@@ -171,7 +172,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   for (const route of ['/', '/app-login', '/job', '/job/music', '/job/music/player']) {
     assert.equal((await call(route)).status, 200);
   }
-  for (const route of ['/api/library', '/api/library/tracks', '/api/library/export?format=android', '/api/preferences']) {
+  for (const route of ['/api/library', '/api/library/tracks', '/api/library/export?format=android', '/api/library/backup', '/api/library/export?source=latest', '/api/preferences']) {
     assert.equal((await call(route)).status, 401);
   }
   for (const route of ['/api/jobs', '/api/jobs/music/files', '/api/library', '/api/library/tracks', '/api/preferences']) {
@@ -219,6 +220,10 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   };
   const savedLibrary = await call('/api/library', 'PUT', credentials.Owner[1], organized);
   assert.equal(savedLibrary.status, 200);
+  assert.equal((await call('/api/library/export?source=latest', 'GET', credentials.Owner[0])).status, 404);
+  assert.equal((await call('/api/library/backup', 'POST', {}, { format: 'android' })).status, 401);
+  assert.equal((await call('/api/library/backup/schedule', 'PUT', {}, { enabled: false })).status, 401);
+  assert.equal((await call('/api/library/export?source=invalid', 'GET', credentials.Owner[0])).status, 400);
   assert.equal((await call('/api/library/export?format=invalid', 'GET', credentials.Owner[0])).status, 400);
   assert.equal((await call('/api/library/export?format=itunes', 'GET', credentials.Owner[0])).status, 400);
   for (const headers of credentials.Owner) {
@@ -249,6 +254,32 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const itunesZip = new AdmZip(itunes.buffer);
   assert.match(itunesZip.readAsText('Library.xml'), /file:\/\/\/C:\/Music\/My%20Library\/Music\//);
   assert.match(itunesZip.readAsText('Library.xml'), /<key>Parent Persistent ID<\/key>/);
+  const latest = await call('/api/library/export?source=latest', 'GET', credentials.Owner[0]);
+  assert.deepEqual(latest.buffer, itunes.buffer);
+  assert.match(latest.headers['content-disposition'], /ssMusic-itunes\.zip/);
+  assert.equal(latest.headers['cache-control'], 'no-store');
+  const schedule = await call('/api/library/backup/schedule', 'PUT', credentials.Owner[1], {
+    enabled: true, frequency: 'weekly', weekday: 1, time: '04:30', format: 'android', userId: users.Other.id
+  });
+  assert.equal(schedule.status, 200);
+  assert.equal(schedule.body.schedule.frequency, 'weekly');
+  assert.equal(schedule.body.latest.format, 'itunes');
+  assert.ok(schedule.body.nextRunAt);
+  assert.equal((await call('/api/library/backup', 'GET', credentials.Other[0])).body.schedule.enabled, false);
+  const otherBackup = await call(`/api/library/export?source=latest&userId=${users.Owner.id}`, 'GET', credentials.Other[0]);
+  assert.deepEqual(new AdmZip(otherBackup.buffer).getEntries().map((entry) => entry.entryName), ['IMPORT.txt']);
+  assert.equal((await call('/api/library/backup', 'POST', credentials.Owner[0], { format: 'invalid' })).status, 400);
+  assert.equal((await call('/api/library/backup', 'POST', credentials.Owner[0], { format: 'android' })).status, 202);
+  let backup;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    backup = await call('/api/library/backup', 'GET', credentials.Owner[0]);
+    assert.equal(backup.status, 200);
+  } while (backup.body.running);
+  assert.equal(backup.body.error, null);
+  assert.equal(backup.body.latest.format, 'android');
+  assert.notEqual(backup.body.latest.id, schedule.body.latest.id);
+  assert.equal((await call('/api/library/backup/schedule', 'PUT', credentials.Owner[0], { enabled: false })).body.nextRunAt, null);
   assert.deepEqual((await call('/api/library', 'GET', credentials.Owner[0])).body.entries, organized.entries);
   assert.equal((await call('/api/library', 'PUT', credentials.Owner[0], organized)).status, 409);
   assert.deepEqual((await call('/api/preferences', 'GET', credentials.Owner[0])).body, { theme: 'royal-purple', mode: 'dark' });

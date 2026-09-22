@@ -223,8 +223,11 @@ Both endpoints require the same authentication as uploaded imports.
 
 ## Export your library
 
-Choose **Export library** on the music page, then **iTunes** or **Android (M3U8)**.
-The server downloads a ZIP containing your own and contributed library songs,
+Choose **Export library** on the music page. Select **Latest export (backup)** to
+download the saved ZIP without rebuilding it, or **New export**, then **iTunes**
+or **Android (M3U8)** and **Create export**. Generation runs on the server; when
+it completes, choose **Download ZIP**. Closing the dialog does not stop generation.
+The ZIP contains your own and contributed library songs,
 your personal playlists, and their saved song order (including moved songs and
 Individual Songs). Export includes downloaded audio only, not pending downloads.
 Original audio, embedded tags, lyrics and artwork are kept without transcoding.
@@ -248,8 +251,49 @@ validation errors appear in that tab.
   library import format**: playlist import, empty playlists, names and codec
   support depend on the player. Playlist folder hierarchy is not imported.
 
-The authenticated `GET /api/library/export?format=android` endpoint returns the
-ZIP. For iTunes use `format=itunes` and a URL-encoded `destination` parameter.
+Each user has **one latest backup**, shared by both export formats. Every successful
+new export or backup replaces it, even when switching formats. A failed run keeps
+the previous ZIP available. The latest backup retains its original format and
+iTunes extraction destination; choose a new export to change them. Existing
+downloads can finish while the next backup is created.
+
+### Scheduled backups
+
+In **Export library > Schedule**, enable **Scheduled backups**, choose **Daily** or
+**Weekly**, a time in **UTC** (and weekday for weekly runs), and the export format.
+iTunes also needs the extraction folder on your computer. Choose **Save schedule**;
+**Back up now** generates a backup immediately using the displayed format settings
+without starting a download. Saving a schedule does not run an immediate backup.
+The dialog shows the latest archive, next scheduled run in your browser's local
+time, progress, and the last backup error.
+
+Schedules persist in SQLite. The running server checks due schedules once per
+minute and runs one catch-up backup after downtime, not every missed interval.
+Only approved accounts are processed. A failed scheduled run is retried at the
+next scheduled time; use **Back up now** or **New export** for an immediate retry.
+At most two users' archives are generated concurrently, with one run per user.
+
+ZIPs are stored in `library-backups` beside the SQLite database (normally
+`data/library-backups`). Set `LIBRARY_BACKUP_ROOT` to an absolute server directory
+to override it. The client extraction folder is never used for server storage.
+Docker's default location is `/app/data/library-backups`, preserved by the existing
+`data` volume. An override must be on a persistent, writable mount. Keep enough
+space for both the previous ZIP and its replacement during generation; superseded
+files are removed after active downloads finish. Interrupted partial files are
+cleaned on a subsequent backup. These are audio-library exports, not complete
+server/database backups or versioned/off-site backups.
+
+The authenticated `GET /api/library/export?source=latest` endpoint returns the
+saved ZIP. `GET /api/library/export?format=android` generates a new backup and
+returns it (the default source is `new`). For iTunes use `format=itunes` and a
+URL-encoded `destination` parameter. The dialog uses `POST /api/library/backup`
+with `{ "format": "android" }` (or iTunes plus `destination`) to start generation
+asynchronously with a `202` response, and polls `GET /api/library/backup` for
+`running`, `latest`, `error`, `schedule`, and `nextRunAt`. Save scheduling with
+`PUT /api/library/backup/schedule`, for example
+`{ "enabled": true, "frequency": "weekly", "weekday": 1, "time": "03:00", "format": "android" }`.
+Weekdays are `0` (Sunday) through `6` (Saturday); `{ "enabled": false }` disables
+the schedule without deleting its backup.
 Session cookies and the existing API token authentication are supported. The
 destination is only written into the XML, never used as a server output path.
 Missing or unsafe audio files fail the export instead of leaving broken playlist
@@ -328,8 +372,8 @@ hostname later requires registering passkeys for the new hostname. When changing
 `HTTPS_WEB_PORT`, also update the port in `PASSKEY_ORIGIN`. Apply configuration changes
 with `docker compose up -d`.
 
-The `data` named volume preserves SQLite accounts, sessions, job history, and generated
-TLS certificates; `output` preserves downloaded media and download archives. They
+The `data` named volume preserves SQLite accounts, sessions, job history, library
+backup ZIPs, and generated TLS certificates; `output` preserves downloaded media and download archives. They
 survive container recreation and `docker compose down`. **Do not use
 `docker compose down -v` unless you intend to delete all stored data and downloads.**
 Back up both volumes while the app is stopped. Local `data`, `output`, `.env`, and

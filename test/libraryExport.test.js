@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import NodeID3 from 'node-id3';
-import { exportOptions, prepareLibraryExport } from '../src/libraryExport.js';
+import AdmZip from 'adm-zip';
+import { exportOptions, prepareLibraryExport, writeLibraryExport } from '../src/libraryExport.js';
 import { individualSongsId, songKey } from '../src/library.js';
 
 async function fixture(context) {
@@ -40,6 +41,23 @@ async function fixture(context) {
   };
   return { root, library, jobs };
 }
+
+test('disk export completes a readable ZIP and removes partial output on failure', async (context) => {
+  const { root, library, jobs } = await fixture(context);
+  const prepared = await prepareLibraryExport(library, jobs, exportOptions('android'));
+  const target = path.join(root, 'backup.zip');
+  await writeLibraryExport(target, prepared);
+  const archive = new AdmZip(await fs.readFile(target));
+  assert.equal(archive.getEntries().length, prepared.files.length + prepared.documents.length);
+  for (const file of prepared.files) assert.deepEqual(archive.readFile(file.archivePath), await fs.readFile(file.filePath));
+  const original = await fs.readFile(target);
+  await assert.rejects(() => writeLibraryExport(target, prepared), { code: 'EEXIST' });
+  assert.deepEqual(await fs.readFile(target), original);
+  await fs.unlink(prepared.files[0].filePath);
+  const partial = path.join(root, 'partial.zip');
+  await assert.rejects(() => writeLibraryExport(partial, prepared));
+  await assert.rejects(() => fs.stat(partial), { code: 'ENOENT' });
+});
 
 test('export format and absolute client destinations are validated and URL encoded', () => {
   for (const format of [undefined, 'zip', ['itunes'], {}]) {

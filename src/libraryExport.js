@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { pipeline } from 'node:stream/promises';
 import { ZipArchive } from 'archiver';
 import { getPlaylistIds, getPlaylistTracks, songKey } from './library.js';
 import { readSongMetadata } from './music.js';
@@ -141,24 +142,21 @@ export async function prepareLibraryExport(library, jobs, options) {
   return { files, documents };
 }
 
-export function streamLibraryExport(res, prepared, format) {
+export async function writeLibraryExport(filePath, prepared) {
+  const handle = await fs.open(filePath, 'wx', 0o600);
+  const output = handle.createWriteStream();
   const archive = new ZipArchive({ zlib: { level: 6 } });
-  const fail = () => {
-    archive.abort();
-    if (res.destroyed) return;
-    if (res.headersSent) res.destroy();
-    else {
-      res.removeHeader('Content-Disposition');
-      res.status(500).json({ error: 'Unable to generate library ZIP. Please try again.' });
-    }
-  };
-  archive.on('error', fail);
-  archive.on('warning', fail);
-  res.on('close', () => archive.abort());
-  res.attachment(`ssMusic-${format}.zip`);
-  res.type('application/zip');
-  archive.pipe(res);
-  for (const document of prepared.documents) archive.append(document.content, { name: document.name });
-  for (const file of prepared.files) archive.file(file.filePath, { name: file.archivePath });
-  void archive.finalize().catch(fail);
+  archive.on('warning', (error) => archive.destroy(error));
+  const writing = pipeline(archive, output);
+  try {
+    for (const document of prepared.documents) archive.append(document.content, { name: document.name });
+    for (const file of prepared.files) archive.file(file.filePath, { name: file.archivePath });
+    await Promise.all([writing, archive.finalize()]);
+  } catch (error) {
+    archive.destroy();
+    output.destroy();
+    await writing.catch(() => {});
+    await fs.rm(filePath, { force: true });
+    throw error;
+  }
 }

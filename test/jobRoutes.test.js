@@ -269,7 +269,11 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const otherBackup = await call(`/api/library/export?source=latest&userId=${users.Owner.id}`, 'GET', credentials.Other[0]);
   assert.deepEqual(new AdmZip(otherBackup.buffer).getEntries().map((entry) => entry.entryName), ['IMPORT.txt']);
   assert.equal((await call('/api/library/backup', 'POST', credentials.Owner[0], { format: 'invalid' })).status, 400);
-  assert.equal((await call('/api/library/backup', 'POST', credentials.Owner[0], { format: 'android' })).status, 202);
+  const startedBackup = await call('/api/library/backup', 'POST', credentials.Owner[0], { format: 'android' });
+  assert.equal(startedBackup.status, 202);
+  assert.equal(startedBackup.body.running, true);
+  assert.deepEqual(startedBackup.body.progress,
+    { stage: 'preparing', processedSongs: 0, totalSongs: null, format: 'android' });
   let backup;
   do {
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -278,6 +282,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   } while (backup.body.running);
   assert.equal(backup.body.error, null);
   assert.equal(backup.body.latest.format, 'android');
+  assert.equal(backup.body.latest.songCount, 7);
+  assert.equal(backup.body.progress, null);
   assert.notEqual(backup.body.latest.id, schedule.body.latest.id);
   assert.equal((await call('/api/library/backup/schedule', 'PUT', credentials.Owner[0], { enabled: false })).body.nextRunAt, null);
   assert.deepEqual((await call('/api/library', 'GET', credentials.Owner[0])).body.entries, organized.entries);
@@ -824,7 +830,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   for (let offset = 0; offset < encodedAudio.length; offset += 417) encodedAudio.writeUInt32BE(0xfffb9000, offset);
   if (!canConvertWav) context.diagnostic('FFmpeg unavailable: using MP3 for HTTP imports; WAV conversion is covered by unit mocks.');
   const xml = buildPlist({ Tracks: { 1: { 'Track ID': 1, Location: `file:///Users/me/Music/${itunesSourceName}` } },
-    Playlists: [{ Name: 'iTunes favorites', 'Playlist Items': [{ 'Track ID': 1 }] }] });
+    Playlists: [{ Name: 'iTunes favorites', 'Playlist Items': [{ 'Track ID': 1 }] },
+      { Name: 'iTunes linked', 'Playlist Items': [{ 'Track ID': 1 }] }] });
   const mediaZip = new AdmZip();
   mediaZip.addFile(`Music/${itunesSourceName}`, canConvertWav ? audio : encodedAudio);
   const itunesFiles = [{ field: 'xml', name: 'Library.xml', data: xml }, { field: 'media', name: 'Media.zip', data: mediaZip.toBuffer() }];
@@ -833,6 +840,9 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(importedItunes.status, 201, importedItunes.text);
   assert.equal(importedItunes.body.jobs[0].playlistTitle, 'iTunes favorites');
   assert.equal(importedItunes.body.jobs[0].source, 'itunes');
+  assert.equal(importedItunes.body.importedFiles, 1);
+  assert.deepEqual(importedItunes.body.jobs[1].files, []);
+  assert.equal(importedItunes.body.jobs[1].playlistSongCount, 1);
   const importLogRoute = `/api/jobs/import/logs/${importedItunes.body.importId}`;
   assert.equal((await call(importLogRoute)).status, 401);
   for (const name of ['Other', 'Admin']) assert.equal((await call(importLogRoute, 'GET', credentials[name][0])).status, 404);
@@ -841,6 +851,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(importLog.headers['cache-control'], 'no-store');
   assert.equal(importLog.body.status, 'completed');
   assert.ok(importLog.body.entries.some((entry) => entry.message === 'Playlist imported'));
+  assert.ok(importLog.body.entries.some((entry) => entry.message === 'Playlist imported' && entry.details.files === 0 && entry.details.linked === 1));
   if (canConvertWav) assert.ok(importLog.body.entries.some((entry) => entry.message === 'WAV converted to MP3'));
   assert.equal(importLog.body.entries.at(-1).message, 'Import completed');
   const itunesTracks = await call(`/api/library/tracks?entryId=${importedItunes.body.jobs[0].id}`, 'GET', credentials.Owner[0]);
@@ -848,6 +859,24 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const importedAudio = await call(`/api/jobs/${importedItunes.body.jobs[0].id}/stream/Uploaded.mp3`, 'GET', credentials.Owner[0]);
   assert.equal(importedAudio.status, 200);
   assert.equal((await fileTypeFromBuffer(importedAudio.buffer)).ext, 'mp3');
+  const linkedId = importedItunes.body.jobs[1].id;
+  const linkedTracks = await call(`/api/library/tracks?entryId=${linkedId}`, 'GET', credentials.Owner[0]);
+  assert.equal(linkedTracks.body.files.length, 1);
+  assert.equal(linkedTracks.body.files[0].jobId, importedItunes.body.jobs[0].id);
+  assert.equal(linkedTracks.body.files[0].streamUrl, itunesTracks.body.files[0].streamUrl);
+  const importedLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+  const removePrimary = await call('/api/library/songs/remove', 'POST', credentials.Owner[0], {
+    version: importedLibrary.version, jobId: importedItunes.body.jobs[0].id, name: 'Uploaded.mp3', playlistId: importedItunes.body.jobs[0].id
+  });
+  assert.equal(removePrimary.status, 200, removePrimary.text);
+  assert.equal(removePrimary.body.fileDeleted, false);
+  assert.deepEqual((await call(linkedTracks.body.files[0].streamUrl, 'GET', credentials.Owner[0])).buffer, importedAudio.buffer);
+  const removeLast = await call('/api/library/songs/remove', 'POST', credentials.Owner[0], {
+    version: removePrimary.body.version, jobId: importedItunes.body.jobs[0].id, name: 'Uploaded.mp3', playlistId: linkedId
+  });
+  assert.equal(removeLast.status, 200, removeLast.text);
+  assert.equal(removeLast.body.fileDeleted, true);
+  assert.equal((await call(linkedTracks.body.files[0].streamUrl, 'GET', credentials.Owner[0])).status, 404);
   assert.equal((await call('/api/jobs/import/local')).status, 401);
   assert.deepEqual((await call('/api/jobs/import/local', 'GET', credentials.Owner[0])).body, { xmlFiles: [], zipFiles: [] });
   await fs.mkdir(process.env.IMPORT_STORAGE_ROOT);

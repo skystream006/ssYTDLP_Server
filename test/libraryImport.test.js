@@ -11,6 +11,7 @@ import AdmZip from 'adm-zip';
 import * as plist from 'plist';
 import { fileTypeFromFile } from 'file-type';
 import { isPlayableFile, mediaType, videoExtensions } from '../src/media.js';
+import { getPlaylistTracks, songKey } from '../src/library.js';
 
 test('playable media distinguishes movies from audio and non-media filenames', () => {
   for (const extension of videoExtensions) {
@@ -186,9 +187,13 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     const wavMedia = await imports.extractImportMedia(zipPath, directory, { report });
     const beforeConversion = (await fs.readdir(directory)).sort();
     const converted = await imports.importItunesLibrary(wavXml, wavMedia, owner, { report });
-    assert.equal(converted.importedFiles, 5);
+    assert.equal(converted.importedFiles, 4);
     assert.deepEqual(converted.jobs[0].files, ['Converted.mp3', 'Mislabeled.mp3', 'Padded.mp3', 'Converted (2).mp3']);
-    assert.deepEqual(converted.jobs[1].files, ['Converted.mp3']);
+    assert.deepEqual(converted.jobs[1].files, []);
+    assert.equal(converted.jobs[1].playlistSongCount, 1);
+    const convertedLibrary = getLibrary(owner.id, manager.getJobs());
+    assert.deepEqual(getPlaylistTracks(convertedLibrary, manager.getJobs()).get(converted.jobs[1].id),
+      [{ jobId: converted.jobs[0].id, name: 'Converted.mp3', playlistId: converted.jobs[1].id }]);
     assert.deepEqual(getLibrary(owner.id, manager.getJobs()).songOrder[converted.jobs[0].id], converted.jobs[0].files);
     for (const name of ['Converted.mp3', 'Mislabeled.mp3']) {
       const output = path.join(converted.jobs[0].outputDir, name);
@@ -290,6 +295,7 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   const largeMedia = media.map((track) => ({ ...track, size: 5 * 1024 ** 3 }));
   assert.throws(() => imports.parseItunesImport(xml, largeMedia), { statusCode: 413 });
   assert.equal(imports.parseItunesImport(xml, largeMedia, { local: true }).length, 2);
+  assert.equal(imports.parseItunesImport(xml, media.map((track) => ({ ...track, size: 1.5 * 1024 ** 3 }))).length, 2);
   const manyTracks = Object.fromEntries(Array.from({ length: 2001 }, (_, index) => [index + 1,
     { 'Track ID': index + 1, Location: document.Tracks[1].Location }]));
   const manyPlaylists = Array.from({ length: 501 }, (_, index) => ({ Name: `Playlist ${index}`, 'Playlist Items': [{ 'Track ID': index + 1 }] }));
@@ -314,13 +320,95 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   }
   finally { statMock.mock.restore(); }
   const imported = await imports.importItunesLibrary(xml, media, owner, { report });
-  assert.equal(imported.importedFiles, 3);
+  assert.equal(imported.importedFiles, 2);
   assert.equal(encoder.mock.callCount(), 2);
   assert.equal(imported.jobs[0].source, 'itunes');
   assert.deepEqual(getLibrary(owner.id, manager.getJobs()).songOrder[imported.jobs[0].id], ['Second.mp3', 'Song.mp3']);
+  assert.deepEqual(imported.jobs[1].files, []);
+  assert.deepEqual(await fs.readdir(imported.jobs[1].outputDir), []);
+  assert.equal(imported.jobs[1].playlistSongCount, 1);
+  const importedLibrary = getLibrary(owner.id, manager.getJobs());
+  assert.deepEqual(getPlaylistTracks(importedLibrary, manager.getJobs()).get(imported.jobs[1].id),
+    [{ jobId: imported.jobs[0].id, name: 'Song.mp3', playlistId: imported.jobs[1].id }]);
+  assert.deepEqual(importedLibrary.playlistSongOrder[imported.jobs[1].id],
+    [songKey({ jobId: imported.jobs[0].id, name: 'Song.mp3' })]);
   assert.equal(logs.filter((entry) => entry.message === 'Playlist imported').length, 2);
   assert.ok(logs.some((entry) => entry.message === 'Library tracks matched' && entry.matched === 2));
   assert.equal(logs.at(-1).stage, 'save');
+
+  await context.test('linked iTunes imports preserve mixed order, collisions, distinct files and unique export media', async (linkedContext) => {
+    const sourceFiles = [
+      { name: 'Music/First/Song.mp3', path: path.join(directory, 'first-shared'), size: encodedAudio.length },
+      { name: 'Music/Second/Song.mp3', path: path.join(directory, 'second-shared'), size: encodedAudio.length },
+      { name: 'Music/Movie.mp4', path: movie.path, size: video.length },
+      { name: 'Music/Unused.mp3', path: path.join(directory, 'unassigned'), size: encodedAudio.length }
+    ];
+    for (const source of sourceFiles.filter((source) => source.path !== movie.path)) await fs.writeFile(source.path, encodedAudio);
+    const sharedXml = plist.build({ Tracks: {
+      1: { 'Track ID': 1, Location: 'file:///Music/First/Song.mp3' },
+      2: { 'Track ID': 2, Location: 'file:///Music/Second/Song.mp3' },
+      3: { 'Track ID': 3, Location: 'file:///Music/First/Song.mp3' },
+      4: { 'Track ID': 4, Location: 'file:///Music/Movie.mp4' },
+      5: { 'Track ID': 5, Location: 'file:///Music/Unused.mp3' }
+    }, Playlists: [
+      { Name: 'Sources', 'Playlist Items': [{ 'Track ID': 1 }, { 'Track ID': 2 }] },
+      { Name: 'Mixed', 'Playlist Items': [{ 'Track ID': 4 }, { 'Track ID': 2 }, { 'Track ID': 1 }] },
+      { Name: 'Links only', 'Playlist Items': [{ 'Track ID': 2 }, { 'Track ID': 1 }, { 'Track ID': 3 }] }
+    ] });
+    const shared = await imports.importItunesLibrary(sharedXml, sourceFiles, owner);
+    const [source, mixed, linked, remaining] = shared.jobs;
+    assert.equal(shared.importedFiles, 4);
+    assert.deepEqual(shared.jobs.map((job) => job.files), [['Song.mp3', 'Song (2).mp3'], ['Movie.mp4'], [], ['Unused.mp3']]);
+    assert.deepEqual(shared.jobs.map((job) => job.playlistSongCount), [2, 3, 2, 1]);
+    assert.equal(remaining.playlistTitle, 'iTunes Library');
+    const saved = getLibrary(owner.id, manager.getJobs());
+    const tracks = getPlaylistTracks(saved, manager.getJobs());
+    const firstSong = songKey({ jobId: source.id, name: 'Song.mp3' });
+    const secondSong = songKey({ jobId: source.id, name: 'Song (2).mp3' });
+    assert.deepEqual(tracks.get(mixed.id).map(songKey), [songKey({ jobId: mixed.id, name: 'Movie.mp4' }), secondSong, firstSong]);
+    assert.deepEqual(tracks.get(linked.id).map(songKey), [secondSong, firstSong]);
+    assert.deepEqual(saved.playlistSongOrder[linked.id], [secondSong, firstSong]);
+    const { prepareLibraryExport, exportOptions } = await import('../src/libraryExport.js');
+    const ids = new Set(shared.jobs.map((job) => job.id));
+    const exported = await prepareLibraryExport({ ...saved, entries: saved.entries.filter((entry) => ids.has(entry.id)) },
+      shared.jobs, exportOptions('android'));
+    assert.equal(exported.files.length, 3);
+    const linkedPlaylist = exported.documents.find((document) => document.content.includes('#PLAYLIST:Links only\n'));
+    const exportedPaths = linkedPlaylist.content.split('\n').filter((line) => line && !line.startsWith('#'));
+    assert.deepEqual(exportedPaths, ['Song (2).mp3', 'Song.mp3'].map((name) =>
+      exported.files.find((file) => file.filePath === path.join(source.outputDir, name)).archivePath));
+    assert.deepEqual(getLibrary(owner.id, manager.getJobs()).songAdds, saved.songAdds);
+    for (const failureStage of ['copy', 'complete']) {
+      await linkedContext.test(`failed ${failureStage} rolls back files and links`, async (rollback) => {
+        const beforeJobs = manager.getJobs().map((job) => job.id).sort();
+        const beforeFolders = (await fs.readdir(process.env.YTDLP_OUTPUT_ROOT)).sort();
+        const beforeLibrary = getLibrary(owner.id, manager.getJobs());
+        const copyFile = fs.copyFile;
+        if (failureStage === 'copy') rollback.mock.method(fs, 'copyFile', async (...args) => {
+          if (args[0] === movie.path) throw new Error('Copy failed');
+          return copyFile(...args);
+        });
+        await assert.rejects(imports.importItunesLibrary(sharedXml, sourceFiles, owner, {
+          complete: async () => { throw new Error('Archive failed'); }
+        }), failureStage === 'copy' ? /Copy failed/ : /Archive failed/);
+        assert.deepEqual(manager.getJobs().map((job) => job.id).sort(), beforeJobs);
+        assert.deepEqual((await fs.readdir(process.env.YTDLP_OUTPUT_ROOT)).sort(), beforeFolders);
+        const afterLibrary = getLibrary(owner.id, manager.getJobs());
+        for (const key of ['entries', 'songAdds', 'songOrder', 'playlistSongOrder']) assert.deepEqual(afterLibrary[key], beforeLibrary[key]);
+      });
+    }
+  });
+
+  await context.test('imports reject excessive shared memberships before copying or converting files', async () => {
+    const repeatedXml = plist.build({ Tracks: document.Tracks,
+      Playlists: Array.from({ length: 2502 }, () => document.Playlists[1]) });
+    const beforeJobs = manager.getJobs().map((job) => job.id).sort();
+    const beforeConversions = encoder.mock.callCount();
+    await assert.rejects(imports.importItunesLibrary(repeatedXml, media, owner, { local: true }),
+      { statusCode: 413, message: /5,000 song links/ });
+    assert.equal(encoder.mock.callCount(), beforeConversions);
+    assert.deepEqual(manager.getJobs().map((job) => job.id).sort(), beforeJobs);
+  });
 
   await context.test('WAV conversion failures remove temporary outputs without creating playlists', async (conversionContext) => {
     const beforeFiles = (await fs.readdir(directory)).sort();
@@ -444,7 +532,7 @@ test('music imports validate media, preserve playlists and enforce ownership', a
       assert.equal(replies.length, 1);
       const finished = imports.getImportProgress(owner.id, importId);
       assert.equal(finished.status, 'completed');
-      assert.equal(finished.result.importedFiles, 3);
+      assert.equal(finished.result.importedFiles, 2);
       assert.ok(finished.result.jobs.every((job) => Object.keys(job).sort().join(',') === 'id,playlistTitle'));
       assert.equal(finished.entries.at(-2).stage, 'cleanup');
       assert.equal((await fs.readdir(completedStorage)).length, 4);

@@ -529,9 +529,11 @@ export async function setJobTitle(id, title, user = null) {
   return job;
 }
 
-export async function importJobFiles({ files, playlistId, playlistTitle, source = 'files', individual = false }, user) {
+export async function importJobFiles({ files, playlistId, playlistTitle, source = 'files', individual = false, playlistSongCount }, user) {
   if (!user?.id) throw Object.assign(new Error('Authentication required'), { statusCode: 401 });
-  if (!Array.isArray(files) || !files.length || files.some((file) => !isPlayableFile(file.name) || !file.path)) {
+  const linkedPlaylist = source === 'itunes' && !playlistId && !individual
+    && Number.isSafeInteger(playlistSongCount) && playlistSongCount > 0;
+  if (!Array.isArray(files) || (!files.length && !linkedPlaylist) || files.some((file) => !isPlayableFile(file.name) || !file.path)) {
     throw Object.assign(new Error('Select supported audio or movie files'), { statusCode: 400 });
   }
   const job = playlistId ? getJob(playlistId) : newJob(`import:${source}`, { id: user.id, name: user.name });
@@ -571,7 +573,7 @@ export async function importJobFiles({ files, playlistId, playlistTitle, source 
     }
     job.files = [...(job.files || []), ...added];
     job.songMetadata = metadata;
-    job.playlistSongCount = job.files.filter(isPlayableFile).length;
+    job.playlistSongCount = linkedPlaylist ? playlistSongCount : job.files.filter(isPlayableFile).length;
     job.updatedAt = new Date().toISOString();
     await persistJob(job);
     return job;

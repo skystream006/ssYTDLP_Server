@@ -13,7 +13,7 @@ import yauzl from 'yauzl';
 import { fileTypeFromFile } from 'file-type';
 import { deleteJob, getJobs, importJobFiles } from './jobManager.js';
 import { getLibrary, linkLibraryJob, setLibrary } from './libraryStore.js';
-import { individualSongsId } from './library.js';
+import { individualSongsId, songKey } from './library.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 
@@ -336,8 +336,9 @@ export function parseItunesImport(xml, media, { local = false, report = () => {}
   }
   const remaining = [...tracks].filter(([id]) => !included.has(id)).map(([, file]) => file);
   if (remaining.length) playlists.push({ playlistTitle: 'iTunes Library', files: remaining });
+  const uniqueFiles = new Map([...tracks.values()].map((file) => [file.path, file]));
   if (!local && (playlists.length > 500
-    || playlists.reduce((total, playlist) => total + playlist.files.reduce((size, file) => size + file.size, 0), 0) > maxExpandedBytes)) {
+    || [...uniqueFiles.values()].reduce((size, file) => size + file.size, 0) > maxExpandedBytes)) {
     throw failure('The imported playlists exceed the import limits', 413);
   }
   report('plan', 'Playlists ready to import', { playlists: playlists.length, files: playlists.reduce((total, playlist) => total + playlist.files.length, 0) });
@@ -368,34 +369,57 @@ export async function importUploadedFiles(files, options, user) {
 
 export async function importItunesLibrary(xml, media, user, { local = false, report = () => {}, complete = async () => {} } = {}) {
   const plans = parseItunesImport(xml, media, { local, report });
-  if (getLibrary(user.id, libraryJobs(user)).entries.length + plans.length > 5000) throw failure('The library contains too many entries', 413);
+  const current = getLibrary(user.id, libraryJobs(user));
+  if (current.entries.length + plans.length > 5000) throw failure('The library contains too many entries', 413);
+  const uniquePaths = new Set();
+  let links = 0;
+  for (const plan of plans) {
+    plan.files = [...new Map(plan.files.map((file) => [file.path, file])).values()];
+    for (const file of plan.files) {
+      if (uniquePaths.has(file.path)) links++;
+      uniquePaths.add(file.path);
+    }
+  }
+  if (current.songAdds.length + links > 5000) throw failure('The import exceeds the library limit of 5,000 song links', 413);
   const created = [];
   const converted = new Map();
   try {
     let copiedBytes = 0;
+    const countedPaths = new Set();
     for (const plan of plans) {
       for (const [index, file] of plan.files.entries()) {
         if (file.convertFromWav) {
           if (!converted.has(file.path)) converted.set(file.path, await convertItunesWav(file, { local, report }));
           plan.files[index] = converted.get(file.path);
         }
-        copiedBytes += plan.files[index].size;
+        if (!countedPaths.has(file.path)) copiedBytes += plan.files[index].size;
+        countedPaths.add(file.path);
         if (!local && copiedBytes > maxExpandedBytes) throw failure('The imported playlists exceed the import limits', 413);
       }
     }
+    const sources = new Map();
+    const playlistTracks = new Map();
     for (const plan of plans) {
       report('copy', 'Importing playlist', { playlist: plan.playlistTitle, files: plan.files.length, index: created.length + 1, total: plans.length });
-      const job = await importJobFiles({ ...plan, source: 'itunes' }, user);
+      const files = plan.files.filter((file) => !sources.has(file.path));
+      const job = await importJobFiles({ ...plan, files, source: 'itunes', playlistSongCount: plan.files.length }, user);
       created.push(job);
-      report('copy', 'Playlist imported', { playlist: plan.playlistTitle, jobId: job.id, files: job.files.length });
+      files.forEach((file, index) => sources.set(file.path, { jobId: job.id, name: job.files[index] }));
+      playlistTracks.set(job.id, plan.files.map((file) => sources.get(file.path)));
+      report('copy', 'Playlist imported', { playlist: plan.playlistTitle, jobId: job.id, files: files.length, linked: plan.files.length - files.length });
     }
     report('save', 'Saving library order', { playlists: created.length });
     const jobs = libraryJobs(user);
     const library = getLibrary(user.id, jobs);
-    for (const job of created) library.songOrder[job.id] = job.files;
+    for (const job of created) {
+      const tracks = playlistTracks.get(job.id);
+      library.songOrder[job.id] = job.files;
+      library.playlistSongOrder[job.id] = tracks.map(songKey);
+      library.songAdds.push(...tracks.filter((track) => track.jobId !== job.id).map((track) => ({ ...track, playlistId: job.id })));
+    }
     setLibrary(user.id, library, jobs);
     await complete();
-    return { jobs: created, importedFiles: created.reduce((total, job) => total + job.files.length, 0) };
+    return { jobs: created, importedFiles: sources.size };
   } catch (error) {
     report('rollback', 'Import failed; removing created playlists', { playlists: created.length, error: error.message }, 'error');
     for (const job of created) {
@@ -430,7 +454,7 @@ export async function handleLibraryImport(req, res) {
     const entry = { time: new Date().toISOString(), importId, userId: req.user.id, elapsedMs: Date.now() - started, stage, level, message, ...details };
     console[level === 'error' ? 'error' : 'info'](`[library-import] ${JSON.stringify(entry)}`);
     const visibleDetails = Object.fromEntries(Object.entries(details).filter(([key]) => [
-      'source', 'xml', 'xmlBytes', 'zip', 'zipBytes', 'bytes', 'mediaFiles', 'entries', 'files', 'skipped',
+      'source', 'xml', 'xmlBytes', 'zip', 'zipBytes', 'bytes', 'mediaFiles', 'entries', 'files', 'linked', 'skipped',
       'entry', 'tracks', 'playlists', 'trackId', 'track', 'location', 'matched', 'playlist', 'index', 'total', 'jobId', 'status'
     ].includes(key)).map(([key, value]) => [key, typeof value === 'string' ? value.slice(0, 1024) : value]));
     progress.entries.push({ time: entry.time, elapsedMs: entry.elapsedMs, stage, level, message, details: visibleDetails });

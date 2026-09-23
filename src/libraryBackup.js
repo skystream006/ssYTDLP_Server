@@ -33,6 +33,7 @@ export function createLibraryBackupService({ loadLibrary, database = openDatabas
     const row = database.prepare('SELECT * FROM library_backups WHERE user_id = ?').get(userId);
     return { schedule: row ? JSON.parse(row.schedule) : { enabled: false }, nextRunAt: row?.next_run_at || null,
       latest: row?.latest ? JSON.parse(row.latest) : null, running: active.has(userId),
+      progress: active.get(userId) ? { ...active.get(userId) } : null,
       lastAttemptAt: row?.last_attempt_at || null, error: row?.last_error || null };
   }
 
@@ -79,6 +80,8 @@ export function createLibraryBackupService({ loadLibrary, database = openDatabas
     if (active.size >= 2) throw failure('The backup service is busy. Try again shortly.', 503);
     database.prepare('UPDATE library_backups SET running = 1, last_attempt_at = ?, last_error = NULL WHERE user_id = ?')
       .run(now().toISOString(), userId);
+    const progress = { stage: 'preparing', processedSongs: 0, totalSongs: null, format: options.format };
+    active.set(userId, progress);
     const completion = (async () => {
       const id = randomUUID();
       const folder = directory(userId);
@@ -91,12 +94,15 @@ export function createLibraryBackupService({ loadLibrary, database = openDatabas
         await cleanup(userId);
         const { library, jobs } = await loadLibrary(userId);
         const prepared = await prepareLibraryExport(library, jobs, options);
-        await writeArchive(temporary, prepared);
+        progress.totalSongs = prepared.files.length;
+        progress.stage = 'archiving';
+        await writeArchive(temporary, prepared, (processedSongs) => { progress.processedSongs = processedSongs; });
+        progress.stage = 'finalizing';
         await fs.rename(temporary, target);
         const stat = await fs.stat(target);
         requireUser(userId);
         const latest = { id, format: options.format, ...(options.destination ? { destination: options.destination } : {}),
-          createdAt: now().toISOString(), sizeBytes: stat.size };
+          createdAt: now().toISOString(), sizeBytes: stat.size, songCount: prepared.files.length };
         database.prepare('UPDATE library_backups SET latest = ?, running = 0, last_error = NULL WHERE user_id = ?')
           .run(JSON.stringify(latest), userId);
         await cleanup(userId);
@@ -108,7 +114,6 @@ export function createLibraryBackupService({ loadLibrary, database = openDatabas
         throw error;
       } finally { writing.delete(temporary); writing.delete(target); active.delete(userId); }
     })();
-    active.set(userId, completion);
     return completion;
   }
 

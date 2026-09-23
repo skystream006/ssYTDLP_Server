@@ -85,8 +85,19 @@ in your library. From a selected playlist, that playlist is preselected.
     from the server or fetched from the network. Missing or ambiguous media fails
     the import. Nonempty playlists and their track order are recreated; folders
     and empty playlists are not imported. Unassigned tracks go into **iTunes Library**.
-    Tracks in several playlists are copied into each playlist. Internet-only
+    Tracks in several playlists are stored once and linked into each playlist. Internet-only
     tracks are skipped; unsupported local formats must be converted first.
+
+Within one iTunes import, each matched archive file is copied only into the first
+playlist that uses it. Other playlists link to that source, preserving their own
+song order, including playlists containing only links. Multiple XML track IDs
+matching the same archive file share it too; distinct archive files are kept
+separate even if their names or contents match. Import totals count stored files,
+not playlist memberships, and the import log shows copied and linked counts.
+Metadata edits affect every link; removing a song from one playlist keeps its
+source while other links remain. Deleting the entire source job still deletes its
+files and their links. Existing imports are not deduplicated or migrated, separate
+import runs are independent, and direct **Files** uploads still copy the selected files.
 
 iTunes imports convert files detected as WAV to MP3, including WAV content
 mislabeled with another supported extension. FFmpeg uses high-quality VBR MP3
@@ -135,19 +146,21 @@ and their progress do not survive a server restart.
 
 Browser uploads are limited to 2 GB total, 512 MB per audio or movie file, 20 MB XML,
 and 1,000 directly uploaded files. Uploaded iTunes libraries are limited to
-10,000 ZIP entries, 2,000 media tracks, 500 playlists, and 4 GB expanded media
-(including playlist copies). Limits are enforced by the server as well as the
+10,000 ZIP entries, 2,000 media tracks, 500 playlists, and 4 GB expanded media.
+Playlist links do not add to the media-copy size limit. Limits are enforced by the server as well as the
 upload form where applicable.
 
 **Import from local** bypasses these upload and processing caps, allowing large
 archives such as an 18 GB ZIP. File validation and path protections still apply.
 Uploads and extraction use temporary disk storage, cleaned after each request;
 XML parsing uses memory. Allow enough server disk space and memory for extracted
-media and playlist copies. Browser/runtime limits and reverse-proxy timeouts may
+media and the single stored copy of each imported file. Browser/runtime limits and reverse-proxy timeouts may
 still apply. Uncapped local ZIP extraction can exhaust server disk space.
 
 File validation, unsafe archive-path checks, and the existing 5,000-entry
-library constraint remain. At most two imports run concurrently, one per user.
+library constraint remain. The library's 5,000 additional song-link limit also
+applies to imports, including local imports; exceeding it rejects the import
+before copying files. At most two imports run concurrently, one per user.
 
 The authenticated `POST /api/jobs/import` endpoint accepts multipart form data:
 `mode=files`, `createNew=true`, `playlistTitle`, and repeated `files` fields;
@@ -202,8 +215,8 @@ suffix. Failed imports leave the source files available to retry. An archive
 failure rolls back the imported playlists. Both folders must be writable.
 
 Local import sends only filenames to the server, so an 18 GB ZIP does not pass
-through the browser or incur an extra uploaded ZIP copy. Extraction and playlist
-copies still need server disk space and processing time; keep the page open
+through the browser or incur an extra uploaded ZIP copy. Extraction and imported
+media still need server disk space and processing time; keep the page open
 until completion. Reverse proxies may need longer response timeouts. All approved
 users can list and import from this shared folder, so place only intended music
 imports there. Archiving across separate volumes temporarily needs space for a
@@ -267,6 +280,14 @@ without starting a download. Saving a schedule does not run an immediate backup.
 The dialog shows the latest archive, next scheduled run in your browser's local
 time, progress, and the last backup error.
 
+On **Jobs**, **Your library backup** shows your current or latest backup status,
+refreshing every five seconds. While writing the ZIP it displays **processed / total
+songs** and a progress bar. Each unique audio file counts once, even when linked
+in multiple playlists; movies and playlist documents do not count. Preparation is
+shown until the total is known, and completion is reported only after the archive
+is saved. Completed backups retain their song total; older backups may show only
+their status. Failed runs show an error and keep the previous ZIP available to download.
+
 Schedules persist in SQLite. The running server checks due schedules once per
 minute and runs one catch-up backup after downtime, not every missed interval.
 Only approved accounts are processed. A failed scheduled run is retried at the
@@ -294,6 +315,10 @@ asynchronously with a `202` response, and polls `GET /api/library/backup` for
 `{ "enabled": true, "frequency": "weekly", "weekday": 1, "time": "03:00", "format": "android" }`.
 Weekdays are `0` (Sunday) through `6` (Saturday); `{ "enabled": false }` disables
 the schedule without deleting its backup.
+Status responses also include `progress` while running: `{ "stage": "archiving",
+"processedSongs": 12, "totalSongs": 200, "format": "android" }`. Stages are
+`preparing`, `archiving`, and `finalizing`; the total is `null` during preparation.
+`progress` is `null` when idle, and newly completed `latest` records include `songCount`.
 Session cookies and the existing API token authentication are supported. The
 destination is only written into the XML, never used as a server output path.
 Missing or unsafe audio files fail the export instead of leaving broken playlist
@@ -630,6 +655,17 @@ authenticated feature requests use native networking.
   or delete the job and its downloaded files
 - Use the trash button beside a song in job details to delete that individual file.
     Confirming updates the file list and ZIP contents; other songs are kept.
+
+On **Jobs**, choose **Select jobs** beside **Recent jobs** to select several rows.
+The select-all checkbox selects jobs matching the current user filter. Sorting and
+automatic refreshes preserve selection; changing the filter or leaving selection
+mode clears it. Use **Rerun selected jobs** or **Delete selected jobs**, then confirm.
+Every selected job must permit the action: active jobs cannot be changed, imported
+jobs cannot be rerun, and deletion requires ownership or administrator access.
+Actions run one at a time with progress shown, without leaving the list. Successful
+jobs are deselected; failed jobs remain selected with individual errors for retry.
+Bulk deletion permanently removes the jobs and their downloaded files, including
+files used by linked playlists. A failure does not undo earlier successful actions.
 
 Approved users can view and download all jobs. Job owners can rerun their jobs,
 delete songs, delete the job, and manage its contributors. In job details, use

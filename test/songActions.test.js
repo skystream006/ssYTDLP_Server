@@ -14,16 +14,41 @@ let findNoVocals;
 let queueSongNext;
 let ExportLibraryDialog;
 let ImportMusic;
+let canRunJobAction;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ SongActions, SongRating, ListSongRating, TranscriptionDialog } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ SongActions, SongRating, ListSongRating, TranscriptionDialog, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ SongGroups, findNoVocals, queueSongNext } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+test('job action eligibility respects owners, contributors, administrators, active jobs and imports', () => {
+  const owner = { id: 'owner', role: 'user' };
+  const contributor = { id: 'contributor', role: 'user' };
+  const admin = { id: 'admin', role: 'admin' };
+  const viewer = { id: 'viewer', role: 'user' };
+  const job = { id: 'job', initiatedBy: owner, contributors: [contributor], status: 'completed' };
+  for (const user of [owner, contributor, admin]) assert.equal(canRunJobAction(user, job, 'rerun'), true);
+  for (const user of [owner, admin]) assert.equal(canRunJobAction(user, job, 'delete'), true);
+  assert.equal(canRunJobAction(contributor, job, 'delete'), false);
+  for (const action of ['rerun', 'delete']) {
+    for (const user of [viewer, null]) assert.equal(canRunJobAction(user, job, action), false);
+    assert.equal(canRunJobAction(owner, null, action), false);
+    for (const status of ['queued', 'running']) {
+      for (const user of [owner, contributor, admin]) assert.equal(canRunJobAction(user, { ...job, status }, action), false);
+    }
+    for (const status of ['completed', 'partially_completed', 'failed']) assert.equal(canRunJobAction(owner, { ...job, status }, action), true);
+  }
+  for (const source of ['files', 'itunes']) {
+    assert.equal(canRunJobAction(admin, { ...job, source }, 'rerun'), false);
+    assert.equal(canRunJobAction(owner, { ...job, source }, 'delete'), true);
+  }
+  assert.equal(canRunJobAction(owner, job, 'unknown'), false);
+});
 
 function renderExportDialog() {
   return renderToStaticMarkup(createElement(ExportLibraryDialog, { onClose() {} }));

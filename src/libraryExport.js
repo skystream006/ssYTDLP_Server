@@ -142,10 +142,15 @@ export async function prepareLibraryExport(library, jobs, options) {
   return { files, documents };
 }
 
-export async function writeLibraryExport(filePath, prepared) {
+export async function writeLibraryExport(filePath, prepared, onProgress = () => {}) {
   const handle = await fs.open(filePath, 'wx', 0o600);
   const output = handle.createWriteStream();
   const archive = new ZipArchive({ zlib: { level: 6 } });
+  const pendingSongs = new Set(prepared.files.map((file) => file.archivePath));
+  let processedSongs = 0;
+  archive.on('entry', (entry) => {
+    if (pendingSongs.delete(entry.name)) onProgress(++processedSongs);
+  });
   archive.on('warning', (error) => archive.destroy(error));
   const writing = pipeline(archive, output);
   try {

@@ -34,6 +34,7 @@ test('latest backup is replaced across formats, private to each user and retaine
   const { service, options } = await fixture(context);
   await assert.rejects(() => service.openLatest('owner'), { statusCode: 404 });
   const first = await service.start('owner', { format: 'android' });
+  assert.equal(first.songCount, 0);
   const download = await service.openLatest('owner');
   const original = await download.handle.readFile();
   assert.ok(new AdmZip(original).getEntry('IMPORT.txt'));
@@ -57,6 +58,7 @@ test('latest backup is replaced across formats, private to each user and retaine
   await assert.rejects(() => broken.start('owner', { format: 'android' }), /disk full/);
   assert.deepEqual(broken.getStatus('owner').latest, second);
   assert.match(broken.getStatus('owner').error, /server storage/);
+  assert.equal(broken.getStatus('owner').progress, null);
   assert.deepEqual((await fs.readdir(path.join(options.root, folders[0]))), [`${second.id}.zip`]);
   assert.throws(() => service.start('revoked', { format: 'android' }), { statusCode: 403 });
 });
@@ -74,6 +76,62 @@ test('overlapping exports are rejected while an archive is being written', async
   release();
   await completion;
   assert.equal(service.getStatus('owner').running, false);
+});
+
+test('backup progress counts unique archived songs, excludes documents and movies, and persists the completed total', async (context) => {
+  const { root, options } = await fixture(context);
+  const files = ['first.mp3', 'second.mp3', 'movie.mp4'];
+  await Promise.all(files.map((name) => fs.writeFile(path.join(root, name), 'media')));
+  const library = { entries: [{ id: 'playlist', type: 'playlist', parentId: null },
+    { id: 'linked', type: 'playlist', parentId: null }], songOrder: {},
+    songAdds: [{ jobId: 'playlist', name: 'first.mp3', playlistId: 'linked' }] };
+  const jobs = [{ id: 'playlist', isPlaylist: true, outputDir: root, files, playlistTitle: 'Songs' },
+    { id: 'linked', isPlaylist: true, outputDir: root, files: [], playlistTitle: 'Linked songs' }];
+  const snapshots = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const service = createLibraryBackupService({ ...options,
+    loadLibrary: async () => { await gate; return { library, jobs }; },
+    writeArchive: async (target, prepared, onProgress) => {
+      snapshots.push(service.getStatus('owner').progress);
+      await writeLibraryExport(target, prepared, (processedSongs) => {
+        onProgress(processedSongs);
+        snapshots.push(service.getStatus('owner').progress);
+      });
+    }
+  });
+  const completion = service.start('owner', { format: 'android' });
+  assert.deepEqual(service.getStatus('owner').progress,
+    { stage: 'preparing', processedSongs: 0, totalSongs: null, format: 'android' });
+  assert.equal(service.getStatus('other').progress, null);
+  release();
+  const latest = await completion;
+  assert.deepEqual(snapshots.map(({ processedSongs, totalSongs, stage }) => ({ processedSongs, totalSongs, stage })), [
+    { processedSongs: 0, totalSongs: 2, stage: 'archiving' },
+    { processedSongs: 1, totalSongs: 2, stage: 'archiving' },
+    { processedSongs: 2, totalSongs: 2, stage: 'archiving' }
+  ]);
+  assert.equal(service.getStatus('owner').progress, null);
+  assert.equal(service.getStatus('owner').running, false);
+  assert.equal(latest.songCount, 2);
+  assert.equal(createLibraryBackupService(options).getStatus('owner').latest.songCount, 2);
+  const failing = createLibraryBackupService({ ...options, loadLibrary: async () => ({ library, jobs }),
+    writeArchive: async (target, prepared, onProgress) => {
+      onProgress(1);
+      assert.deepEqual(failing.getStatus('owner').progress,
+        { stage: 'archiving', processedSongs: 1, totalSongs: 2, format: 'android' });
+      throw new Error('disk full');
+    }
+  });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const failed = failing.start('owner', { format: 'android' });
+    assert.deepEqual(failing.getStatus('owner').progress,
+      { stage: 'preparing', processedSongs: 0, totalSongs: null, format: 'android' });
+    await assert.rejects(failed, /disk full/);
+    assert.equal(failing.getStatus('owner').running, false);
+    assert.equal(failing.getStatus('owner').progress, null);
+    assert.deepEqual(failing.getStatus('owner').latest, latest);
+  }
 });
 
 test('deleting an account retains its saved archive through download cleanup, an in-flight replacement and restart', async (context) => {

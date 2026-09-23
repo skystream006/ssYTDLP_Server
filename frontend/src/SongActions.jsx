@@ -67,6 +67,13 @@ export function canModifyJob(user, job) {
   return canManageJob(user, job) || isContributor(user, job);
 }
 
+export function canRunJobAction(user, job, action) {
+  if (!job || job.status === 'queued' || job.status === 'running') return false;
+  if (action === 'delete') return canManageJob(user, job);
+  if (action === 'rerun') return !job.source && canModifyJob(user, job);
+  return false;
+}
+
 export function formatDate(value) {
   return new Intl.DateTimeFormat(undefined, {
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'

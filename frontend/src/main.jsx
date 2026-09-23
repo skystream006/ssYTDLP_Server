@@ -18,6 +18,7 @@ import {
   Fingerprint,
   HardDrive,
   KeyRound,
+  ListChecks,
   ListPlus,
   ListMusic,
   LogOut,
@@ -54,7 +55,7 @@ import { navigate, useNavigation } from './navigation.js';
 import { initializeTouchControls } from './touchControls.js';
 import { countDownloadedFiles, themes } from '../../src/library.js';
 import { isPlayableFile } from '../../src/media.js';
-import { canManageJob, canModifyJob, isContributor, formatBytes, formatDate, ListSongRating, MetadataDialog, SongActions, TranscriptionDialog, TranscriptionStatus } from './SongActions.jsx';
+import { canManageJob, canModifyJob, canRunJobAction, isContributor, formatBytes, formatDate, ListSongRating, MetadataDialog, SongActions, TranscriptionDialog, TranscriptionStatus } from './SongActions.jsx';
 
 const POLL_INTERVAL = 5000;
 const AuthContext = createContext(null);
@@ -165,6 +166,7 @@ function usePolling(loader, interval = POLL_INTERVAL, pollingKey = 'default') {
 }
 
 const loadJobs = () => request('/api/jobs');
+const loadBackup = () => request('/api/library/backup');
 const loadHealth = () => request('/api/health');
 
 function ThemeChoices() {
@@ -253,6 +255,45 @@ function MusicHomePage() {
   return <AppShell section="music"><MusicLibrary user={user} request={request} confirm={confirm} />{dialog}</AppShell>;
 }
 
+function BackupJobStatus() {
+  const { data: backup, error } = usePolling(loadBackup);
+  const status = backup?.running ? 'running' : backup?.error ? 'failed' : backup?.latest ? 'completed' : null;
+  const totalSongs = backup?.running ? backup.progress?.totalSongs : status === 'completed' ? backup.latest.songCount : null;
+  const processedSongs = backup?.running ? backup.progress?.processedSongs : totalSongs;
+  const format = backup?.running ? backup.progress?.format : status === 'completed' ? backup.latest.format : null;
+  const hasCount = Number.isInteger(totalSongs) && Number.isInteger(processedSongs);
+  const timestamp = status === 'completed' ? backup.latest.createdAt : backup?.lastAttemptAt;
+  const stage = backup?.progress?.stage === 'finalizing' ? 'Finalizing archive'
+    : hasCount ? 'Writing archive' : 'Preparing songs';
+
+  return <section className="jobs-section backup-jobs-section" aria-labelledby="backup-jobs-heading">
+    <div className="section-title"><div><span>02</span><h2 id="backup-jobs-heading">Your library backup</h2></div></div>
+    {error && <div className="notice error" role="alert"><CircleAlert size={16} />Backup status unavailable: {error}</div>}
+    {backup ? <>
+      <div className="backup-job-row">
+        <HardDrive size={22} aria-hidden="true" />
+        <div className="backup-job-details">
+          <strong>{format === 'itunes' ? 'iTunes backup' : format === 'android' ? 'Android backup' : 'Library backup'}</strong>
+          <small>{timestamp ? `${status === 'completed' ? 'Completed' : 'Started'} ${formatDate(timestamp)}` : 'No backups yet'}</small>
+        </div>
+        {status && <StatusBadge status={status} />}
+        <div className="backup-job-progress">
+          <div role="status" aria-live="polite">
+            {hasCount ? <span>{processedSongs.toLocaleString()} / {totalSongs.toLocaleString()} songs processed</span>
+              : <span>{backup.running ? stage : status === 'completed' ? 'Backup ready' : status === 'failed' ? 'Backup failed' : 'Not started'}</span>}
+            {backup.running && hasCount && <small>{stage}</small>}
+          </div>
+          {(backup.running || (hasCount && totalSongs > 0)) && <progress aria-label="Backup song progress"
+            max={totalSongs > 0 ? totalSongs : 1} value={hasCount && totalSongs > 0 ? processedSongs : undefined} />}
+        </div>
+        {backup.latest && <a className="icon-link" href="/api/library/export?source=latest" target="_blank" rel="noreferrer"
+          aria-label="Download latest backup ZIP" title="Download latest backup ZIP"><ArrowDownToLine size={17} /></a>}
+      </div>
+      {backup.error && <div className="notice error" role="alert"><CircleAlert size={16} />{backup.error}</div>}
+    </> : !error && <p className="refresh-note" role="status">Loading backup status</p>}
+  </section>;
+}
+
 function JobsPage() {
   const playback = usePlayback();
   const { user } = useContext(AuthContext);
@@ -271,6 +312,29 @@ function JobsPage() {
   const [importing, setImporting] = useState(false);
   const [addingJob, setAddingJob] = useState(null);
   const [playlistMessage, setPlaylistMessage] = useState('');
+  const [selectingJobs, setSelectingJobs] = useState(false);
+  const [selectedJobIds, setSelectedJobIds] = useState(new Set());
+  const [bulkResult, setBulkResult] = useState(null);
+
+  useEffect(() => {
+    if (!jobs) return;
+    const availableIds = new Set(jobs.map((job) => job.id));
+    setSelectedJobIds((current) => {
+      const next = new Set([...current].filter((id) => availableIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [jobs]);
+
+  function selectJobs(ids, checked) {
+    setSelectedJobIds((current) => {
+      const next = new Set(current);
+      for (const id of ids) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }
 
   function changeSort(key) {
     setJobSort((current) => ({
@@ -280,8 +344,7 @@ function JobsPage() {
   }
 
   async function runJobAction(job, action) {
-    if (!canModifyJob(user, job) || jobAction || job.status === 'queued' || job.status === 'running') return;
-    if (action === 'delete' && !canManageJob(user, job)) return;
+    if (jobAction || !canRunJobAction(user, job, action)) return;
     const message = action === 'rerun'
       ? `Rerun ${job.playlistTitle || job.id}? Keep existing songs and download missing ones?`
       : `Delete ${job.playlistTitle || job.id} and all of its downloaded files?`;
@@ -289,6 +352,7 @@ function JobsPage() {
 
     setJobAction({ id: job.id, action });
     setActionError('');
+    setBulkResult(null);
     try {
       const jobUrl = `/api/jobs/${encodeURIComponent(job.id)}`;
       if (action === 'rerun') {
@@ -297,6 +361,7 @@ function JobsPage() {
       } else {
         await request(jobUrl, { method: 'DELETE' });
         playback.removeJob(job.id);
+        selectJobs([job.id], false);
         setRevision((current) => current + 1);
         setJobAction(null);
       }
@@ -304,6 +369,37 @@ function JobsPage() {
       setActionError(error.message);
       setJobAction(null);
     }
+  }
+
+  async function runSelectedJobAction(action) {
+    if (jobAction || !selectedJobs.length || !selectedJobs.every((job) => canRunJobAction(user, job, action))) return;
+    const targets = [...selectedJobs];
+    const label = `${action === 'delete' ? 'Delete' : 'Rerun'} ${targets.length} selected ${targets.length === 1 ? 'job' : 'jobs'}`;
+    const message = action === 'delete'
+      ? `Delete all ${targets.length} selected jobs and all their downloaded files? This also removes their files from linked playlists and cannot be undone.`
+      : `Rerun all ${targets.length} selected jobs? Existing files will be kept and missing media downloaded.`;
+    if (!await confirm({ title: `${label}?`, message, action, label })) return;
+
+    setActionError('');
+    setBulkResult(null);
+    const failures = [];
+    let succeeded = 0;
+    setJobAction({ action, bulk: true, completed: 0, total: targets.length });
+    for (const [index, job] of targets.entries()) {
+      setJobAction({ id: job.id, action, bulk: true, completed: index, total: targets.length });
+      try {
+        const jobUrl = `/api/jobs/${encodeURIComponent(job.id)}`;
+        await request(action === 'rerun' ? `${jobUrl}/rerun` : jobUrl, { method: action === 'rerun' ? 'POST' : 'DELETE' });
+        if (action === 'delete') playback.removeJob(job.id);
+        selectJobs([job.id], false);
+        succeeded += 1;
+      } catch (error) {
+        failures.push({ id: job.id, title: job.playlistTitle || job.id, message: error.message });
+      }
+    }
+    setBulkResult({ action, succeeded, total: targets.length, failures });
+    setJobAction(null);
+    setRevision((current) => current + 1);
   }
 
   async function submitJob(event) {
@@ -340,6 +436,7 @@ function JobsPage() {
       : (job.initiatedBy?.id || 'unknown') === userFilter)
   ));
   const sortedJobs = sortJobs(filteredJobs, jobSort.key, jobSort.direction);
+  const selectedJobs = sortedJobs.filter((job) => selectedJobIds.has(job.id));
   const counts = filteredJobs.reduce((result, job) => {
     result[job.status] = (result[job.status] || 0) + 1;
     return result;
@@ -407,15 +504,20 @@ function JobsPage() {
         {message && <div className={`notice ${message.type}`} role="status">{message.text}</div>}
       </section>
 
+      <BackupJobStatus />
+
       <section className="jobs-section">
         <div className="section-title">
-          <div><span>02</span><h2>Recent jobs</h2></div>
+          <div><span>03</span><h2>Recent jobs</h2>
+            <button className="music-icon-button" type="button" title="Select jobs" aria-label="Select jobs" aria-pressed={selectingJobs}
+              disabled={(!selectingJobs && !jobs?.length) || Boolean(jobAction)} onClick={() => { setSelectingJobs(!selectingJobs); setSelectedJobIds(new Set()); }}><ListChecks size={19} /></button>
+          </div>
           <span className="refresh-note"><RefreshCw size={13} /> Refreshes every 5 seconds</span>
         </div>
         <div className="jobs-filters">
           <div className="job-filter-control">
           <label htmlFor="job-user-filter"><Users size={16} />Jobs</label>
-          <select id="job-user-filter" value={userFilter} onChange={(event) => setUserFilter(event.target.value)}>
+          <select id="job-user-filter" value={userFilter} disabled={Boolean(jobAction)} onChange={(event) => { setUserFilter(event.target.value); setSelectedJobIds(new Set()); }}>
             <option value="mine">My jobs (owned and contributing)</option>
             <option value="all">All users</option>
             {userOptions.map(([id, name]) => <option key={id} value={id}>Initiated by {name}</option>)}
@@ -437,6 +539,29 @@ function JobsPage() {
         {loadError && <div className="notice error"><CircleAlert size={16} />{loadError}</div>}
         {actionError && <div className="notice error" role="alert"><CircleAlert size={16} />{actionError}</div>}
         {playlistMessage && <div className="notice success" role="status"><Check size={16} />{playlistMessage}</div>}
+        {bulkResult && <div className={`notice ${bulkResult.failures.length ? 'error' : 'success'} job-bulk-result`} role={bulkResult.failures.length ? 'alert' : 'status'}>
+          <span>{bulkResult.succeeded} of {bulkResult.total} {bulkResult.total === 1 ? 'job' : 'jobs'} {bulkResult.action === 'delete' ? 'deleted' : 'submitted for rerun'}.</span>
+          {bulkResult.failures.length > 0 && <ul>{bulkResult.failures.map((failure) => <li key={failure.id}><strong>{failure.title}:</strong> {failure.message}</li>)}</ul>}
+        </div>}
+        {selectingJobs && <div className="job-selection-toolbar">
+          <label className="job-select-all"><input type="checkbox" aria-label="Select all matching jobs" disabled={!filteredJobs.length || Boolean(jobAction)}
+            checked={filteredJobs.length > 0 && selectedJobs.length === filteredJobs.length}
+            ref={(element) => { if (element) element.indeterminate = selectedJobs.length > 0 && selectedJobs.length < filteredJobs.length; }}
+            onChange={(event) => selectJobs(filteredJobs.map((job) => job.id), event.target.checked)} />
+            <span role="status">{selectedJobs.length} selected</span>
+          </label>
+          <button className="music-icon-button" type="button" aria-label="Rerun selected jobs"
+            title={selectedJobs.length && !selectedJobs.every((job) => canRunJobAction(user, job, 'rerun')) ? 'All selected jobs must be idle, non-imported jobs you can rerun' : 'Rerun selected jobs'}
+            disabled={Boolean(jobAction) || !selectedJobs.length || !selectedJobs.every((job) => canRunJobAction(user, job, 'rerun'))}
+            onClick={() => runSelectedJobAction('rerun')}><RotateCcw size={18} /></button>
+          <button className="music-icon-button job-bulk-delete" type="button" aria-label="Delete selected jobs"
+            title={selectedJobs.length && !selectedJobs.every((job) => canRunJobAction(user, job, 'delete')) ? 'All selected jobs must be idle jobs you own or administer' : 'Delete selected jobs'}
+            disabled={Boolean(jobAction) || !selectedJobs.length || !selectedJobs.every((job) => canRunJobAction(user, job, 'delete'))}
+            onClick={() => runSelectedJobAction('delete')}><Trash2 size={18} /></button>
+          <button className="music-icon-button" type="button" title="Clear job selection" aria-label="Clear job selection" disabled={!selectedJobs.length || Boolean(jobAction)}
+            onClick={() => setSelectedJobIds(new Set())}><X size={18} /></button>
+          {jobAction?.bulk && <span className="job-bulk-progress" role="status"><RefreshCw className="spin" size={15} />Processed {jobAction.completed} of {jobAction.total} jobs</span>}
+        </div>}
         {jobs?.length === 0 && (
           <div className="empty-state"><Disc3 size={34} /><h3>No downloads yet</h3><p>Your first job will appear here.</p></div>
         )}
@@ -445,9 +570,10 @@ function JobsPage() {
         )}
         {filteredJobs.length > 0 && (
           <div className="table-wrap">
-            <table>
+            <table className="jobs-table">
               <thead><tr>
-                {jobSortColumns.map(({ key, label }) => <th key={key} scope="col" aria-sort={jobSort.key === key ? (jobSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                {selectingJobs && <th className="job-selection-cell" scope="col"><span className="sr-only">Select job</span></th>}
+                {jobSortColumns.map(({ key, label }) => <th key={key} className={`job-column-${key}`} scope="col" aria-sort={jobSort.key === key ? (jobSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
                   <button className="job-sort-button" type="button" onClick={() => changeSort(key)} title={`Sort by ${label}`}>
                     <span>{label}</span>{jobSort.key !== key ? <ArrowUpDown size={13} /> : jobSort.direction === 'asc' ? <ArrowUp size={13} /> : <ArrowDown size={13} />}
                   </button>
@@ -455,11 +581,13 @@ function JobsPage() {
                 <th scope="col">Actions</th>
               </tr></thead>
               <tbody>{sortedJobs.map((job) => (
-                <tr key={job.id}>
+                <tr key={job.id} className={selectingJobs && selectedJobIds.has(job.id) ? 'job-selected' : undefined}>
+                  {selectingJobs && <td className="job-selection-cell"><label className="job-select-row"><input type="checkbox" aria-label={`Select job ${job.playlistTitle || job.id}`}
+                    checked={selectedJobIds.has(job.id)} disabled={Boolean(jobAction)} onChange={(event) => selectJobs([job.id], event.target.checked)} /></label></td>}
                   <td><a className="job-name" href={`/job/${job.id}`}><span>{job.isPlaylist ? <ListMusic size={18} /> : <Music2 size={18} />}</span><div><strong>{job.playlistTitle || 'Preparing playlist'}</strong><small>{job.id}</small></div></a></td>
-                  <td>{job.isPlaylist ? 'Playlist' : 'Track'}</td>
+                  <td className="job-column-format">{job.isPlaylist ? 'Playlist' : 'Track'}</td>
                   <td><StatusBadge status={job.status} /></td>
-                  <td>{formatDate(job.createdAt)}</td>
+                  <td className="job-column-created">{formatDate(job.createdAt)}</td>
                   <td>{job.isPlaylist ? (job.playlistSongCount ?? '-') : 1}</td>
                   <td>{countDownloadedFiles(job.files)}</td>
                   <td><span className="job-initiator">{job.initiatedBy?.name || 'Unknown'}</span></td>
@@ -470,10 +598,10 @@ function JobsPage() {
                       disabled={Boolean(jobAction) || !(job.files || []).some(isPlayableFile)}
                       onClick={() => { setPlaylistMessage(''); setAddingJob(job); }}><ListPlus size={17} /></button>}
                     {canModifyJob(user, job) && <>
-                    {!job.source && <button className="icon-link" type="button" title="Rerun job" aria-label={`Rerun job ${job.id}`} disabled={Boolean(jobAction) || job.status === 'queued' || job.status === 'running'} onClick={() => runJobAction(job, 'rerun')}>
+                    {!job.source && <button className="icon-link" type="button" title="Rerun job" aria-label={`Rerun job ${job.id}`} disabled={Boolean(jobAction) || !canRunJobAction(user, job, 'rerun')} onClick={() => runJobAction(job, 'rerun')}>
                       {jobAction?.id === job.id && jobAction.action === 'rerun' ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
                     </button>}
-                    {canManageJob(user, job) && <button className="icon-link row-delete" type="button" title="Delete job" aria-label={`Delete job ${job.id}`} disabled={Boolean(jobAction) || job.status === 'queued' || job.status === 'running'} onClick={() => runJobAction(job, 'delete')}>
+                    {canManageJob(user, job) && <button className="icon-link row-delete" type="button" title="Delete job" aria-label={`Delete job ${job.id}`} disabled={Boolean(jobAction) || !canRunJobAction(user, job, 'delete')} onClick={() => runJobAction(job, 'delete')}>
                       {jobAction?.id === job.id && jobAction.action === 'delete' ? <RefreshCw className="spin" size={17} /> : <Trash2 size={17} />}
                     </button>}
                     </>}

@@ -105,3 +105,47 @@ test('database constraints and indexes protect credential and session identity',
   assert.equal(database.pragma('journal_mode', { simple: true }), 'wal');
   assert.equal(database.pragma('integrity_check', { simple: true }), 'ok');
 });
+
+test('existing backup tables migrate without losing records and retain them after account deletion and restart', async () => {
+  await fs.writeFile(process.env.AUTH_STORE_PATH, JSON.stringify(legacyAuth()));
+  const database = openDatabase();
+  database.exec(`
+    DROP TABLE library_backups;
+    CREATE TABLE library_backups (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      schedule TEXT NOT NULL DEFAULT '{"enabled":false}' CHECK(json_valid(schedule)),
+      next_run_at TEXT,
+      latest TEXT CHECK(latest IS NULL OR json_valid(latest)),
+      running INTEGER NOT NULL DEFAULT 0,
+      last_attempt_at TEXT,
+      last_error TEXT
+    );
+  `);
+  const backup = {
+    user_id: 'admin-id',
+    schedule: JSON.stringify({ enabled: true, frequency: 'daily', time: '03:00', format: 'android' }),
+    next_run_at: '2026-09-24T03:00:00.000Z',
+    latest: JSON.stringify({ id: crypto.randomUUID(), format: 'android', createdAt: '2026-09-23T03:00:00.000Z', sizeBytes: 123 }),
+    running: 1,
+    last_attempt_at: '2026-09-23T03:00:00.000Z',
+    last_error: 'Previous error'
+  };
+  database.prepare(`INSERT INTO library_backups (user_id, schedule, next_run_at, latest, running, last_attempt_at, last_error)
+    VALUES (@user_id, @schedule, @next_run_at, @latest, @running, @last_attempt_at, @last_error)`).run(backup);
+  closeDatabases();
+
+  const migrated = openDatabase();
+  assert.deepEqual(migrated.prepare('SELECT * FROM library_backups').get(), backup);
+  assert.deepEqual(migrated.pragma('foreign_key_list(library_backups)'), []);
+  assert.throws(() => migrated.prepare("UPDATE library_backups SET latest = 'invalid JSON'").run(), /CHECK/);
+  migrated.prepare('DELETE FROM users WHERE id = ?').run('admin-id');
+  assert.equal(migrated.prepare('SELECT count(*) AS count FROM credentials').get().count, 0);
+  assert.equal(migrated.prepare('SELECT count(*) AS count FROM sessions').get().count, 0);
+  assert.deepEqual(migrated.prepare('SELECT * FROM library_backups').get(), backup);
+  assert.deepEqual(migrated.pragma('foreign_key_check'), []);
+  closeDatabases();
+
+  const reopened = openDatabase();
+  assert.deepEqual(reopened.prepare('SELECT * FROM library_backups').get(), backup);
+  assert.equal(reopened.pragma('integrity_check', { simple: true }), 'ok');
+});

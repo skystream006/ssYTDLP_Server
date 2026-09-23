@@ -76,6 +76,52 @@ test('overlapping exports are rejected while an archive is being written', async
   assert.equal(service.getStatus('owner').running, false);
 });
 
+test('deleting an account retains its saved archive through download cleanup, an in-flight replacement and restart', async (context) => {
+  const { service, options, database } = await fixture(context);
+  const latest = await service.start('owner', { format: 'android' });
+  const download = await service.openLatest('owner');
+  const original = await download.handle.readFile();
+  let releaseWrite;
+  let startedWrite;
+  const gate = new Promise((resolve) => { releaseWrite = resolve; });
+  const started = new Promise((resolve) => { startedWrite = resolve; });
+  let time = new Date('2026-09-21T02:00:00Z');
+  const replacing = createLibraryBackupService({ ...options, now: () => time, writeArchive: async (...args) => {
+    startedWrite();
+    await gate;
+    await writeLibraryExport(...args);
+  } });
+  replacing.saveSchedule('owner', { enabled: true, frequency: 'daily', time: '03:00', format: 'android' });
+  const completion = replacing.start('owner', { format: 'android' });
+  const rejected = assert.rejects(completion, { statusCode: 403 });
+  try {
+    await started;
+    database.prepare('DELETE FROM users WHERE id = ?').run('owner');
+    assert.deepEqual(replacing.getStatus('owner').latest, latest);
+  } finally {
+    releaseWrite();
+    await rejected;
+    await download.release();
+  }
+
+  time = new Date('2026-09-24T12:00:00Z');
+  const retained = replacing.getStatus('owner');
+  await replacing.runDue();
+  assert.deepEqual(replacing.getStatus('owner'), retained);
+  const folders = await fs.readdir(options.root);
+  const folder = path.join(options.root, folders[0]);
+  assert.deepEqual(await fs.readdir(folder), [`${latest.id}.zip`]);
+  assert.deepEqual(await fs.readFile(path.join(folder, `${latest.id}.zip`)), original);
+  assert.throws(() => replacing.start('owner', { format: 'android' }), { statusCode: 403 });
+  await assert.rejects(() => replacing.openLatest('owner'), { statusCode: 403 });
+  await assert.rejects(() => replacing.openLatest('other'), { statusCode: 404 });
+  closeDatabases();
+  const restarted = createLibraryBackupService({ ...options, database: openDatabase(), now: () => time });
+  await restarted.runDue();
+  assert.deepEqual(restarted.getStatus('owner'), retained);
+  assert.deepEqual(await fs.readFile(path.join(folder, `${latest.id}.zip`)), original);
+});
+
 test('scheduled backups persist, catch up once after downtime and skip disabled or revoked users', async (context) => {
   const { options, database } = await fixture(context);
   let time = new Date('2026-09-21T02:00:00Z');

@@ -11,6 +11,7 @@ import {
   createSession,
   deletePrivateAccessToken,
   deleteSession,
+  deleteUser,
   findCredential,
   getPrivateAccessTokenUser,
   getSessionUser,
@@ -364,6 +365,17 @@ export function registerAuthRoutes(app, limiters = {}) {
     const user = getUser(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     return res.json({ user, tokens: listPrivateAccessTokens(user.id) });
+  });
+
+  app.delete('/api/admin/users/:id', requireSession, requireAdmin, async (req, res) => {
+    try {
+      if (!await deleteUser(req.params.id, req.user.id)) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      return res.status(204).end();
+    } catch (error) {
+      return sendError(res, error);
+    }
   });
 
   app.delete('/api/admin/users/:id/pats/:tokenId', requireSession, requireAdmin, async (req, res) => {

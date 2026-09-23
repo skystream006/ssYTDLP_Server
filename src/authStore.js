@@ -96,6 +96,25 @@ export async function updateUser(userId, changes, actorId) {
   return database.transaction(() => updateUserRecord(userId, changes, actorId)).immediate();
 }
 
+export async function deleteUser(userId, actorId) {
+  return database.transaction(() => {
+    const user = readUser(database, userId);
+    if (!user) return false;
+    if (user.id === actorId) {
+      const error = new Error('You cannot delete your own account');
+      error.statusCode = 409;
+      throw error;
+    }
+    if (user.role === 'admin' && user.status === 'approved' && countApprovedAdmins(user.id) === 0) {
+      const error = new Error('At least one approved admin is required');
+      error.statusCode = 409;
+      throw error;
+    }
+    database.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+    return true;
+  }).immediate();
+}
+
 function updateUserRecord(userId, changes, actorId) {
   const user = readUser(database, userId);
   if (!user) return null;

@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import express from 'express';
 import { isoCBOR } from '@simplewebauthn/server/helpers';
-import { closeDatabases } from '../src/database.js';
+import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
 
 async function testSecondaryPasskeyOptions(context) {
   const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY'];
@@ -136,6 +136,65 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
   const second = await (await call('/api/auth/pats', 'POST', userHeaders, { name: 'Laptop' })).json();
   assert.equal((await call(`/api/auth/pats/${second.id}`, 'DELETE', userHeaders)).status, 204);
   assert.equal((await call('/protected', 'POST', { 'X-PAT': second.token })).status, 401);
+
+  await context.test('admin user deletion removes account access, protects admins, and preserves jobs', async () => {
+    const target = await store.registerUser('Delete Listener', 'delete-listener', credential('delete-listener'));
+    await store.updateUser(target.id, { status: 'approved' }, admin.id);
+    const session = await store.createSession(target.id);
+    const mobile = await store.createSession(target.id);
+    const token = await store.createPrivateAccessToken(target.id, 'Delete token');
+    const adminToken = await store.createPrivateAccessToken(admin.id, 'Admin automation');
+    const route = `/api/admin/users/${target.id}`;
+    const database = openDatabase();
+    database.prepare('INSERT INTO user_preferences (user_id) VALUES (?)').run(target.id);
+    database.prepare('INSERT INTO library_backups (user_id) VALUES (?)').run(target.id);
+    const backup = database.prepare('SELECT * FROM library_backups WHERE user_id = ?').get(target.id);
+    const job = { id: 'retained-job', url: 'https://example.com/music', status: 'completed', initiatedBy: target };
+    writeJob(database, job);
+
+    assert.equal((await call(route, 'DELETE')).status, 401);
+    assert.equal((await call(route, 'DELETE', userHeaders)).status, 403);
+    assert.equal((await call(route, 'DELETE', { 'X-PAT': adminToken.token })).status, 401);
+    assert.equal((await call(route, 'DELETE', { ...userHeaders, 'X-PAT': adminToken.token })).status, 403);
+    assert.ok(store.getUser(target.id));
+    const selfDelete = await call(`/api/admin/users/${admin.id}`, 'DELETE', adminHeaders);
+    assert.equal(selfDelete.status, 409);
+    assert.match((await selfDelete.json()).error, /own account/);
+    await assert.rejects(store.deleteUser(admin.id, user.id), /At least one approved admin/);
+    assert.ok(store.getSessionUser(adminSession.token));
+    assert.equal((await call('/api/admin/users/missing', 'DELETE', adminHeaders)).status, 404);
+
+    const deleted = await call(route, 'DELETE', adminHeaders);
+    assert.equal(deleted.status, 204);
+    assert.equal(deleted.headers.get('cache-control'), 'no-store');
+    assert.equal(await deleted.text(), '');
+    assert.equal(store.getUser(target.id), null);
+    assert.equal(store.findCredential('delete-listener'), null);
+    for (const table of ['credentials', 'sessions', 'private_access_tokens', 'user_preferences']) {
+      assert.equal(database.prepare(`SELECT count(*) AS count FROM ${table} WHERE user_id = ?`).get(target.id).count, 0);
+    }
+    assert.deepEqual(database.prepare('SELECT * FROM library_backups WHERE user_id = ?').get(target.id), backup);
+    for (const headers of [{ Cookie: `ssytdlp_session=${session.token}` }, { Authorization: `Bearer ${mobile.token}` }, { 'X-PAT': token.token }]) {
+      assert.equal((await call('/protected', 'POST', headers)).status, 401);
+    }
+    assert.equal((await call(route, 'GET', adminHeaders)).status, 404);
+    assert.equal((await call(route, 'DELETE', adminHeaders)).status, 404);
+    assert.equal((await (await call('/api/admin/users', 'GET', adminHeaders)).json()).users.some((account) => account.id === target.id), false);
+    assert.deepEqual(JSON.parse(database.prepare('SELECT data FROM jobs WHERE id = ?').get(job.id).data), job);
+    assert.equal((await call('/protected', 'POST', userHeaders)).status, 200);
+
+    for (const status of ['pending', 'revoked', 'approved']) {
+      const account = await store.registerUser(`Delete ${status}`, status, credential(`delete-${status}`));
+      await store.updateUser(account.id, { status, role: status === 'approved' ? 'admin' : 'user' }, admin.id);
+      assert.equal((await call(`/api/admin/users/${account.id}`, 'DELETE', { Authorization: `Bearer ${adminSession.token}` })).status, 204);
+      assert.equal(store.getUser(account.id), null);
+    }
+    const replacement = await store.registerUser('Delete Listener', 'replacement', credential('replacement'));
+    assert.notEqual(replacement.id, target.id);
+    assert.equal(replacement.status, 'pending');
+    await store.deleteUser(replacement.id, admin.id);
+    await store.deletePrivateAccessToken(admin.id, adminToken.id);
+  });
 
   await context.test('passkey options select the configured secondary browser origin', testSecondaryPasskeyOptions);
 

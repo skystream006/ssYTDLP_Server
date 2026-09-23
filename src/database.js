@@ -134,7 +134,7 @@ export function openDatabase() {
         CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created_at DESC);
         CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status);
         CREATE TABLE IF NOT EXISTS library_backups (
-          user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+          user_id TEXT PRIMARY KEY,
           schedule TEXT NOT NULL DEFAULT '{"enabled":false}' CHECK(json_valid(schedule)),
           next_run_at TEXT,
           latest TEXT CHECK(latest IS NULL OR json_valid(latest)),
@@ -145,6 +145,23 @@ export function openDatabase() {
       `);
       if (!database.pragma('table_info(user_preferences)').some((column) => column.name === 'theme_mode')) {
         database.exec("ALTER TABLE user_preferences ADD COLUMN theme_mode TEXT CHECK(theme_mode IN ('light', 'dark'))");
+      }
+      if (database.pragma('foreign_key_list(library_backups)').some((key) => key.table === 'users')) {
+        database.exec(`
+          CREATE TABLE library_backups_retained (
+            user_id TEXT PRIMARY KEY,
+            schedule TEXT NOT NULL DEFAULT '{"enabled":false}' CHECK(json_valid(schedule)),
+            next_run_at TEXT,
+            latest TEXT CHECK(latest IS NULL OR json_valid(latest)),
+            running INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at TEXT,
+            last_error TEXT
+          );
+          INSERT INTO library_backups_retained (user_id, schedule, next_run_at, latest, running, last_attempt_at, last_error)
+            SELECT user_id, schedule, next_run_at, latest, running, last_attempt_at, last_error FROM library_backups;
+          DROP TABLE library_backups;
+          ALTER TABLE library_backups_retained RENAME TO library_backups;
+        `);
       }
       migrateLegacy(database);
     }).immediate();

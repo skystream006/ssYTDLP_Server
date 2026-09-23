@@ -1087,6 +1087,7 @@ function AdminPage() {
   const [users, setUsers] = useState([]);
   const [error, setError] = useState('');
   const [updating, setUpdating] = useState('');
+  const { confirm, dialog } = useConfirmation();
 
   async function loadUsers() {
     try {
@@ -1119,19 +1120,38 @@ function AdminPage() {
     }
   }
 
+  async function removeUser(user) {
+    if (!await confirm({
+      title: 'Delete user?',
+      message: `Permanently delete "${user.name}"? Their passkeys, sessions, Private Access Tokens, and personal library settings will be removed. Backups, jobs, and downloaded media will remain. This cannot be undone.`,
+      action: 'delete',
+      label: 'Delete user'
+    })) return;
+    setUpdating(user.id);
+    setError('');
+    try {
+      await request(`/api/admin/users/${encodeURIComponent(user.id)}`, { method: 'DELETE' });
+      setUsers((previous) => previous.filter((account) => account.id !== user.id));
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setUpdating('');
+    }
+  }
+
   const pending = users.filter((user) => user.status === 'pending');
   return <AppShell section="admin">
     <section className="page-heading admin-heading">
       <div><p className="eyebrow">Access control</p><h1>Allowed users.</h1><p>Review passkey registrations and control who can use this server.</p></div>
       <div className="pending-count"><strong>{pending.length}</strong><span>Awaiting approval</span></div>
     </section>
-    {error && <div className="notice error page-notice"><CircleAlert size={16} />{error}</div>}
+    {error && <div className="notice error page-notice" role="alert"><CircleAlert size={16} />{error}</div>}
     <section className="users-section">
       <div className="section-title"><div><span>01</span><h2>Access requests</h2></div></div>
       {pending.length === 0 ? <div className="empty-state compact"><UserCheck size={30} /><h3>No pending requests</h3><p>New passkey registrations will appear here.</p></div> : (
         <div className="user-list">{pending.map((user) => <article className="user-row pending-user" key={user.id}>
           <UserIdentity user={user} />
-          <button className="primary-button compact-button" disabled={updating === user.id} onClick={() => changeUser(user.id, { status: 'approved' })} type="button"><UserCheck size={16} />Approve</button>
+          <button className="primary-button compact-button" disabled={Boolean(updating)} onClick={() => changeUser(user.id, { status: 'approved' })} type="button"><UserCheck size={16} />Approve</button>
         </article>)}</div>
       )}
     </section>
@@ -1139,12 +1159,18 @@ function AdminPage() {
       <div className="section-title"><div><span>02</span><h2>All users</h2></div><strong>{users.length}</strong></div>
       <div className="user-list">{users.map((user) => <article className="user-row" key={user.id}>
         <a className="user-details-link" href={`/admin/users/${encodeURIComponent(user.id)}`} aria-label={`View ${user.name} details`}><UserIdentity user={user} /><ExternalLink size={16} /></a>
-        <label className="role-control"><span>Role</span><select disabled={updating === user.id || user.id === currentUser.id} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option></select></label>
-        {user.status === 'approved'
-          ? <button className="danger-button compact-button" disabled={updating === user.id || user.id === currentUser.id} onClick={() => changeUser(user.id, { status: 'revoked' })} type="button"><UserX size={16} />Revoke</button>
-          : <button className="secondary-button compact-button" disabled={updating === user.id} onClick={() => changeUser(user.id, { status: 'approved' })} type="button"><UserCheck size={16} />Allow</button>}
+        <label className="role-control"><span>Role</span><select disabled={Boolean(updating) || user.id === currentUser.id} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option></select></label>
+        <div className="user-actions">
+          {user.status === 'approved'
+            ? <button className="danger-button compact-button" disabled={Boolean(updating) || user.id === currentUser.id} onClick={() => changeUser(user.id, { status: 'revoked' })} type="button"><UserX size={16} />Revoke</button>
+            : <button className="secondary-button compact-button" disabled={Boolean(updating)} onClick={() => changeUser(user.id, { status: 'approved' })} type="button"><UserCheck size={16} />Allow</button>}
+          <button className="danger-button user-delete" type="button" title={user.id === currentUser.id ? 'You cannot delete your own account' : `Delete ${user.name}`} aria-label={`Delete ${user.name}`} disabled={Boolean(updating) || user.id === currentUser.id} onClick={() => removeUser(user)}>
+            {updating === user.id ? <RefreshCw size={16} className="spin" /> : <Trash2 size={16} />}
+          </button>
+        </div>
       </article>)}</div>
     </section>
+    {dialog}
   </AppShell>;
 }
 

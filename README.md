@@ -410,6 +410,17 @@ The app and operational APIs require passkey authentication. On a new server, re
 the first passkey to create the initial approved administrator. Later registrations are
 saved as pending and cannot log in until an administrator approves them from **Admin**.
 Administrators can approve or revoke access and assign user or admin roles.
+Use the trash button under **Admin > All users** to permanently delete an account
+after confirmation. Deletion removes registered passkeys, sessions, PATs, preferences,
+and personal library layout, but preserves backup records, saved backup ZIPs, jobs,
+and downloaded media. Retained backups remain associated with the deleted user's ID;
+scheduled runs stop, and they are no longer accessible through that account in the app.
+Registering the same name again does not inherit those backups. Existing databases
+are migrated automatically on startup to retain backups when an account is deleted.
+Administrators cannot delete themselves or the last approved administrator.
+`DELETE /api/admin/users/:id` requires an administrator passkey session (cookie or
+Bearer), not PAT-only authentication. It returns `204` on success, `404` for an
+unknown user, or `409` for a protected account.
 Complete the first registration locally before exposing a new server to other users,
 because the first verified passkey is intentionally trusted as the initial administrator.
 

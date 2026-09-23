@@ -30,17 +30,23 @@ export async function loadHttpsOptions() {
   const certificateDirectory = path.resolve(process.cwd(), 'data', 'tls');
   const keyPath = path.join(certificateDirectory, 'server-key.pem');
   const certPath = path.join(certificateDirectory, 'server-cert.pem');
-  const host = certificateName(process.env.PASSKEY_RP_ID);
+  const host = certificateName(process.env.PASSKEY_RP_ID_SECONDARY || process.env.PASSKEY_RP_ID);
+  const names = [...new Set([
+    host,
+    ...[process.env.PASSKEY_RP_ID, process.env.PASSKEY_RP_ID_SECONDARY].filter(Boolean).map(certificateName),
+    ...[process.env.PASSKEY_ORIGIN, process.env.PASSKEY_ORIGIN_SECONDARY].filter(Boolean)
+      .map((origin) => new URL(origin).hostname.replace(/^\[|\]$/g, '')),
+    'localhost', '127.0.0.1', '::1'
+  ])];
   try {
     const [key, cert] = await Promise.all([fs.readFile(keyPath), fs.readFile(certPath)]);
     const certificate = new X509Certificate(cert);
-    const matchesHost = net.isIP(host) ? certificate.checkIP(host) : certificate.checkHost(host);
-    if (matchesHost) return { key, cert };
+    const matchesNames = names.every((name) => net.isIP(name) ? certificate.checkIP(name) : certificate.checkHost(name));
+    if (matchesNames && certificate.toLegacyObject().subject.CN === host) return { key, cert };
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
 
-  const names = [...new Set([host, 'localhost', '127.0.0.1', '::1'])];
   const certificates = await selfsigned.generate(
     [{ name: 'commonName', value: host }],
     {

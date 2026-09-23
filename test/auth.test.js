@@ -8,6 +8,64 @@ import express from 'express';
 import { isoCBOR } from '@simplewebauthn/server/helpers';
 import { closeDatabases } from '../src/database.js';
 
+async function testSecondaryPasskeyOptions(context) {
+  const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY'];
+  const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  process.env.PASSKEY_RP_ID = 'music.example.com';
+  process.env.PASSKEY_ORIGIN = 'https://music.example.com';
+  process.env.PASSKEY_RP_ID_SECONDARY = '192-168-6-66.sslip.io';
+  process.env.PASSKEY_ORIGIN_SECONDARY = 'https://192-168-6-66.sslip.io:4123';
+  const { registerAuthRoutes } = await import('../src/auth.js');
+  const app = express();
+  app.use(express.json());
+  registerAuthRoutes(app);
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  context.after(async () => {
+    for (const key of envKeys) {
+      if (originalEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = originalEnv[key];
+    }
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  for (const [origin, expectedRPID] of [
+    [undefined, process.env.PASSKEY_RP_ID],
+    [process.env.PASSKEY_ORIGIN, process.env.PASSKEY_RP_ID],
+    [process.env.PASSKEY_ORIGIN_SECONDARY, process.env.PASSKEY_RP_ID_SECONDARY],
+    ['https://192-168-6-66.sslip.io:4124', process.env.PASSKEY_RP_ID],
+    ['https://untrusted.example', process.env.PASSKEY_RP_ID]
+  ]) {
+    for (const flow of ['register', 'login']) {
+      const response = await fetch(`${base}/api/auth/${flow}/options`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...(origin ? { Origin: origin } : {}) },
+        body: JSON.stringify({ name: 'Local listener' })
+      });
+      assert.equal(response.status, 200);
+      const { options, requestId } = await response.json();
+      await fetch(`${base}/api/auth/${flow}/verify`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId })
+      });
+      assert.equal(flow === 'register' ? options.rp.id : options.rpId, expectedRPID);
+    }
+  }
+  for (const missingKey of ['PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY']) {
+    const value = process.env[missingKey];
+    delete process.env[missingKey];
+    const response = await fetch(`${base}/api/auth/login/options`, { method: 'POST' });
+    assert.equal(response.status, 500);
+    assert.match((await response.json()).error, /Set both/);
+    process.env[missingKey] = value;
+  }
+  process.env.PASSKEY_RP_ID_SECONDARY = '192.168.6.66';
+  const invalidRPID = await fetch(`${base}/api/auth/login/options`, {
+    method: 'POST', headers: { Origin: process.env.PASSKEY_ORIGIN_SECONDARY }
+  });
+  assert.equal(invalidRPID.status, 500);
+  assert.match((await invalidRPID.json()).error, /hostname, not an IP address/);
+}
+
 test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-pat-http-'));
   process.env.DATABASE_PATH = path.join(directory, 'test.sqlite');
@@ -79,12 +137,16 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
   assert.equal((await call(`/api/auth/pats/${second.id}`, 'DELETE', userHeaders)).status, 204);
   assert.equal((await call('/protected', 'POST', { 'X-PAT': second.token })).status, 401);
 
+  await context.test('passkey options select the configured secondary browser origin', testSecondaryPasskeyOptions);
+
   await context.test('browser app handoff verifies passkeys and binds single-use codes to PKCE', async () => {
-    const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN'];
+    const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY'];
     const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
     try {
       process.env.PASSKEY_RP_ID = 'music.example.com';
       process.env.PASSKEY_ORIGIN = 'https://music.example.com';
+      process.env.PASSKEY_RP_ID_SECONDARY = '192-168-6-66.sslip.io';
+      process.env.PASSKEY_ORIGIN_SECONDARY = 'https://192-168-6-66.sslip.io:4123';
       assert.equal((await call('/.well-known/assetlinks.json')).status, 404);
       assert.equal((await call('/api/auth/login/options', 'POST', {}, { client: 'android' })).status, 400);
       assert.equal((await call('/api/auth/login/options', 'POST', {}, { client: 'unknown' })).status, 400);
@@ -104,28 +166,37 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       const keyBytes = isoCBOR.encode(new Map([[1, 2], [3, -7], [-1, 1],
         [-2, Buffer.from(jwk.x, 'base64url')], [-3, Buffer.from(jwk.y, 'base64url')]]));
       assert.equal((await call('/api/auth/register/options', 'POST', {}, { name: 'Newcomer', client: 'browser-app' })).status, 400);
-      const registration = await (await call('/api/auth/register/options', 'POST', {}, { name: 'Newcomer' })).json();
-      const registeredId = crypto.randomBytes(32);
-      const idLength = Buffer.alloc(2);
-      idLength.writeUInt16BE(registeredId.length);
-      const registrationAuthData = Buffer.concat([
-        crypto.createHash('sha256').update('music.example.com').digest(), Buffer.from([69, 0, 0, 0, 0]),
-        Buffer.alloc(16), idLength, registeredId, keyBytes
-      ]);
-      const attestation = isoCBOR.encode(new Map([['fmt', 'none'], ['attStmt', new Map()], ['authData', registrationAuthData]]));
-      const registered = await call('/api/auth/register/verify', 'POST', {}, {
-        requestId: registration.requestId,
-        response: { id: registeredId.toString('base64url'), rawId: registeredId.toString('base64url'), type: 'public-key',
-          clientExtensionResults: {}, response: {
-            clientDataJSON: Buffer.from(JSON.stringify({ type: 'webauthn.create', challenge: registration.options.challenge, origin: process.env.PASSKEY_ORIGIN })).toString('base64url'),
-            attestationObject: Buffer.from(attestation).toString('base64url'), transports: ['internal']
-          } }
-      });
-      assert.equal(registered.status, 201);
-      assert.equal(registered.headers.get('set-cookie'), null);
-      const newAccount = await registered.json();
-      assert.equal(newAccount.user.status, 'pending');
-      assert.equal(newAccount.session, undefined);
+      const register = async (name, rpID, origin) => {
+        const optionsResponse = await call('/api/auth/register/options', 'POST', { Origin: origin }, { name });
+        assert.equal(optionsResponse.status, 200);
+        const registration = await optionsResponse.json();
+        assert.equal(registration.options.rp.id, rpID);
+        const registeredId = crypto.randomBytes(32);
+        const idLength = Buffer.alloc(2);
+        idLength.writeUInt16BE(registeredId.length);
+        const registrationAuthData = Buffer.concat([
+          crypto.createHash('sha256').update(rpID).digest(), Buffer.from([69, 0, 0, 0, 0]),
+          Buffer.alloc(16), idLength, registeredId, keyBytes
+        ]);
+        const attestation = isoCBOR.encode(new Map([['fmt', 'none'], ['attStmt', new Map()], ['authData', registrationAuthData]]));
+        const registered = await call('/api/auth/register/verify', 'POST', { Origin: origin }, {
+          requestId: registration.requestId,
+          response: { id: registeredId.toString('base64url'), rawId: registeredId.toString('base64url'), type: 'public-key',
+            clientExtensionResults: {}, response: {
+              clientDataJSON: Buffer.from(JSON.stringify({ type: 'webauthn.create', challenge: registration.options.challenge, origin })).toString('base64url'),
+              attestationObject: Buffer.from(attestation).toString('base64url'), transports: ['internal']
+            } }
+        });
+        assert.equal(registered.status, 201);
+        assert.equal(registered.headers.get('set-cookie'), null);
+        const newAccount = await registered.json();
+        assert.equal(newAccount.user.status, 'pending');
+        assert.equal(newAccount.session, undefined);
+        return { user: newAccount.user, credentialId: registeredId.toString('base64url') };
+      };
+      await register('Newcomer', process.env.PASSKEY_RP_ID, process.env.PASSKEY_ORIGIN);
+      const localAccount = await register('Local Newcomer', process.env.PASSKEY_RP_ID_SECONDARY, process.env.PASSKEY_ORIGIN_SECONDARY);
+      await store.updateUser(localAccount.user.id, { status: 'approved' }, admin.id);
       const account = await store.registerUser('Mobile Listener', 'mobile-listener', { id: credentialId, publicKey: keyBytes, counter: 0 });
       await store.updateUser(account.id, { status: 'approved' }, admin.id);
       const start = async (appLogin = false) => {
@@ -137,11 +208,11 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
         assert.equal(payload.options.userVerification, 'required');
         return payload;
       };
-      const assertion = (options, origin, rpID = 'music.example.com', flags = 5) => {
+      const assertion = (options, origin, rpID = 'music.example.com', flags = 5, id = credentialId) => {
         const clientData = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge: options.challenge, origin }));
         const authenticatorData = Buffer.concat([crypto.createHash('sha256').update(rpID).digest(), Buffer.from([flags, 0, 0, 0, 0])]);
         const signature = crypto.sign('sha256', Buffer.concat([authenticatorData, crypto.createHash('sha256').update(clientData).digest()]), privateKey);
-        return { id: credentialId, rawId: credentialId, type: 'public-key', clientExtensionResults: {},
+        return { id, rawId: id, type: 'public-key', clientExtensionResults: {},
           response: { clientDataJSON: clientData.toString('base64url'), authenticatorData: authenticatorData.toString('base64url'), signature: signature.toString('base64url') } };
       };
       const origin = process.env.PASSKEY_ORIGIN;
@@ -182,8 +253,34 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       assert.equal(browserResult.session, undefined);
       assert.equal(browserResult.redirectUrl, undefined);
 
+      const localOrigin = process.env.PASSKEY_ORIGIN_SECONDARY;
+      const localRPID = process.env.PASSKEY_RP_ID_SECONDARY;
+      for (const [assertedOrigin, assertedRPID, expectedStatus] of [
+        [localOrigin, localRPID, 200],
+        [origin, localRPID, 400],
+        ['https://192-168-6-66.sslip.io:4124', localRPID, 400],
+        [localOrigin, process.env.PASSKEY_RP_ID, 400]
+      ]) {
+        const optionsResponse = await call('/api/auth/login/options', 'POST', { Origin: localOrigin }, {});
+        assert.equal(optionsResponse.status, 200);
+        const attempt = await optionsResponse.json();
+        assert.equal(attempt.options.rpId, localRPID);
+        const verifiedAttempt = await call('/api/auth/login/verify', 'POST', { Origin: assertedOrigin }, {
+          requestId: attempt.requestId,
+          response: assertion(attempt.options, assertedOrigin, assertedRPID, 5, localAccount.credentialId)
+        });
+        assert.equal(verifiedAttempt.status, expectedStatus);
+        if (expectedStatus === 200) {
+          assert.equal((await verifiedAttempt.json()).user.id, localAccount.user.id);
+          assert.match(verifiedAttempt.headers.get('set-cookie'), /ssytdlp_session=.*HttpOnly; Secure/);
+        } else {
+          assert.equal(verifiedAttempt.headers.get('set-cookie'), null);
+        }
+      }
+
       for (const [badOrigin, rpID, flags] of [
         ['android:apk-key-hash:untrusted'], ['https://evil.example'],
+        [localOrigin, localRPID],
         [origin, 'wrong.example.com'], [origin, undefined, 1]
       ]) {
         const attempt = await start(true);

@@ -45,10 +45,21 @@ function getWebAuthnConfig(req) {
   if (!['web', 'browser-app'].includes(client)) {
     throw Object.assign(new Error('Use web passkey login or the browser-app flow'), { statusCode: 400 });
   }
-  const rpID = process.env.PASSKEY_RP_ID || req.hostname;
-  const origin = process.env.PASSKEY_ORIGIN || `${req.protocol}://${req.get('host')}`;
+  const primary = {
+    rpID: process.env.PASSKEY_RP_ID || req.hostname,
+    origin: process.env.PASSKEY_ORIGIN || `${req.protocol}://${req.get('host')}`
+  };
+  const secondary = {
+    rpID: process.env.PASSKEY_RP_ID_SECONDARY,
+    origin: process.env.PASSKEY_ORIGIN_SECONDARY
+  };
+  if (Boolean(secondary.rpID) !== Boolean(secondary.origin)) {
+    throw Object.assign(new Error('Set both PASSKEY_RP_ID_SECONDARY and PASSKEY_ORIGIN_SECONDARY'), { statusCode: 500 });
+  }
+  const requestOrigin = req.get('origin') || `${req.protocol}://${req.get('host')}`;
+  const { rpID, origin } = secondary.origin && requestOrigin === secondary.origin ? secondary : primary;
   if (net.isIP(rpID)) {
-    const error = new Error('PASSKEY_RP_ID must be a hostname, not an IP address');
+    const error = new Error('Passkey RP ID must be a hostname, not an IP address');
     error.statusCode = 500;
     throw error;
   }

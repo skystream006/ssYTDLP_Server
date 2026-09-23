@@ -323,7 +323,8 @@ For frontend development, run `npm run dev` while the API server is running.
 Vite proxies `/api` to the configured local `HTTPS_WEB_PORT` (4000 by default).
 Set `DEV_API_TARGET` to override the development API URL. Certificate verification
 is relaxed only for loopback development API targets; remote targets are verified.
-Passkey login still requires an origin matching the server's `PASSKEY_ORIGIN`.
+Passkey login still requires an origin matching the server's `PASSKEY_ORIGIN` or
+`PASSKEY_ORIGIN_SECONDARY`.
 To override either listener from the command line:
 
 ```bash
@@ -435,6 +436,33 @@ hostname such as `192-168-1-123.sslip.io` for the server at `192.168.1.123`:
 PASSKEY_RP_ID=192-168-1-123.sslip.io
 PASSKEY_ORIGIN=https://192-168-1-123.sslip.io:4000
 ```
+
+To keep a public hostname and also allow local-browser passkeys, configure both
+secondary settings alongside the primary settings:
+
+```dotenv
+PASSKEY_RP_ID_SECONDARY=192-168-6-66.sslip.io
+PASSKEY_ORIGIN_SECONDARY=https://192-168-6-66.sslip.io:4123
+```
+
+Open the exact secondary HTTPS URL, including its port. Registration and login select
+the secondary RP ID only when the browser origin matches `PASSKEY_ORIGIN_SECONDARY`;
+other requests retain the primary configuration. Each challenge remains bound to the
+selected origin and RP ID. Both secondary settings must be provided together, and
+the RP ID must be a hostname, not a raw IP address.
+
+Rebuild/recreate the Docker container after changing these settings (for example,
+`docker compose up -d --build`). Generated local certificates cover both configured
+RP IDs and origin hostnames, using the secondary hostname as their common name when
+configured. An older generated certificate is replaced if needed; trust the replacement
+on each client before using passkeys. Custom certificates are not changed and must
+already cover the local hostname.
+
+Passkeys are scoped to their RP ID: an existing public-hostname passkey cannot be used
+on an unrelated local hostname. Register a local passkey with a different account name
+and have an administrator approve that account. This does not link the two accounts.
+To use the existing account and passkey locally, keep the public HTTPS hostname and
+resolve it to the server's LAN address using local DNS, with a trusted certificate.
 
 Users, public passkey credentials, access decisions, and hashed login sessions are stored
 in SQLite alongside job history (see **Database storage** below). Private passkey keys

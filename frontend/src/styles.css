@@ -360,6 +360,7 @@ code { font: 400 11px 'DM Mono', monospace; }
 .metrics-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px; margin-top: 28px; border: 1px solid var(--line); background: var(--line); }
 .metric { grid-column: span 2; min-height: 190px; padding: 24px; background: var(--surface); }
 .metric { min-width: 0; overflow-wrap: anywhere; }
+.metrics-grid > .metric:last-child { grid-column: 1 / -1; }
 .metric-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 30px; }
 .metric-top > span { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--line); }
 .metric-top svg { width: 18px; }

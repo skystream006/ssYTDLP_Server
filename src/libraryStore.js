@@ -101,7 +101,7 @@ function validateLibrary(value, jobs, current) {
     return { jobId: track.jobId, name: track.name, playlistId: track.playlistId };
   });
   const additions = value.songAdds === undefined ? current.songAdds : value.songAdds;
-  if (!Array.isArray(additions) || additions.length > 5000) invalid('Invalid playlist additions');
+  if (!Array.isArray(additions)) invalid('Invalid playlist additions');
   const addedKeys = new Set();
   const songAdds = additions.map((track) => {
     const key = track && JSON.stringify([track.playlistId, track.jobId, track.name]);

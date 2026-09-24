@@ -371,16 +371,9 @@ export async function importItunesLibrary(xml, media, user, { local = false, rep
   const plans = parseItunesImport(xml, media, { local, report });
   const current = getLibrary(user.id, libraryJobs(user));
   if (current.entries.length + plans.length > 5000) throw failure('The library contains too many entries', 413);
-  const uniquePaths = new Set();
-  let links = 0;
   for (const plan of plans) {
     plan.files = [...new Map(plan.files.map((file) => [file.path, file])).values()];
-    for (const file of plan.files) {
-      if (uniquePaths.has(file.path)) links++;
-      uniquePaths.add(file.path);
-    }
   }
-  if (current.songAdds.length + links > 5000) throw failure('The import exceeds the library limit of 5,000 song links', 413);
   const created = [];
   const converted = new Map();
   try {

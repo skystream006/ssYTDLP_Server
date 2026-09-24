@@ -158,9 +158,10 @@ media and the single stored copy of each imported file. Browser/runtime limits a
 still apply. Uncapped local ZIP extraction can exhaust server disk space.
 
 File validation, unsafe archive-path checks, and the existing 5,000-entry
-library constraint remain. The library's 5,000 additional song-link limit also
-applies to imports, including local imports; exceeding it rejects the import
-before copying files. At most two imports run concurrently, one per user.
+library constraint remain. There is no library-wide song-link count limit,
+including for uploaded and local iTunes imports. Request-size limits and the
+5,000-song limit per bulk transfer request still apply. At most two imports run
+concurrently, one per user.
 
 The authenticated `POST /api/jobs/import` endpoint accepts multipart form data:
 `mode=files`, `createNew=true`, `playlistTitle`, and repeated `files` fields;
@@ -1106,12 +1107,28 @@ completes.
 ## System health
 
 Open `/health` on your configured HTTPS origin to view CPU, memory, network, disk,
-and transcription-service status. The server probes `TRANSCRIPTION_ENDPOINT` with
+total media files, and transcription-service status. **Total media files** counts
+existing audio and video files in the server's saved job inventory across all users,
+including imported media and NoVocals audio. Playlist links and repeated references
+to the same file path count once; separate stored copies count separately. Metadata,
+artwork, archives, incomplete downloads, and missing files are excluded.
+
+A scan starts at server startup and every hour afterward, even with Health closed.
+Health refreshes read the cached result without starting another scan. **Last scanned**
+shows the last successful scan's completion date and time in your browser's local
+time zone. During a scan, the previous result remains visible. A failed scan retains
+that result and its timestamp, shows an error, and retries at the next hourly scan.
+The cache is in memory and resets on restart. `GET /api/health` includes
+`media: { totalFiles, scannedAt, scanning, error }`; `totalFiles` and the ISO timestamp
+`scannedAt` are `null` until the first successful scan. Untracked files outside the
+job inventory are not included. Live system metrics still refresh every three seconds.
+
+The server probes `TRANSCRIPTION_ENDPOINT` with
 a HEAD request and a two-second timeout on each health refresh; no audio is sent.
 **Active** means any HTTP response was received, including redirects and error
 responses such as 404 or 500. It does not verify model readiness or a successful
 transcription. Connection failures, timeouts, and an unset endpoint show **Inactive**.
-The detail text includes the HTTP status or the reason no response was received.
+Only inactive services show detail text explaining why no response was received.
 
 ## Tests
 

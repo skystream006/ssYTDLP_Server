@@ -32,7 +32,6 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
-  Server,
   Settings,
   ShieldCheck,
   Sun,
@@ -938,7 +937,7 @@ function Metric({ icon, label, value, detail, percent }) {
   return <article className="metric">
     <div className="metric-top"><span>{icon}</span><small>{label}</small></div>
     <strong>{value}</strong>
-    <p>{detail}</p>
+    {detail && <p>{detail}</p>}
     {Number.isFinite(percent) && <div className="meter"><span style={{ width: `${Math.min(100, percent)}%` }} /></div>}
   </article>;
 }
@@ -957,14 +956,19 @@ function HealthPage() {
     {error && <div className="notice error page-notice"><CircleAlert size={16} />{error}</div>}
     {!health && !error && <div className="loading"><RefreshCw className="spin" /> Reading system metrics</div>}
     {health && <>
-      <section className="host-strip"><span><Server size={20} /></span><div><small>Host machine</small><strong>{health.hostname}</strong></div><div className="host-status"><span /> Operational</div></section>
       <section className="metrics-grid">
         <Metric icon={<Activity />} label="CPU usage" value={`${health.cpu.usagePercent.toFixed(1)}%`} detail="Current processor load" percent={health.cpu.usagePercent} />
         <Metric icon={<MemoryStick />} label="Memory" value={formatBytes(health.memory.usedBytes)} detail={`${formatBytes(health.memory.totalBytes)} total`} percent={memoryPercent} />
         <Metric icon={<HardDrive />} label="Storage free" value={formatBytes(health.storage.freeBytes)} detail={`${formatBytes(health.storage.totalBytes)} total`} percent={diskPercent} />
         <Metric icon={<Network />} label="Network in" value={`${formatBytes(health.network.rxSec)}/s`} detail={`${formatBytes(health.network.rxBytes)} received`} />
         <Metric icon={<Network />} label="Network out" value={`${formatBytes(health.network.txSec)}/s`} detail={`${formatBytes(health.network.txBytes)} sent`} />
-        <Metric icon={<Mic />} label="Transcription service" value={health.transcription?.status === 'active' ? <span className="transcription-active">Active</span> : <span className="transcription-inactive">Inactive</span>} detail={health.transcription?.message || 'Status unavailable'} />
+        <Metric icon={<Mic />} label="Transcription service" value={health.transcription?.status === 'active' ? <span className="transcription-active">Active</span> : <span className="transcription-inactive">Inactive</span>} detail={health.transcription?.status === 'active' ? null : health.transcription?.message || 'Status unavailable'} />
+        <Metric icon={<FileAudio />} label="Total media files"
+          value={Number.isInteger(health.media?.totalFiles) ? health.media.totalFiles.toLocaleString() : '-'}
+          detail={<>Songs and videos across all users<br />
+            {health.media?.scannedAt ? <>Last scanned: <time dateTime={health.media.scannedAt}>{new Date(health.media.scannedAt).toLocaleString()}</time></> : 'No completed scan'}
+            <br />{health.media?.scanning ? 'Scanning...' : health.media?.error || 'Hourly scan'}
+          </>} />
       </section>
     </>}
   </AppShell>;

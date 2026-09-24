@@ -428,6 +428,25 @@ test('all job media can be added atomically without removing source tracks or du
   assert.equal(getLibrary('alice', available.filter((job) => job.id !== 'soul')).songAdds.length, 0);
 });
 
+test('libraries retain more than 5000 song links across saves and later edits', () => {
+  const files = Array.from({ length: 5001 }, (_, index) => `Song ${index}.mp3`);
+  const available = [{ id: 'large', files }, ...jobs];
+  const added = addLibraryJobFiles('alice', { version: 0, jobId: 'large', playlistId: 'soul' }, available);
+  assert.equal(added.addedCount, files.length);
+  assert.equal(added.songAdds.length, files.length);
+  closeDatabases();
+  const reloaded = getLibrary('alice', available);
+  assert.deepEqual(reloaded.songAdds, added.songAdds);
+  assert.deepEqual(getPlaylistTracks(reloaded, available).get('soul').map((track) => track.name), ['Soul.mp3', ...files]);
+  const saved = setLibrary('alice', { version: reloaded.version, entries: reloaded.entries, songOrder: reloaded.songOrder }, available);
+  const expanded = addLibraryJobFiles('alice', { version: saved.version, jobId: 'jazz', playlistId: 'soul' }, available);
+  assert.equal(expanded.songAdds.length, files.length + 3);
+  assert.throws(() => setLibrary('alice', saved, available), { statusCode: 409 });
+  assert.throws(() => setLibrary('alice', { ...expanded, songAdds: [...expanded.songAdds, expanded.songAdds[0]] }, available), { statusCode: 400 });
+  assert.deepEqual(getLibrary('alice', available).songAdds, expanded.songAdds);
+  assert.deepEqual(getLibrary('bob', available).songAdds, []);
+});
+
 test('moving an added entry preserves other memberships and never duplicates a destination entry', () => {
   let library = addLibraryJobFiles('alice', { version: 0, jobId: 'jazz', playlistId: 'soul' }, jobs);
   const move = { jobId: 'jazz', name: 'First.mp3', sourcePlaylistId: 'soul', playlistId: 'live' };

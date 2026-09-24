@@ -16,7 +16,7 @@ import { findNoVocals, getPlaylistIds, getPlaylistTracks, individualSongsId, ord
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { createLibraryBackupService } from './libraryBackup.js';
 import { getImportProgress, handleLibraryImport, listLocalImportFiles } from './libraryImport.js';
-import { getSystemHealth } from './health.js';
+import { countMediaFiles, createMediaCountMonitor, getSystemHealth } from './health.js';
 import { isYouTubeUrl } from './utils.js';
 import { scheduleDailyMaintenance, scheduleLibraryBackups } from './scheduler.js';
 import { attachUser, registerAuthRoutes, requireAuth } from './auth.js';
@@ -597,10 +597,13 @@ app.delete('/api/jobs/:id', async (req, res) => {
   }
 });
 
+const mediaCount = createMediaCountMonitor(() => countMediaFiles(getJobs()));
+
 app.get('/api/health', async (_req, res) => {
   try {
     const data = await getSystemHealth();
-    return res.json(data);
+    res.set('Cache-Control', 'no-store');
+    return res.json({ ...data, media: mediaCount.getStatus() });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

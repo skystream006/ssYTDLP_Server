@@ -399,15 +399,34 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     }
   });
 
-  await context.test('imports reject excessive shared memberships before copying or converting files', async () => {
-    const repeatedXml = plist.build({ Tracks: document.Tracks,
-      Playlists: Array.from({ length: 2502 }, () => document.Playlists[1]) });
-    const beforeJobs = manager.getJobs().map((job) => job.id).sort();
+  await context.test('uploaded and local imports preserve more than 5000 song links', async () => {
+    const sharedMedia = Array.from({ length: 101 }, (_, index) => ({
+      name: `Music/Linked ${index}.mp3`, path: path.join(directory, `linked-${index}.mp3`), size: encodedAudio.length
+    }));
+    await Promise.all(sharedMedia.map((file) => fs.writeFile(file.path, encodedAudio)));
+    const repeatedXml = plist.build({
+      Tracks: Object.fromEntries(sharedMedia.map((file, index) => [index + 1, { 'Track ID': index + 1, Location: `file:///${file.name}` }])),
+      Playlists: Array.from({ length: 51 }, (_, index) => ({ Name: `Linked playlist ${index}`,
+        'Playlist Items': sharedMedia.map((_file, trackIndex) => ({ 'Track ID': trackIndex + 1 })) }))
+    });
     const beforeConversions = encoder.mock.callCount();
-    await assert.rejects(imports.importItunesLibrary(repeatedXml, media, owner, { local: true }),
-      { statusCode: 413, message: /5,000 song links/ });
+    for (const local of [false, true]) {
+      const before = getLibrary(owner.id, manager.getJobs());
+      const imported = await imports.importItunesLibrary(repeatedXml, sharedMedia, owner, { local });
+      assert.equal(imported.importedFiles, 101);
+      assert.equal(imported.jobs.length, 51);
+      assert.equal(imported.jobs[0].files.length, 101);
+      assert.ok(imported.jobs.slice(1).every((job) => job.files.length === 0));
+      const saved = getLibrary(owner.id, manager.getJobs());
+      assert.equal(saved.songAdds.length, before.songAdds.length + 5050);
+      const tracks = getPlaylistTracks(saved, manager.getJobs());
+      const expected = imported.jobs[0].files.map((name) => songKey({ jobId: imported.jobs[0].id, name }));
+      for (const job of imported.jobs) {
+        assert.deepEqual(saved.playlistSongOrder[job.id], expected);
+        assert.deepEqual(tracks.get(job.id).map(songKey), expected);
+      }
+    }
     assert.equal(encoder.mock.callCount(), beforeConversions);
-    assert.deepEqual(manager.getJobs().map((job) => job.id).sort(), beforeJobs);
   });
 
   await context.test('WAV conversion failures remove temporary outputs without creating playlists', async (conversionContext) => {

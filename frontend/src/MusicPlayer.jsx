@@ -13,6 +13,17 @@ function timeLabel(seconds) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
+export function formatLyricsForCopy(metadata, mode) {
+  if (mode !== 'sylt') return metadata?.uslt || '';
+  return (metadata?.sylt || []).map((line) => {
+    const milliseconds = Math.max(0, Math.round(line.time * 1000));
+    const minutes = String(Math.floor(milliseconds / 60000)).padStart(2, '0');
+    const seconds = String(Math.floor(milliseconds / 1000) % 60).padStart(2, '0');
+    const fraction = String(milliseconds % 1000).padStart(3, '0');
+    return `[${minutes}:${seconds}.${fraction}] ${line.text}`;
+  }).join('\n');
+}
+
 const PlaybackContext = createContext(null);
 
 export function queueSongNext(songs, selected, track) {
@@ -86,8 +97,7 @@ export function PlaybackProvider({ children, request }) {
   const index = songs?.findIndex((track) => songKey(track) === selected) ?? -1;
   const song = songs?.[index];
   const isVideo = mediaType(song?.name) === 'video';
-  const lines = metadata?.sylt || [];
-  const lyricsText = mode === 'sylt' ? lines.map((line) => line.text).join('\n') : metadata?.uslt || '';
+  const lyricsText = formatLyricsForCopy(metadata, mode);
   const currentCopy = copyResult?.song === selected && copyResult?.mode === mode ? copyResult : null;
 
   async function copyLyrics() {

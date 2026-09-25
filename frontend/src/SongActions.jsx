@@ -254,6 +254,7 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
   const titleId = useId();
   const [addLyrics, setAddLyrics] = useState(false);
   const [language, setLanguage] = useState('');
+  const [multilingual, setMultilingual] = useState(false);
   const [noVocals, setNoVocals] = useState(false);
   const [vietLyricsFallback, setVietLyricsFallback] = useState(false);
   const [lyrics, setLyrics] = useState('');
@@ -280,6 +281,7 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
     if (submitting) return;
     setSubmitting(true);
     onSubmit(file, {
+      Multilingual: multilingual,
       NoVocals: noVocals,
       VietLyricsFallback: vietLyricsFallback,
       ...(addLyrics ? { lyrics: lyrics.trim(), lyrics_mode: mode } : {}),
@@ -301,6 +303,10 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
             <option value="">Auto-detect</option>
             {transcriptionLanguages.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
           </select>
+        </div>
+        <div className="transcription-option">
+          <label className="lyrics-toggle"><input type="checkbox" aria-describedby={`${titleId}-multilingual-help`} checked={multilingual} onChange={(event) => setMultilingual(event.target.checked)} />Multilingual</label>
+          <TranscriptionHelp id={`${titleId}-multilingual-help`} label="Multilingual">Enable multilingual transcription for songs containing more than one language. Unchecking disables multilingual mode for this request.</TranscriptionHelp>
         </div>
         <div className="transcription-option">
           <label className="lyrics-toggle"><input type="checkbox" aria-describedby={`${titleId}-no-vocals-help`} checked={noVocals} onChange={(event) => setNoVocals(event.target.checked)} />Create no-vocals version [Karaoke version]</label>

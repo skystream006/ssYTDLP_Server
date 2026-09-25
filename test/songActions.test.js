@@ -12,6 +12,7 @@ let TranscriptionDialog;
 let SongGroups;
 let findNoVocals;
 let queueSongNext;
+let formatLyricsForCopy;
 let ExportLibraryDialog;
 let ImportMusic;
 let canRunJobAction;
@@ -19,7 +20,7 @@ let canRunJobAction;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, SongRating, ListSongRating, TranscriptionDialog, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ SongGroups, findNoVocals, queueSongNext } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ SongGroups, findNoVocals, queueSongNext, formatLyricsForCopy } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
 });
@@ -207,14 +208,34 @@ test('karaoke inserts next without duplicates and preserves the rest of the queu
   assert.deepEqual(queueSongNext(activeQueue, JSON.stringify([version.jobId, version.name]), version), activeQueue);
 });
 
+test('copying SYLT preserves timestamps while USLT stays plain text', () => {
+  const metadata = { sylt: [
+    { time: 0, text: 'Opening' },
+    { time: 9.007, text: 'Early line' },
+    { time: 59.9996, text: 'Minute boundary' },
+    { time: 65.123, text: 'First line\nSecond line' },
+    { time: 65.123, text: 'Same timestamp' },
+    { time: 3600.007, text: 'After an hour' }
+  ], uslt: 'Plain lyrics\n\nWithout timestamps' };
+  assert.equal(formatLyricsForCopy(metadata, 'sylt'), [
+    '[00:00.000] Opening', '[00:09.007] Early line', '[01:00.000] Minute boundary',
+    '[01:05.123] First line\nSecond line', '[01:05.123] Same timestamp', '[60:00.007] After an hour'
+  ].join('\n'));
+  assert.equal(formatLyricsForCopy(metadata, 'uslt'), metadata.uslt);
+  for (const mode of ['sylt', 'uslt']) {
+    assert.equal(formatLyricsForCopy(null, mode), '');
+    assert.equal(formatLyricsForCopy({ sylt: [], uslt: '' }, mode), '');
+  }
+});
+
 test('transcription dialog exposes upstream options with unchecked defaults', () => {
   const html = renderToStaticMarkup(createElement(TranscriptionDialog, {
     file: { name: 'Song.mp3', sizeBytes: 1024 }, onClose() {}, onSubmit() {}
   }));
-  for (const label of ['No Vocals', 'Viet Lyrics Fallback', 'Add lyrics']) {
+  for (const label of ['Multilingual', 'Create no-vocals version [Karaoke version]', 'Viet Lyrics Fallback', 'Add lyrics']) {
     assert.ok(html.includes(`/>${label}</label>`));
   }
-  assert.equal((html.match(/type="checkbox"/g) || []).length, 3);
+  assert.equal((html.match(/type="checkbox"/g) || []).length, 4);
   assert.ok(!html.includes('checked=""'));
   assert.ok(html.includes('<option value="" selected="">Auto-detect</option>'));
   assert.ok(html.includes('<option value="vi">Vietnamese</option>'));
@@ -224,7 +245,7 @@ test('transcription options have linked help buttons and descriptions', () => {
   const html = renderToStaticMarkup(createElement(TranscriptionDialog, {
     file: { name: 'Song.mp3', sizeBytes: 1024 }, onClose() {}, onSubmit() {}
   }));
-  for (const label of ['Language', 'No Vocals', 'Viet Lyrics Fallback', 'Add lyrics']) {
+  for (const label of ['Language', 'Multilingual', 'No Vocals', 'Viet Lyrics Fallback', 'Add lyrics']) {
     const descriptionId = html.match(new RegExp(`type="button" aria-label="About ${label}" aria-describedby="([^"]+)"`))?.[1];
     assert.ok(descriptionId, `Missing help button for ${label}`);
     assert.ok(html.includes(`role="tooltip" id="${descriptionId}">`));

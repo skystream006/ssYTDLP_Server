@@ -784,10 +784,21 @@ then **Move selected playlists to folder** to move them together to a folder or
 the library root. The select-all checkbox applies to matching playlists, including
 those inside collapsed folders. The operation preserves their saved relative order.
 
+Use **Collapse all folders** beside the Playlists heading to close every folder,
+including nested folders; the button then becomes **Expand all folders**.
+Playlist selections are preserved. The control is disabled during playlist search,
+which automatically opens folders containing matches, or when there are no folders.
+
+In **New playlist folder**, use **Add folder** to enter multiple folder names,
+choose their shared **Location**, then select **Save folders**. Extra rows can
+be removed before saving. All folders are created together; validation errors
+leave the library unchanged and keep the entered names available to correct.
+
 Folder creation, editing, deletion, and playlist/folder moves use compact,
 version-checked actions at `POST /api/library/entries`: `create-folder`,
-`update-folder`, `delete-folder`, and `move`. Requests contain the affected entry
-ID and changed fields, not the library's entries or song orders. Song moves,
+`create-folders`, `update-folder`, `delete-folder`, and `move`. Batch creation
+accepts `folders: [{ id, name }]` and a shared `parentId`. Requests contain the
+affected IDs and changed fields, not the library's entries or song orders. Song moves,
 reorders, playlist linking and bulk additions also use targeted requests. The
 legacy full-replacement `PUT /api/library` remains available with its existing
 128 KB limit; the frontend no longer uses it for organizing the library.
@@ -976,10 +987,13 @@ song's latest status; songs without a tracked request have no status indicator.
 `{ "lyrics": "Known lyric lines", "lyrics_mode": "align" }` with lyrics. URL-encode
 the complete filename, including `[NoVocals]/` for accompaniment tracks. The server
 forwards a multipart POST containing `file`, plus `lyrics`, `lyrics_mode`,
-`language`, `NoVocals`, and `VietLyricsFallback` when provided. The two flags must
+`language`, `NoVocals`, `VietLyricsFallback`, and `Multilingual` when provided. These flags must
 be JSON booleans and are forwarded as `true` or `false`. Omitting `NoVocals` uses
 the service's default (`false`); omitting `VietLyricsFallback` retains its saved
 endpoint setting. Enabling `VietLyricsFallback` forces `language` to `vi`.
+The dialog's **Multilingual** checkbox defaults to unchecked and explicitly sends
+`false`; checking it sends `true`. Omitting `Multilingual` in an API request leaves
+the service's default unchanged.
 Language codes must match an option in the dropdown.
 Lyrics must be nonempty and at most 100,000 characters; the existing
 128 KB JSON request limit also applies.
@@ -1004,6 +1018,9 @@ Playback format support depends on the browser.
 
 The **SYLT** selector shows embedded synchronized MP3 lyrics with millisecond
 timestamps, highlights the current line, and allows seeking by selecting a line.
+The active line uses larger text and the current palette's accent color, brightened
+in the fullscreen lyrics overlay. **Copy lyrics** in SYLT mode includes each
+timestamp as `[mm:ss.mmm]` before its text; copying USLT keeps plain text only.
 **USLT** displays the embedded plain-text lyrics. Untagged songs remain playable.
 Title, artist, album and supported embedded cover artwork are read from MP3 tags.
 Streaming uses authenticated, byte-range-enabled `/api/jobs/:id/stream/:name`;

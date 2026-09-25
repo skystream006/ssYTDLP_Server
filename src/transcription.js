@@ -43,7 +43,7 @@ async function checkAudio(data, name) {
 
 export function validateTranscriptionOptions(options = {}) {
   const fields = validateLyrics(options);
-  for (const key of ['NoVocals', 'VietLyricsFallback']) {
+  for (const key of ['NoVocals', 'VietLyricsFallback', 'Multilingual']) {
     if (options[key] === undefined) continue;
     if (typeof options[key] !== 'boolean') {
       throw failure(`${key} must be a boolean`, 400);

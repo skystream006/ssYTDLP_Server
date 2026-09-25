@@ -159,7 +159,7 @@ export function mutateLibraryEntry(userId, value, jobs) {
     const current = getLibrary(userId, jobs);
     if (!value || !Number.isSafeInteger(value.version) || value.version < 0) invalid('Invalid library version');
     if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
-    if (typeof value.id !== 'string') invalid('Invalid library entry');
+    if (value.action !== 'create-folders' && typeof value.id !== 'string') invalid('Invalid library entry');
     const entry = current.entries.find((item) => item.id === value.id);
     let entries;
     if (value.action === 'delete-folder') {
@@ -173,7 +173,13 @@ export function mutateLibraryEntry(userId, value, jobs) {
       if (value.parentId !== null && !current.entries.some((item) => item.id === value.parentId && item.type === 'folder')) {
         invalid('Parent folder is no longer available');
       }
-      if (value.action === 'create-folder') {
+      if (value.action === 'create-folders') {
+        if (!Array.isArray(value.folders) || !value.folders.length
+          || current.entries.length + value.folders.length > 5000) invalid('Invalid folder selection or library entry limit exceeded');
+        entries = [...current.entries, ...value.folders.map((folder) => ({
+          id: folder?.id, type: 'folder', name: folder?.name, parentId: value.parentId
+        }))];
+      } else if (value.action === 'create-folder') {
         if (entry) invalid('Library entry already exists');
         entries = [...current.entries, { id: value.id, type: 'folder', name: value.name, parentId: value.parentId }];
       } else if (value.action === 'update-folder') {

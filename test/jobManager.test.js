@@ -802,17 +802,17 @@ test('legacy folders shared with another owner require an administrator to modif
 test('transcription options validate output flags and force Vietnamese for fallback', async () => {
   const { validateTranscriptionOptions } = await import('../src/transcription.js');
   assert.deepEqual(validateTranscriptionOptions(), {});
-  assert.deepEqual(validateTranscriptionOptions({ NoVocals: false, VietLyricsFallback: false }), {
-    NoVocals: false, VietLyricsFallback: false
+  assert.deepEqual(validateTranscriptionOptions({ NoVocals: false, VietLyricsFallback: false, Multilingual: false }), {
+    NoVocals: false, VietLyricsFallback: false, Multilingual: false
   });
-  assert.deepEqual(validateTranscriptionOptions({ NoVocals: true, VietLyricsFallback: true, language: 'en' }), {
-    NoVocals: true, VietLyricsFallback: true, language: 'vi'
+  assert.deepEqual(validateTranscriptionOptions({ NoVocals: true, VietLyricsFallback: true, Multilingual: true, language: 'en' }), {
+    NoVocals: true, VietLyricsFallback: true, Multilingual: true, language: 'vi'
   });
   assert.deepEqual(validateTranscriptionOptions({ VietLyricsFallback: true }), { VietLyricsFallback: true, language: 'vi' });
   assert.deepEqual(validateTranscriptionOptions({ VietLyricsFallback: false, language: 'ja' }), {
     VietLyricsFallback: false, language: 'ja'
   });
-  for (const key of ['NoVocals', 'VietLyricsFallback']) {
+  for (const key of ['NoVocals', 'VietLyricsFallback', 'Multilingual']) {
     for (const value of ['true', 'false', 0, 1, null, {}, []]) {
       assert.throws(() => validateTranscriptionOptions({ [key]: value }), { statusCode: 400 });
     }
@@ -838,10 +838,11 @@ test('transcription options are forwarded as multipart fields without losing fal
   });
   for (const enabled of [true, false]) {
     await assert.rejects(requestTranscription(filePath, {
-      NoVocals: enabled, VietLyricsFallback: enabled, language: 'en', lyrics: ' Words ', lyrics_mode: 'align'
+      NoVocals: enabled, VietLyricsFallback: enabled, Multilingual: enabled, language: 'en', lyrics: ' Words ', lyrics_mode: 'align'
     }), /HTTP 503/);
     assert.equal(payload.get('NoVocals'), String(enabled));
     assert.equal(payload.get('VietLyricsFallback'), String(enabled));
+    assert.equal(payload.get('Multilingual'), String(enabled));
     assert.equal(payload.get('language'), enabled ? 'vi' : 'en');
     assert.equal(payload.get('lyrics'), 'Words');
     assert.equal(payload.get('lyrics_mode'), 'align');
@@ -850,6 +851,7 @@ test('transcription options are forwarded as multipart fields without losing fal
   await assert.rejects(requestTranscription(filePath), /HTTP 503/);
   assert.equal(payload.has('NoVocals'), false);
   assert.equal(payload.has('VietLyricsFallback'), false);
+  assert.equal(payload.has('Multilingual'), false);
   assert.equal(payload.has('language'), false);
 });
 

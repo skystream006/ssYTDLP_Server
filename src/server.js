@@ -127,6 +127,12 @@ app.get('/api/library', (req, res) => {
   const jobs = getLibraryJobs(req.user);
   const library = getLibrary(req.user.id, jobs);
   const tracks = getPlaylistTracks(library, jobs);
+  const uniqueSongs = new Set();
+  for (const playlistTracks of tracks.values()) {
+    for (const track of playlistTracks) {
+      if (isPlayableFile(track.name)) uniqueSongs.add(songKey(track));
+    }
+  }
   const jobMap = new Map(jobs.map((job) => [job.id, job]));
   const playlists = library.entries.filter((entry) => entry.type === 'playlist').map((entry) => {
     const job = jobMap.get(entry.id);
@@ -134,7 +140,7 @@ app.get('/api/library', (req, res) => {
       protected: Boolean(entry.protected), status: job?.status || 'completed', initiatedBy: job?.initiatedBy || req.user,
       updatedAt: job?.updatedAt, songCount: tracks.get(entry.id).filter((track) => isPlayableFile(track.name)).length };
   });
-  res.json({ ...library, playlists, jobs: jobs.map((job) => ({
+  res.json({ ...library, songCount: uniqueSongs.size, playlists, jobs: jobs.map((job) => ({
     id: job.id, isPlaylist: job.isPlaylist, playlistTitle: job.playlistTitle, status: job.status, initiatedBy: job.initiatedBy,
     contributors: job.contributors || [], transcriptions: job.transcriptions || {},
     updatedAt: job.updatedAt, songCount: (job.files || []).filter(isPlayableFile).length

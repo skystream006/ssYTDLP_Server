@@ -173,6 +173,40 @@ test('entry mutations reject invalid changes atomically and keep the tree and ve
   assert.equal(renamed.entries.length, 5000);
 });
 
+test('multiple folders are created atomically in one location and retain validation', () => {
+  const initial = addLibraryJobFiles('alice', { version: 0, jobId: 'jazz', playlistId: 'soul' }, jobs);
+  const folders = [{ id: 'folder-first', name: ' First ' }, { id: 'folder-second', name: 'Second' }];
+  const value = { version: initial.version, action: 'create-folders', parentId: null, folders };
+  const created = mutateLibraryEntry('alice', value, jobs);
+  assert.equal(created.version, initial.version + 1);
+  assert.deepEqual(created.entries.slice(-2), folders.map((folder) => ({ ...folder, name: folder.name.trim(), type: 'folder', parentId: null })));
+  for (const key of ['songOrder', 'playlistSongOrder', 'songMoves', 'songAdds', 'singleJobIds']) assert.deepEqual(created[key], initial[key]);
+  assert.throws(() => mutateLibraryEntry('alice', value, jobs), { statusCode: 409 });
+  const nested = mutateLibraryEntry('alice', { ...value, version: created.version, parentId: 'folder-first',
+    folders: [{ id: 'folder-child-one', name: 'One' }, { id: 'folder-child-two', name: 'Two' }] }, jobs);
+  assert.ok(nested.entries.slice(-2).every((entry) => entry.parentId === 'folder-first'));
+  const valid = { id: 'folder-valid', name: 'Valid' };
+  for (const changes of [
+    { folders: null }, { folders: [] }, { folders: [valid, null] }, { folders: [valid, valid] },
+    { folders: [valid, folders[0]] }, { folders: [valid, { id: 'invalid', name: 'Invalid' }] },
+    { folders: [valid, { id: 'folder-blank', name: ' ' }] },
+    { folders: [valid, { id: 'folder-long', name: 'x'.repeat(121) }] },
+    { folders: [valid], parentId: 'jazz' }, { folders: [valid], parentId: 'missing' }
+  ]) {
+    assert.throws(() => mutateLibraryEntry('alice', { ...value, version: nested.version, ...changes }, jobs), { statusCode: 400 });
+    assert.deepEqual(getLibrary('alice', jobs), nested);
+  }
+  closeDatabases();
+  assert.deepEqual(getLibrary('alice', jobs), nested);
+  assert.ok(getLibrary('bob', jobs).entries.every((entry) => entry.type !== 'folder'));
+  const full = setLibrary('alice', { ...nested, entries: [...nested.entries,
+    ...Array.from({ length: 4999 - nested.entries.length }, (_, index) => ({ id: `folder-fill-${index}`, type: 'folder', name: `Folder ${index}`, parentId: null }))]
+  }, jobs);
+  assert.throws(() => mutateLibraryEntry('alice', { ...value, version: full.version,
+    folders: [valid, { id: 'folder-overflow', name: 'Overflow' }] }, jobs), { statusCode: 400 });
+  assert.deepEqual(getLibrary('alice', jobs), full);
+});
+
 test('bulk playlist moves are atomic, versioned and preserve tree and song order', () => {
   const initial = mutateLibraryEntry('alice', { version: 0, action: 'create-folder', id: 'folder-bulk', name: 'Bulk', parentId: null }, jobs);
   const value = { version: initial.version, ids: ['soul', 'jazz'], parentId: 'folder-bulk' };

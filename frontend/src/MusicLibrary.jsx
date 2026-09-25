@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ArrowRightLeft, CalendarClock, Check, ChevronDown, ChevronRight, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, Link, ListChecks, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Save, Search, Trash2, X } from 'lucide-react';
+import { ArrowRightLeft, CalendarClock, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, Link, ListChecks, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Save, Search, Trash2, X } from 'lucide-react';
 import MusicPlayer, { usePlayback } from './MusicPlayer.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import { Upload } from 'lucide-react';
@@ -310,9 +310,14 @@ function FolderDialog({ folder, parentId, folders, saving, onSave, onClose }) {
   const headingId = useId();
   const nameId = useId();
   const parentInputId = useId();
-  const [name, setName] = useState(folder?.name || '');
+  const [names, setNames] = useState(() => [{ id: crypto.randomUUID(), name: folder?.name || '' }]);
+  const [focusTarget, setFocusTarget] = useState(null);
   const [location, setLocation] = useState(parentId || '');
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (focusTarget) document.getElementById(`${nameId}-${focusTarget.id}`)?.focus();
+  }, [focusTarget, nameId]);
 
   useEffect(() => {
     const previousFocus = document.activeElement;
@@ -325,19 +330,30 @@ function FolderDialog({ folder, parentId, folders, saving, onSave, onClose }) {
     onCancel={(event) => { event.preventDefault(); if (!saving) onClose(); }}>
     <form onSubmit={async (event) => {
       event.preventDefault();
-      const result = await onSave({ name: name.trim(), parentId: location || null });
+      if (saving || names.some((item) => !item.name.trim())) return;
+      setError('');
+      const result = await onSave({ names: names.map((item) => item.name.trim()), parentId: location || null });
       if (result === true) onClose();
-      else setError(result || 'Unable to save folder.');
+      else setError(result || 'Unable to save folders.');
     }}>
       <div className="folder-dialog-heading"><h2 id={headingId}>{folder ? 'Edit folder' : 'New playlist folder'}</h2>
         <button type="button" className="music-icon-button" title="Close" aria-label="Close folder dialog" disabled={saving} onClick={onClose}><X size={18} /></button></div>
-      <label htmlFor={nameId}>Folder name</label><input id={nameId} autoFocus required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} />
-      <label htmlFor={parentInputId}>Location</label><select id={parentInputId} value={location} onChange={(event) => setLocation(event.target.value)}>
+      <div className="folder-name-fields">{names.map((item, index) => <div key={item.id}>
+        <label htmlFor={`${nameId}-${item.id}`}>Folder name{names.length > 1 ? ` ${index + 1}` : ''}</label>
+        <div className="folder-name-row"><input id={`${nameId}-${item.id}`} autoFocus={index === 0} required maxLength={120} value={item.name} disabled={saving}
+          onChange={(event) => setNames((current) => current.map((field) => field.id === item.id ? { ...field, name: event.target.value } : field))} />
+          {!folder && names.length > 1 && <button className="music-icon-button" type="button" title="Remove folder" aria-label={`Remove folder ${index + 1}`} disabled={saving}
+            onClick={() => { setNames((current) => current.filter((field) => field.id !== item.id)); setFocusTarget({ id: names[index === 0 ? 1 : index - 1].id }); }}><X size={18} /></button>}
+        </div>
+      </div>)}</div>
+      {!folder && <button className="secondary-button compact-button folder-add-button" type="button" disabled={saving}
+        onClick={() => { const id = crypto.randomUUID(); setNames((current) => [...current, { id, name: '' }]); setFocusTarget({ id }); }}><Plus size={17} />Add folder</button>}
+      <label htmlFor={parentInputId}>Location</label><select id={parentInputId} value={location} disabled={saving} onChange={(event) => setLocation(event.target.value)}>
         <option value="">Library</option>{folders.map((item) => <option key={item.id} value={item.id}>{item.path}</option>)}
       </select>
       {error && <p className="notice error" role="alert">{error}</p>}
       <div className="dialog-actions"><button className="secondary-button" type="button" disabled={saving} onClick={onClose}>Cancel</button>
-        <button className="primary-button" type="submit" disabled={saving || !name.trim()}>{saving ? <RefreshCw className="spin" size={16} /> : <Check size={16} />}Save folder</button></div>
+        <button className="primary-button" type="submit" disabled={saving || names.some((item) => !item.name.trim())}>{saving ? <RefreshCw className="spin" size={16} /> : <Check size={16} />}{saving ? 'Saving...' : names.length > 1 ? 'Save folders' : 'Save folder'}</button></div>
     </form>
   </dialog>;
 }
@@ -654,6 +670,8 @@ export default function MusicLibrary({ user, request, confirm }) {
   }
 
   const folders = entries.filter((entry) => entry.type === 'folder').map((folder) => ({ ...folder, path: folderPath(folder) }));
+  const allFoldersCollapsed = folders.length > 0 && folders.every((folder) => collapsed.has(folder.id));
+  const toggleFoldersLabel = allFoldersCollapsed ? 'Expand all folders' : 'Collapse all folders';
   const possibleFolders = (id) => folders.filter((folder) => !insideFolder(folder.id, id));
 
   function moveEntry(id, parentId, targetId = null, after = false) {
@@ -675,12 +693,13 @@ export default function MusicLibrary({ user, request, confirm }) {
 
   async function saveFolder(changes) {
     const folder = folderDialog.folder;
-    const id = folder?.id || `folder-${crypto.randomUUID()}`;
-    const result = await saveEntry({ action: folder ? 'update-folder' : 'create-folder', id,
-      name: changes.name, parentId: changes.parentId });
+    const created = changes.names.map((name) => ({ id: folder?.id || `folder-${crypto.randomUUID()}`, name }));
+    const result = await saveEntry(folder
+      ? { action: 'update-folder', ...created[0], parentId: changes.parentId }
+      : { action: 'create-folders', folders: created, parentId: changes.parentId });
     if (result === true) {
       setCollapsed(new Set());
-      selectEntry(id);
+      selectEntry(created[0].id);
     }
     return result;
   }
@@ -774,7 +793,12 @@ export default function MusicLibrary({ user, request, confirm }) {
 
   const sidebar = <aside ref={sidebarRef} className="library-sidebar" aria-label="Playlists">
     <div className="library-sidebar-heading"><h2>Playlists <small>{jobs.length}</small></h2>
-      <div className="library-sidebar-tools"><button className="music-icon-button" type="button" title="Select playlists" aria-label="Select playlists" aria-pressed={selectingPlaylists}
+      <div className="library-sidebar-tools"><button className="music-icon-button" type="button"
+        title={search ? 'Clear playlist search to collapse or expand folders' : toggleFoldersLabel} aria-label={toggleFoldersLabel}
+        disabled={!library || saving || !folders.length || Boolean(search)}
+        onClick={() => setCollapsed(allFoldersCollapsed ? new Set() : new Set(folders.map((folder) => folder.id)))}>
+        {allFoldersCollapsed ? <ChevronsUpDown size={19} /> : <ChevronsDownUp size={19} />}</button>
+      <button className="music-icon-button" type="button" title="Select playlists" aria-label="Select playlists" aria-pressed={selectingPlaylists}
         disabled={!library || saving} onClick={() => { setSelectingPlaylists(!selectingPlaylists); setSelectedPlaylists(new Set()); setReordering(false); }}><ListChecks size={19} /></button>
       <button className="music-icon-button" type="button" title="Reorder playlists" aria-label="Reorder playlists" aria-pressed={reordering}
         disabled={!library || saving} onClick={() => { setReordering(!reordering); setSelectingPlaylists(false); setSelectedPlaylists(new Set()); }}><GripVertical size={19} /></button>
@@ -787,10 +811,10 @@ export default function MusicLibrary({ user, request, confirm }) {
         checked={entries.some((entry) => entry.type === 'playlist' && matches(entry)) && entries.filter((entry) => entry.type === 'playlist' && matches(entry)).every((entry) => selectedPlaylists.has(entry.id))}
         onChange={(event) => { const checked = event.target.checked; setSelectedPlaylists((current) => { const next = new Set(current); for (const entry of entries.filter((item) => item.type === 'playlist' && matches(item))) { if (checked) next.add(entry.id); else next.delete(entry.id); } return next; }); }} /><span>{playlistSelection.length} selected</span></label>
       <button className="music-icon-button" type="button" title="Move selected playlists to folder" aria-label="Move selected playlists to folder" disabled={saving || !playlistSelection.length}
-        onClick={() => setBulkDialog({ type: 'playlists', version: library.version, ids: playlistSelection.map((entry) => entry.id) })}><FolderOpen size={18} /></button>
+        onClick={() => setBulkDialog({ type: 'playlists', version: library.version, ids: playlistSelection.map((entry) => entry.id) })}><ArrowRightLeft size={18} /></button>
       <button className="music-icon-button" type="button" title="Clear playlist selection" aria-label="Clear playlist selection" disabled={saving} onClick={() => setSelectedPlaylists(new Set())}><X size={18} /></button>
     </div>}
-    <button className={`all-music ${selectedId === null ? 'is-selected' : ''}`} type="button" aria-current={selectedId === null ? 'true' : undefined} onClick={() => selectEntry(null)}><Library size={18} /><span>All music</span><small>{jobs.reduce((total, job) => total + job.songCount, 0)}</small></button>
+    <button className={`all-music ${selectedId === null ? 'is-selected' : ''}`} type="button" aria-current={selectedId === null ? 'true' : undefined} onClick={() => selectEntry(null)}><Library size={18} /><span>All music</span><small>{library?.songCount ?? 0}</small></button>
     <div className="library-tree-scroll">{!library && !error ? <p className="music-empty" role="status">Loading playlists...</p> : renderEntries()}
       {library && !entries.length && <p className="music-empty">No playlists yet.</p>}
       {!reordering && search && !entries.some(matches) && <p className="music-empty">No matching playlists.</p>}</div>

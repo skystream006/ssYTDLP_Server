@@ -585,8 +585,13 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const destinationAfterAdd = (await call('/api/library/tracks?entryId=individual-songs', 'GET', credentials.Owner[0])).body.files;
   assert.deepEqual(destinationAfterAdd.map((track) => [track.jobId, track.name]), sourceAfterAdd.map((track) => [track.jobId, track.name]));
   assert.ok(destinationAfterAdd.every((track) => track.playlistId === 'individual-songs'));
-  const allAfterAdd = (await call('/api/library/tracks', 'GET', credentials.Owner[0])).body.files;
+  const allAfterAddResult = (await call('/api/library/tracks', 'GET', credentials.Owner[0])).body;
+  const allAfterAdd = allAfterAddResult.files;
   assert.equal(new Set(allAfterAdd.map((track) => JSON.stringify([track.jobId, track.name]))).size, allAfterAdd.length);
+  const libraryAfterAdd = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+  assert.equal(libraryAfterAdd.songCount, beforeAdd.songCount);
+  assert.equal(libraryAfterAdd.songCount, allAfterAddResult.total);
+  assert.ok(libraryAfterAdd.playlists.reduce((total, playlist) => total + playlist.songCount, 0) > libraryAfterAdd.songCount);
   assert.equal((await call('/api/jobs/music/contributors', 'PUT', credentials.Owner[0], { userIds: [users.Other.id] })).status, 200);
   const contributorLibrary = (await call('/api/library', 'GET', credentials.Other[0])).body;
   const contributorAdd = await call(addFilesRoute, 'POST', credentials.Other[1], { ...addFiles, version: contributorLibrary.version });
@@ -679,7 +684,18 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   await changeEntry({ action: 'delete-folder', id: newFolder.id });
   assert.deepEqual(tree.entries.filter((entry) => ['pagination', 'folder-nested-import'].includes(entry.id)).map((entry) => entry.parentId), [null, null]);
   await changeEntry({ action: 'delete-folder', id: 'folder-nested-import' });
+  const folderBatch = { action: 'create-folders', parentId: 'folder-mixes',
+    folders: [{ id: 'folder-batch-first', name: 'First' }, { id: 'folder-batch-second', name: 'Second' }] };
+  const batchVersion = tree.version;
+  assert.equal((await call(entryRoute, 'POST', {}, { ...folderBatch, version: batchVersion })).status, 401);
+  await changeEntry(folderBatch, credentials.Owner[1]);
+  assert.equal(tree.version, batchVersion + 1);
+  assert.deepEqual(tree.entries.slice(-2), folderBatch.folders.map((folder) => ({ ...folder, type: 'folder', parentId: folderBatch.parentId })));
+  assert.equal((await call(entryRoute, 'POST', credentials.Owner[0], { ...folderBatch, version: batchVersion })).status, 409);
+  assert.equal((await call(entryRoute, 'POST', credentials.Owner[0], { ...folderBatch, version: tree.version,
+    folders: [{ id: 'folder-batch-valid', name: 'Valid' }, { id: 'folder-batch-invalid', name: ' ' }] })).status, 400);
   const reloadedTree = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+  assert.equal(reloadedTree.version, tree.version);
   assert.deepEqual(reloadedTree.entries, tree.entries);
   assert.deepEqual(reloadedTree.songOrder, restored.body.songOrder);
   assert.equal((await call('/api/library', 'GET', credentials.Other[0])).body.version, otherVersion);
